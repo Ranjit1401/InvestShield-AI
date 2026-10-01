@@ -24,7 +24,9 @@ investshield-ai/
 │   │   │   └── routes/       # HTTP endpoints only
 │   │   ├── core/             # config, logging, security helpers
 │   │   ├── models/           # SQLAlchemy ORM models
-│   │   ├── schemas/          # Pydantic API contracts
+│   │   ├── schemas/          # Pydantic contracts (common, red_flags, claims,
+│   │   │                     #   entities, extraction)
+│   │   ├── prompts/          # versioned LLM prompts
 │   │   ├── services/         # external + domain services
 │   │   ├── agents/           # 5 logical AI components
 │   │   ├── graph/            # LangGraph state + nodes + builder
@@ -75,12 +77,50 @@ Single-responsibility services, each independently constructible and testable:
 | `OCRService` | Image → text (pytesseract) | `OCR_UNAVAILABLE` |
 | `PDFService` | PDF → text (PyMuPDF) | `PDF_EXTRACTION_FAILED` |
 | `RedFlagEngine` | Deterministic red-flag detection | none (pure) |
-| `ClaimExtractor` | Deterministic atomic-claim splitting (Phase 2) | none (pure) |
-| `EntityExtractor` | Deterministic entity/identifier extraction (Phase 2) | none (pure) |
+| `normalize_text` | Reversible normalisation + offset map | none (pure) |
+| `ClaimExtractor` | Deterministic atomic-claim splitting | none (pure) |
+| `EntityExtractor` | Deterministic entity/identifier extraction | none (pure) |
+| `ExtractionService` | One structured LLM call + deterministic merge | `ExtractionMode.FALLBACK` |
 | `RiskEngine` | Weighted risk accumulation | none (pure) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
-### 2.3 Red-flag engine (Phase 1, complete)
+Bold names are implemented; the rest arrive in Phase 3+.
+
+### 2.3 Extraction pipeline (Phase 2, complete)
+
+```
+ExtractionService.extract(raw_text) -> ExtractionResult
+    │
+    ├─ normalize_text(raw)                -> NormalizedText (original + index_map)
+    ├─ extract_claims(normalized)         -> [RawClaim]        (deterministic)
+    ├─ extract_entities(normalized)       -> [RawEntity]       (deterministic)
+    ├─ LLMService.structured_generate()   -> one request, claims + entities together
+    │     └─ align every item to normalised offsets, then to original offsets
+    ├─ merge: deterministic + LLM, de-duplicated, hallucinated items dropped
+    ├─ link: claim ↔ entity (MENTIONS / SUBJECT)
+    └─ ExtractionResult(mode, claims, entities, relationships, warnings)
+```
+
+Contracts:
+
+- **One structured call per input.** Claims and entities are requested together.
+  A per-sentence loop would multiply latency and cost and make partial failure
+  likely.
+- **Deterministic first, always.** Both pure extractors run unconditionally. They
+  are the guaranteed-available half; the LLM is the enhancement.
+- **Spans index the original text.** Normalisation is reversible, and every
+  final span is re-sliced from `result.source_text` via `make_span()`, which
+  raises if the slice and the recorded text disagree. `span_slice_matches()` is
+  asserted across the whole result in the tests.
+- **No hallucination.** Model output is never trusted as text. Each item must be
+  located in the input; anything that cannot be is dropped with a warning naming
+  the fact.
+- **Honest mode.** `LLM` = model contributed fully; `PARTIAL` = some model output
+  discarded or nothing survived; `FALLBACK` = model unavailable or failed.
+- **No verification.** `ExtractionResult` deliberately has no verdict field
+  (D-006, D-014). Verification is Stage 5/6.
+
+### 2.4 Red-flag engine (Phase 1, complete)
 
 All scam-pattern knowledge lives in **one** module: `app/services/red_flag_rules.py`.
 No other file may contain an investment-scam regex.

@@ -263,12 +263,25 @@ Full result of one investigation.
 ### Enumerations
 
 `status`: `PENDING` | `PROCESSING` | `COMPLETED` | `FAILED`
-`claim_type`: `REGULATORY` | `RETURN` | `PAYMENT` | `ENTITY_IDENTITY` | `URGENCY` | `PLATFORM` | `COST` | `PERFORMANCE` | `OTHER`
-`entity_type`: `PERSON` | `COMPANY` | `BROKER` | `INVESTMENT_ADVISER` | `PLATFORM` | `WEBSITE` | `DOMAIN` | `REGISTRATION_NUMBER` | `REGULATOR` | `SOCIAL_HANDLE` | `PAYMENT_IDENTIFIER`
+`claim_type` (14): `GUARANTEE_CLAIM` | `RETURN_PROMISE` | `PROFIT_PROMISE` |
+`PERFORMANCE_CLAIM` | `CREDENTIAL_CLAIM` | `REGULATORY_STATUS` | `COMPANY_CLAIM` |
+`PRODUCT_CLAIM` | `OWNERSHIP_CLAIM` | `AFFILIATION_CLAIM` | `WITHDRAWAL_CLAIM` |
+`PAYMENT_INSTRUCTION` | `INVESTMENT_OPPORTUNITY` | `OTHER`
+`entity_type` (18): `PERSON` | `COMPANY` | `ORGANIZATION` | `REGULATOR` |
+`BROKER` | `INVESTMENT_ADVISER` | `PLATFORM` | `WEBSITE` | `DOMAIN` |
+`PRODUCT` | `FINANCIAL_INSTRUMENT` | `LOCATION` | `SOCIAL_HANDLE` |
+`REGISTRATION_NUMBER` | `BANK_ACCOUNT` | `UPI_ID` | `PHONE_NUMBER` | `EMAIL` |
+`OTHER`
+`extraction_mode`: `LLM` | `FALLBACK` | `PARTIAL`
+`claim_entity_relationship`: `MENTIONS` | `SUBJECT`
 `risk_level`: `LOW` | `MEDIUM` | `HIGH` | `CRITICAL`
 `verification status`: `VERIFIED` | `UNVERIFIED` | `CONTRADICTED` | `INSUFFICIENT_EVIDENCE` | `NOT_APPLICABLE`
 `relationship`: `SUPPORTS` | `CONTRADICTS` | `CONTEXT`
 `source_type` / `credibility`: `OFFICIAL` | `TRUSTED` | `GENERAL_WEB` | `USER_PROVIDED`
+
+Note that `claim.confidence` is **extraction** confidence — how sure the
+extractor is that the text makes this kind of claim. It is not a probability
+that the claim is true, and it is never a fraud score.
 
 ---
 
@@ -321,3 +334,57 @@ Paginated history.
 | `POST /api/investigations/upload` | 8 / 13 / 14 | Planned |
 | `GET /api/investigations` | 8 / 9 | Planned |
 | `GET /api/investigations/{id}` | 8 | Planned |
+
+### Extraction payload (built in Phase 2, not yet exposed over HTTP)
+
+`ExtractionService.extract(raw_text)` produces this object. It becomes part of
+the `POST /api/investigations/text` response in Phase 8; until then it is a
+library contract only.
+
+```json
+{
+  "claims": [
+    {
+      "id": "claim_003",
+      "text": "Our SEBI-approved expert team guarantees 35% monthly returns",
+      "claim_type": "GUARANTEE_CLAIM",
+      "confidence": 0.85,
+      "evidence_span": { "start": 42, "end": 96, "text": "Our SEBI-approved expert team guarantees 35% monthly returns" },
+      "entity_ids": ["entity_001"],
+      "is_complete_sentence": true,
+      "signals": ["GUARANTEE_CLAIM", "RETURN_PROMISE", "REGULATORY_STATUS"],
+      "metadata": { "percentages": "35%", "periods": "monthly" }
+    }
+  ],
+  "entities": [
+    {
+      "id": "entity_001",
+      "name": "SEBI",
+      "entity_type": "REGULATOR",
+      "normalized_name": "securities and exchange board of india",
+      "confidence": 0.9,
+      "evidence_span": { "start": 45, "end": 49, "text": "SEBI" },
+      "metadata": {}
+    }
+  ],
+  "relationships": [
+    { "claim_id": "claim_002", "entity_id": "entity_001", "relationship": "SUBJECT" }
+  ],
+  "extraction_mode": "FALLBACK",
+  "prompt_version": "extraction-v1",
+  "model": null,
+  "source_text": "<the untouched submitted text>",
+  "normalized_text": "<what extraction actually scanned>",
+  "processing_warnings": [
+    "LLM extraction is unavailable; deterministic extraction was used. Claim and entity coverage is limited to pattern-based extraction."
+  ]
+}
+```
+
+Guarantees a client may rely on:
+
+- `evidence_span.start/end` are offsets into `source_text`, and
+  `source_text[start:end] == text` holds for every claim and entity. `model` is
+  `null` whenever `extraction_mode` is `FALLBACK`.
+- There is **no** verification verdict anywhere in this payload. `confidence` is
+  extraction confidence only.

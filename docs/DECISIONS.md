@@ -170,3 +170,68 @@ spinning up orchestration.
 config change.
 
 **Date:** 2026-10-01
+
+---
+
+## D-013 — One structured extraction call per input
+
+**Decision:** Claims and entities are extracted together in a single
+`LLMService.structured_generate()` call. The deterministic extractors always run
+as well, and their output is merged with the model's.
+
+**Reason:** A per-sentence or per-entity call loop multiplies latency and cost and
+makes partial failure likely. Keeping a deterministic half guarantees the stage
+works with no API key, which is what lets extraction degrade instead of fail
+(D-009). Merging is also *safer* than trusting one source: the deterministic
+spans are exactly known.
+
+**Date:** 2026-10-01
+
+---
+
+## D-014 — Evidence spans index the original input
+
+**Decision:** Normalisation (`normalize_text`) is reversible: it carries an
+index map, and every final claim/entity span is re-sliced from the original text
+via `make_span()`, which raises if the recorded text and the slice disagree.
+Normalisation therefore never destroys offsets — newlines are preserved and
+whitespace collapsing is mapped back exactly.
+
+**Reason:** Normalising `"Join   our   group"` into `"Join our group"` shifts
+every offset after it. A span computed against the normalised string would point
+at the wrong characters in the original — a silent, invisible corruption of the
+product's core promise, since highlighting the evidence is the whole point.
+Reversibility makes the optimisation safe instead of lossy.
+
+**Date:** 2026-10-01
+
+---
+
+## D-015 — Generated text is never trusted as text
+
+**Decision:** Every claim and entity returned by the model must be located in the
+submitted input before it is accepted. Anything that cannot be matched verbatim
+is discarded and recorded in `processing_warnings`, and the reported
+`extraction_mode` becomes `PARTIAL`.
+
+**Reason:** A model asked to extract will happily paraphrase or invent. If we
+echo its output, the report would quote content the user never wrote — the exact
+failure mode the product brief forbids. Re-locating the text converts a
+generation problem into a lookup problem, which can be verified.
+
+**Date:** 2026-10-01
+
+---
+
+## D-016 — Extraction emits no verdict
+
+**Decision:** `ExtractionResult` has no field for `VERIFIED`, `CONTRADICTED`,
+`SCAM` or any fraud probability. `Claim.confidence` is documented and tested as
+*extraction* confidence only.
+
+**Reason:** Extends D-006 from verification to extraction. Once a claim is typed
+as `GUARANTEE_CLAIM` with high confidence, the temptation to read that as "high
+risk" is strong; separating the two vocabularies in the schema makes the mistake
+impossible to express. Verification and risk belong to Stages 5, 6 and 9.
+
+**Date:** 2026-10-01

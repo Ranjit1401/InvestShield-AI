@@ -7,34 +7,43 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 1 — Red Flag Engine — **COMPLETE**
-**Current Subphase:** Phase 2 — Claim & Entity Extraction — **NOT STARTED**
-**Last Completed Task:** Phase 1 verification — 148 tests passing (43 Phase 0 +
-105 Phase 1); all 15 rules fire on their positive samples; every per-rule
-negative sample stays clean; backend still imports and boots.
-**Currently Working On:** Idle. Awaiting instruction to begin Phase 2.
-**Phase Started:** — (Phase 2 not yet started)
+**Current Phase:** Phase 2 — Claim & Entity Extraction — **COMPLETE**
+**Current Subphase:** Phase 3 — External Services — **NOT STARTED**
+**Last Completed Task:** Phase 2 — multilingual claim/entity extraction with
+original-text evidence spans, deterministic fallback, and one structured LLM call
+per input. 220 tests passing (43 Phase 0 + 105 Phase 1 + 72 Phase 2).
+**Currently Working On:** Idle. Awaiting instruction to begin Phase 3.
+**Phase Started:** Phase 2 completed and committed as
+`feat: implement claim and entity extraction`.
 
 ### Files Recently Changed
 
 ```
-backend/app/schemas/red_flags.py              (new — typed result schemas)
-backend/app/services/red_flag_rules.py        (new — 15-rule catalogue)
-backend/app/services/red_flag_engine.py       (new — detection engine)
-backend/app/core/config.py                    (15 per-rule weights + 6 thresholds)
-backend/tests/test_red_flag_rules.py          (new — catalogue invariants)
-backend/tests/test_red_flag_engine.py         (new — detection behaviour)
-backend/requirements.txt                      (corrected pytest pins to 9.1.1)
-.env.example                                  (new threshold settings)
-docs/CURRENT_STATE.md / DEVELOPMENT_LOG.md / IMPLEMENTATION_PLAN.md
-docs/ARCHITECTURE.md / AI_PIPELINE.md
+backend/app/schemas/common.py                  (new — shared EvidenceSpan)
+backend/app/schemas/red_flags.py               (now imports the shared span)
+backend/app/schemas/claims.py                  (new — 14 ClaimTypes + Claim)
+backend/app/schemas/entities.py                (new — 18 EntityTypes + Entity)
+backend/app/schemas/extraction.py              (new — mode, links, result)
+backend/app/services/text_normalization.py     (new — reversible offset map)
+backend/app/services/llm_service.py            (new — Groq + null providers)
+backend/app/prompts/extraction.py              (new — extraction-v1 prompt)
+backend/app/prompts/__init__.py                (new — prompt exports)
+backend/app/services/claim_extractor.py        (new — deterministic claims)
+backend/app/services/entity_extractor.py       (new — deterministic entities)
+backend/app/services/extraction_service.py     (new — merge, align, link)
+backend/app/services/red_flag_rules.py         (shared SENTENCE_BOUNDARY)
+backend/tests/test_extraction_schemas.py       (new — 27 tests)
+backend/tests/test_text_normalization.py       (new — 15 tests)
+backend/tests/test_extraction_service.py       (new — 30 tests)
+docs/IMPLEMENTATION_PLAN.md / CURRENT_STATE.md / DEVELOPMENT_LOG.md
+docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
 ```
 
 ### Tests Passing
 
 ```
 cd backend && python -m pytest
-148 passed
+220 passed
 ```
 
 ### Tests Failing
@@ -43,52 +52,57 @@ None.
 
 ### Known Bugs
 
-None open. Six defects were found and fixed during Phase 1 verification (all
-recorded in `DEVELOPMENT_LOG.md`). The two most significant were real engine
-bugs, not test bugs:
+None open. Phase 2 verification found and fixed four real defects (all recorded
+in `DEVELOPMENT_LOG.md`), none of them test-only:
 
-1. **Ungrouped alternation corruption.** `_CREDENTIAL_STATUS` and `_REGULATORS`
-   were interpolated as bare `a|b|c` strings. Concatenating them into a larger
-   pattern split that pattern at the top level, so e.g. "SEBI requires
-   investment advisers to be registered" matched a rule it should never match.
-   Both vocabularies are now pre-grouped and `test_red_flag_rules.py` guards it.
-2. **Negation window was one-sided.** Only cues *before* a match suppressed it,
-   so "Returns cannot be guaranteed in any market" was flagged. Negation is now
-   checked both before and inside the match.
+1. **Whitespace leaked into evidence spans.** The normalised→original map gave an
+   emitted space the offset of the *following* character, so every span ending
+   before a space included that space (`'Telegram '`). Spaces now map to the last
+   whitespace character of their run.
+2. **NFC never actually composed.** Normalisation applied `unicodedata.normalize`
+   to one character at a time, and a combining mark cannot compose in isolation —
+   `"cafe" + U+0301` survived unchanged. Units (base + combining marks) are now
+   composed as a group.
+3. **`LLMService(settings=None)` crashed.** The factory signature allows `None`,
+   but `__post_init__` dereferenced it before falling back to `get_settings()`.
+4. **Identifiers collapsed when normalised.** Stripping punctuation turned
+   `acmefunds@okhdfcbank` into `acmefunds okhdfcbank`, merging distinct payment
+   ids. `@`, `.` and `-` are now preserved, with edge punctuation trimmed.
 
 ### Blocked Items
 
 None.
 
-### Phase 1 Design Decisions
+### Phase 2 Design Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| Rules live in one module (`red_flag_rules.py`) | The brief forbids scattering scam regexes; all pattern knowledge is now in one catalogue. |
-| Six detector *types* rather than 100 raw regexes | Numeric rules ("30% monthly") need threshold comparison and historical-figure exclusion, which a bare regex cannot express correctly. |
-| Negation handling | "Past performance does not guarantee returns" is a disclaimer, not a promise. Suppressing it is a false-positive fix, not a loophole. |
-| Sentence = `[.!?…]` or **blank line** | Marketing posts are line-broken; treating a single `\n` as a sentence boundary would break evidence spans. |
-| ContextKeywordDetector for Telegram/WhatsApp/URL | A bare "Telegram" is not an indicator. Investment context must appear in the same sentence. |
-| `weight` configurable, `severity` fixed per rule | Weight tunes risk contribution; severity is the intrinsic seriousness of the indicator type. |
-| `verification_note` on credential rules | Forces the wording "requires verification" rather than "is fake" (D-006). |
+| One structured LLM call per input | Claims and entities are extracted together in a single request; a per-sentence call loop multiplies cost and latency and makes partial failure likely. |
+| Deterministic extractors always run | The guaranteed-available half. When Groq is missing or errors, extraction degrades instead of failing, and the report says so. |
+| Model output is re-located in the input | Any claim or entity the service cannot find verbatim is dropped with a warning. This is the anti-hallucination gate, and it holds even when Groq is available. |
+| `PARTIAL` when some model output is discarded | A mix of LLM and deterministic content must not be reported as a clean `LLM` result. |
+| Normalisation preserves newlines | Collapsing them would destroy paragraph structure and merge unrelated lines into one giant claim. |
+| Money amounts live on the claim, not the entity list | The entity taxonomy is for named parties, instruments and identifiers; an amount is a property of a claim. |
+| `CLAIM_VOCABULARY` derived from the signal patterns | A capitalised phrase built only from claim words ("Verified Fraud") is claim language, not a person's name. Deriving the stopword set keeps the two stages in step. |
+| `RedFlagEngine` untouched | Phase 2 only shared `SENTENCE_BOUNDARY`; no behaviour change, no regression. |
 
-### Known Limitations (Phase 1)
+### Known Limitations (Phase 2)
 
-- **English + partial Hindi patterns only.** Marathi and other scripts are not
-  covered yet; Phase 2/15 handle presentation-layer translation, and the
-  analysis layer needs more script work before this is genuinely
-  language-independent.
-- **Text only.** `FAKE_PROFIT_SCREENSHOT` reads the *language* referencing
-  proof; no image authenticity analysis (out of scope until Phase 13).
-- **`SUSPICIOUS_URL` is pattern-based.** A shortener, raw IP, punycode or
-  plain-HTTP investment link is an indicator, never a malware verdict. No
-  reputation/DNS lookup yet (that belongs to Phase 4 search).
-- **Adviser-credential false positives are accepted.** "Consult a certified
-  financial planner" will raise `UNVERIFIED_ADVISER`. This is deliberate: the
-  rule detects a credential claim needing verification, and Phase 4 resolves it.
-- **Historical-figure exclusion is heuristic.** "Our fund returned 95% in 2023"
-  is suppressed by the year/reported cues. A promotional claim that happens to
-  mention a year could be missed.
+- **Claim typing is English-led.** Devanagari cues exist (`गारंटी`, `पक्का`,
+  `मुनाफा`, `लाभ`) but coverage is thin. Marathi relies on shared Devanagari
+  vocabulary; a genuinely Marathi-specific promise may still fall through to
+  `OTHER`.
+- **Deterministic entity typing is deliberately high-precision.** A bare
+  capitalised two-word phrase becomes a `PERSON` only when it is not claim
+  vocabulary; ambiguous names are missed rather than guessed.
+- **`Claim.metadata` amounts are pattern-extracted.** `₹25,000` and `35%` are
+  recognised in their common written forms; `Rs`/`INR`/lakh/crore spellings are
+  covered, unusual formats are not.
+- **No verification, deliberately.** `ExtractionResult` has no verdict field.
+  `VERIFIED`/`CONTRADICTED` belong to Phase 4 (D-006).
+- **No API route yet.** `ExtractionService` is library-only; Phase 8 exposes it.
+- **LLM path is unit-tested against a fake provider.** No live Groq call runs in
+  the suite, so prompt wording is validated structurally, not empirically.
 
 ### Environment Reality Check (verified live)
 
@@ -124,38 +138,35 @@ the next phase:
 | D-009 | Every external service degrades into a typed error code surfaced in report Limitations |
 | D-010 | Pydantic API schemas are separate from SQLAlchemy models |
 | D-011 | LangGraph nodes are thin coordinators; logic lives in testable services |
+| D-012 | Environment configuration via pydantic-settings only |
+| D-013 | One structured extraction call per input; deterministic extractors always run alongside it |
+| D-014 | Evidence spans index the **original** input; normalisation is reversible for offsets |
+| D-015 | Model-supplied text must be re-located in the input or dropped — extraction never trusts generated text |
+| D-016 | `ExtractionResult` has no verification field; that is Phase 4's job |
 
 ---
 
 ## Next Exact Task
 
-**Phase 2 — Claim & Entity Extraction.**
+**Phase 3 — External Services.**
 
-1. Create `backend/app/schemas/claims.py` and `backend/app/schemas/entities.py`:
-   `ClaimType` (`REGULATORY`, `RETURN`, `PAYMENT`, `ENTITY_IDENTITY`, `URGENCY`,
-   `PLATFORM`, `COST`, `PERFORMANCE`, `OTHER`), `EntityType` (11 members), and
-   the `Claim` / `Entity` models (`claim_id`, `claim_text`, `claim_type`,
-   `entities`, `confidence`, `verification_required` / `entity_id`, `name`,
-   `entity_type`, `registration_number`, `mentions`, `confidence`).
-2. Create `backend/app/services/claim_extractor.py` with a **deterministic**
-   sentence/claim splitter as the baseline. It must split the demo input into
-   ~6 atomic claims, never the whole message as one claim.
-3. Create `backend/app/services/entity_extractor.py` with deterministic
-   extraction for: URLs, domains, registration numbers, UPI/IFSC identifiers,
-   currency amounts, percentages, phone numbers, and capitalised person/company
-   names.
-4. Only then add the LLM path: `LLMService.structured_generate()` with Groq and a
-   `NullProvider` fallback to the deterministic extractors.
-5. Write `backend/tests/test_claims.py`, `test_entities.py` and
-   `test_extractors.py`. Required cases: the demo input splits into multiple
-   atomic claims; `"High returns are possible"` produces no fabricated
-   guarantee claim; entities typed correctly; no-key mode still extracts.
+1. `LLMService` and the Phase 2 `GroqProvider` are already in place. Add
+   `SearchService` (SerpAPI + `NullProvider`), normalising results into a typed
+   `SearchResult` with source tiering (D-005).
+2. Add `EmbeddingService` (sentence-transformers, optional at runtime — it is not
+   installed and must not become a hard dependency) and `VectorStore` with NumPy
+   cosine similarity as the default (D-003).
+3. Add `OCRService` (pytesseract; resolve the Tesseract binary via the existing
+   `resolve_tesseract_cmd()` Windows fallback) and `PDFService` (PyMuPDF).
+   Neither library is installed yet — add them to `requirements.txt`.
+4. Every service must degrade into a typed error code and never crash an
+   investigation (D-009). Tests must cover the unavailable path for each.
+5. Tests must mock every external boundary; no live network calls.
 6. Run `python -m pytest`, fix failures, update all docs, commit.
 
-### Do not start before Phase 2 is green
+### Do not start before Phase 3 is green
 
-- Phase 3 (external services) beyond the minimum `LLMService` needed here.
-- No LangGraph, no frontend, no auth, no DB persistence.
+- No LangGraph, no verification agent, no frontend, no auth, no DB persistence.
 
 ---
 
@@ -168,6 +179,6 @@ If you are reading this in a fresh session:
 3. [ ] Read `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
 4. [ ] Read the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -10`
-6. [ ] Run `cd backend && python -m pytest` — expect **148 passed**
+6. [ ] Run `cd backend && python -m pytest` — expect **220 passed**
 7. [ ] Confirm the test count still matches "Tests Passing" above
 8. [ ] Execute **Next Exact Task**

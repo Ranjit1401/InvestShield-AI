@@ -251,3 +251,121 @@ deterministic claim splitter and entity extractor (URLs, domains, registration
 numbers, UPI/IFSC, amounts, percentages, phone numbers, capitalised names), and
 only then the `LLMService.structured_generate()` Groq path with a deterministic
 fallback.
+
+---
+
+## Phase 2 — Claim & Entity Extraction (2026-10-01)
+
+**Commit:** `feat: implement claim and entity extraction`
+**Status:** complete — 220 tests passing (43 Phase 0 + 105 Phase 1 + 72 Phase 2)
+
+### What was built
+
+Pipeline:
+
+```
+Raw Text
+  → Input Normalisation      (reversible offset map)
+  → Claim Extraction         (one structured LLM call + deterministic)
+  → Entity Extraction        (merged with deterministic identifiers)
+  → Claim ↔ Entity Linking
+  → ExtractionResult
+```
+
+New modules:
+
+| Module | Role |
+| --- | --- |
+| `app/schemas/common.py` | `EvidenceSpan` + `make_span()` + `span_slice_matches()`, promoted out of `red_flags.py` so both phases cite evidence identically |
+| `app/schemas/claims.py` | 14 `ClaimType` members, `VERIFIABLE_CLAIM_TYPES`, `PROMISE_CLAIM_TYPES`, frozen `Claim` |
+| `app/schemas/entities.py` | 18 `EntityType` members, `IDENTITY_ENTITY_TYPES`, `PAYMENT_ENTITY_TYPES`, `REGULATOR_EXPANSIONS`, `normalize_entity_name()`, frozen `Entity` |
+| `app/schemas/extraction.py` | `ExtractionMode`, `RelationshipType`, `ClaimEntityLink`, frozen `ExtractionResult` |
+| `app/services/text_normalization.py` | `NormalizedText` with reversible offsets |
+| `app/services/llm_service.py` | `LLMService` gateway, `LLMProvider`, `GroqProvider`, `NullProvider`, typed error codes |
+| `app/prompts/extraction.py` | `EXTRACTION_PROMPT_VERSION = "extraction-v1"`, multilingual + no-hallucination instructions |
+| `app/services/claim_extractor.py` | Deterministic sentence/clause segmentation + typed signals |
+| `app/services/entity_extractor.py` | Deterministic URLs, emails, UPI, IFSC, phones, registration ids, handles, regulators, platforms, instruments, companies, persons |
+| `app/services/extraction_service.py` | The merge/align/link orchestration |
+
+`red_flag_rules.py` exports `SENTENCE_BOUNDARY` (keeping `_SENTENCE_SPLIT` as a
+compatibility alias) so both stages segment text identically.
+`RedFlagEngine.detect()` behaviour is **unchanged**.
+
+Decisions D-013 … D-016 record the load-bearing choices.
+
+### Verification
+
+- The synthetic demo input yields exactly 6 atomic claims and 2 entities, with
+  all spans slicing their own text out of the original input.
+- Every span in every result is asserted against the original string
+  (`span_slice_matches`) across English, Hindi, Marathi and Hinglish inputs, and
+  across inputs with tabs, multi-spaces, blank lines and zero-width characters.
+- `RecordingProvider` proves **exactly one** structured request per input, and
+  that the request carries a JSON schema.
+- Hallucinated claims and entities are dropped with a warning; a payload where
+  only some items survive reports `PARTIAL`.
+- Groq is never contacted by the suite. `NullProvider`, `GroqProvider` failure,
+  malformed JSON and schema violation all degrade to `FALLBACK` with claims still
+  extracted.
+
+### Problems encountered
+
+Four defects were found while testing. All four were real implementation bugs,
+not test bugs:
+
+1. **Whitespace leaked into evidence spans (high impact).** The
+   normalised→original map assigned an emitted space the offset of the
+   *following* character, so every span ending before a space included that
+   space — `'Telegram '`, `'Our SEBI-approved expert team '`. Offsets were valid
+   and consistent, so nothing crashed; the spans were simply wrong, which is the
+   failure the whole offset map exists to prevent. An emitted space now maps to
+   the last whitespace character of its run.
+2. **NFC never actually composed.** `normalize_text` called
+   `unicodedata.normalize("NFC", char)` per character, but a combining mark
+   cannot compose in isolation — `"cafe" + U+0301` passed through unchanged
+   despite the docstring promising NFC. Fixed by composing base-plus-combining
+   units (`_iter_grapheme_units`), which is the scope over which composition is
+   meaningful.
+3. **`LLMService(settings=None)` crashed.** The dataclass signature allows
+   `settings=None` and `build_extraction_service()` passes it through, but
+   `__post_init__` dereferenced it before falling back to `get_settings()`.
+4. **Identifiers collapsed when normalised.** `normalize_entity_name` stripped
+   all punctuation, turning `acmefunds@okhdfcbank` into
+   `acmefunds okhdfcbank` — merging distinct payment identifiers, which defeats
+   de-duplication. `@`, `.` and `-` are now preserved, with edge punctuation
+   trimmed instead.
+
+Two further quality problems were fixed on evidence rather than left as accepted
+limitations:
+
+5. **"Verified Fraud" extracted as a `PERSON`.** Capitalised-word heuristics
+   cannot distinguish a name from a capitalised accusation. Fixed with
+   `CLAIM_VOCABULARY`, derived from the claim signal patterns, plus explicit
+   stopwords for accusation vocabulary.
+6. **`PARTIAL` was unreachable in practice.** Mode resolution only returned
+   `PARTIAL` when the model produced nothing usable, so a payload where *some*
+   items were hallucinated and dropped was reported as a clean `LLM` result.
+   Discarded model output now downgrades the mode.
+
+Test-only corrections: several assertions encoded wrong expectations (wrong
+slice arithmetic, a `key` shape, punctuation-preservation behaviour, a weak
+Marathi sample with no claim signal). The one weak Marathi sample was replaced
+with a promise-bearing sentence; the rest were aligned to actual behaviour
+after confirming that behaviour was correct.
+
+### Remaining issues
+
+None blocking. Documented limitations (English-led claim typing with thin
+Devanagari coverage, deliberately high-precision deterministic entity typing,
+pattern-based amount extraction, library-only service with no API route yet, LLM
+path validated structurally rather than against live Groq) are recorded in
+`CURRENT_STATE.md`.
+
+No lint or type-check tooling is configured in this project (`pytest.ini` only),
+so `python -m pytest` is the sole gate.
+
+### Next step
+
+Phase 3 — External Services: `SearchService` (SerpAPI + `NullProvider`),
+`EmbeddingService`, `VectorStore`, `OCRService`, `PDFService`, each degrading
+into a typed error code.

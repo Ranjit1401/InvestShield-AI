@@ -38,7 +38,14 @@ from app.schemas.red_flags import RedFlagCode, Severity
 #: Boundaries of a "sentence" for evidence/exclusion purposes. Single line
 #: breaks are treated as soft (marketing posts are line-broken), while blank
 #: lines and sentence terminators separate one thought from the next.
-_SENTENCE_SPLIT = re.compile(r"[.!?।]|\.\.\.|\n\s*\n")
+#:
+#: Public because Phase 2's claim extractor segments text with the identical
+#: definition; keeping one definition prevents the two stages from disagreeing
+#: about where a sentence ends.
+SENTENCE_BOUNDARY = re.compile(r"[.!?।]|\.\.\.|\n\s*\n")
+
+#: Backwards-compatible private alias.
+_SENTENCE_SPLIT = SENTENCE_BOUNDARY
 
 #: Cue words that turn a phrase into a disclaimer rather than a promise.
 #: Only checked in a short window immediately before a match.
@@ -1458,6 +1465,7 @@ __all__ = [
     "ALL_RULES",
     "NEGATION_WINDOW",
     "RULES_BY_CODE",
+    "SENTENCE_BOUNDARY",
     "ContextKeywordDetector",
     "CurrencyGrowthDetector",
     "Detector",

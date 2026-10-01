@@ -34,7 +34,8 @@ tests fail, unless the failure is documented as an accepted blocker in
 
 ## Phase 1 — Red Flag Engine `[x]`
 
-- [x] `app/schemas/red_flags.py` — `Severity`, `RedFlagCode`, `EvidenceSpan`, `RedFlag`
+- [x] `app/schemas/red_flags.py` — `Severity`, `RedFlagCode`, `EvidenceSpan` (now
+      re-exported from `app/schemas/common.py`), `RedFlag`
 - [x] `app/services/red_flag_rules.py` — centralised rule catalogue with all 15 rules
 - [x] Detector types: `RegexDetector`, `PercentThresholdDetector`,
       `MultiplierDetector`, `CurrencyGrowthDetector`, `ShortPeriodProfitDetector`,
@@ -47,15 +48,48 @@ tests fail, unless the failure is documented as an accepted blocker in
 - [x] 105 new tests: per-rule positives, per-rule negatives, edge cases, spans,
       dedupe, sorting, configurability, determinism
 
-## Phase 2 — Claim / Entity Extraction `[ ]`
+## Phase 2 — Claim / Entity Extraction `[x]`
 
-- [ ] Pydantic schemas: `Claim`, `Entity`, `RedFlag`, `Source`, `Evidence`, `VerificationResult`, `Report`
-- [ ] `LLMService.structured_generate()` with Groq provider
-- [ ] Deterministic regex fallback extractor
-- [ ] Claim typing (`REGULATORY`, `RETURN`, `PAYMENT`, `ENTITY_IDENTITY`, `URGENCY`, `PLATFORM`, `COST`, `OTHER`)
-- [ ] Entity typing (`PERSON`, `COMPANY`, `BROKER`, `INVESTMENT_ADVISER`, `PLATFORM`, `WEBSITE`, `DOMAIN`, `REGISTRATION_NUMBER`, `REGULATOR`, `SOCIAL_HANDLE`, `PAYMENT_IDENTIFIER`)
-- [ ] Registration-number / URL / amount extraction
-- [ ] Tests
+- [x] `app/schemas/common.py` — shared `EvidenceSpan` + `make_span()` /
+      `span_slice_matches()`, promoted out of `red_flags.py` so Phase 1 and
+      Phase 2 cite evidence the same way
+- [x] `app/schemas/claims.py` — `ClaimType` (14 members),
+      `VERIFIABLE_CLAIM_TYPES`, `PROMISE_CLAIM_TYPES`, frozen `Claim`
+- [x] `app/schemas/entities.py` — `EntityType` (18 members),
+      `IDENTITY_ENTITY_TYPES`, `PAYMENT_ENTITY_TYPES`, `REGULATOR_EXPANSIONS`,
+      `normalize_entity_name()`, frozen `Entity`
+- [x] `app/schemas/extraction.py` — `ExtractionMode`, `RelationshipType`,
+      `ClaimEntityLink`, frozen `ExtractionResult` (validates that every
+      relationship id resolves; has **no** verification-verdict field)
+- [x] `app/services/text_normalization.py` — `NormalizedText` with a reversible
+      original↔normalised offset map; NFC, control/zero-width removal, horizontal
+      whitespace collapsing, newlines preserved
+- [x] `app/services/llm_service.py` — `LLMService` gateway, `LLMProvider`
+      protocol, `GroqProvider` (constrained JSON-schema output),
+      `NullProvider`, typed error codes, secrets never logged
+- [x] `app/prompts/extraction.py` — `EXTRACTION_PROMPT_VERSION = "extraction-v1"`,
+      multilingual + no-hallucination instructions, input truncation notice
+- [x] `app/services/claim_extractor.py` — deterministic sentence/clause
+      segmentation and typed claim signals; the demo input yields 6 atomic claims
+- [x] `app/services/entity_extractor.py` — deterministic URLs/domains, emails,
+      UPI, IFSC, phones, registration numbers, social handles, regulators,
+      platforms, instruments, companies and persons
+- [x] `app/services/extraction_service.py` — **one** structured LLM call per input,
+      merged with deterministic extraction, hallucination filter, span alignment
+      to the original text, claim ↔ entity linking, explicit mode + warnings
+- [x] Claim typing: `GUARANTEE_CLAIM`, `RETURN_PROMISE`, `PROFIT_PROMISE`,
+      `PERFORMANCE_CLAIM`, `CREDENTIAL_CLAIM`, `REGULATORY_STATUS`,
+      `COMPANY_CLAIM`, `PRODUCT_CLAIM`, `OWNERSHIP_CLAIM`, `AFFILIATION_CLAIM`,
+      `WITHDRAWAL_CLAIM`, `PAYMENT_INSTRUCTION`, `INVESTMENT_OPPORTUNITY`, `OTHER`
+- [x] Entity typing: `PERSON`, `COMPANY`, `ORGANIZATION`, `REGULATOR`, `BROKER`,
+      `INVESTMENT_ADVISER`, `PLATFORM`, `WEBSITE`, `DOMAIN`, `PRODUCT`,
+      `FINANCIAL_INSTRUMENT`, `LOCATION`, `SOCIAL_HANDLE`,
+      `REGISTRATION_NUMBER`, `BANK_ACCOUNT`, `UPI_ID`, `PHONE_NUMBER`, `EMAIL`,
+      `OTHER`
+- [x] Monetary amounts and percentages recorded on the claim, not as entities
+- [x] 72 new tests: schema invariants, offset-map round-tripping, deterministic
+      fallback, hallucination rejection, partial/partial-output mode reporting,
+      multilingual (en/hi/mr/Hinglish), exact original-text spans
 
 ## Phase 3 — External Services `[ ]`
 

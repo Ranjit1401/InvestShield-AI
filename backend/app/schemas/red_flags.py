@@ -11,6 +11,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from app.schemas.common import EvidenceSpan
+
 
 class Severity(str, Enum):
     """How serious a single indicator is, independent of its weight."""
@@ -64,28 +66,6 @@ class RedFlagCode(str, Enum):
     ACCOUNT_ACTIVATION_FEE = "ACCOUNT_ACTIVATION_FEE"
     FAKE_PROFIT_SCREENSHOT = "FAKE_PROFIT_SCREENSHOT"
     IMPERSONATION = "IMPERSONATION"
-
-
-class EvidenceSpan(BaseModel):
-    """Exact location of a detection inside the submitted text.
-
-    Attributes:
-        start: Inclusive character offset into the original input string.
-        end: Exclusive character offset into the original input string.
-        text: The verbatim substring ``text[start:end]``.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    start: int = Field(ge=0)
-    end: int = Field(ge=0)
-    text: str
-
-    @model_validator(mode="after")
-    def _validate_span(self) -> EvidenceSpan:
-        if self.end <= self.start:
-            raise ValueError("evidence span end must be greater than start")
-        return self
 
 
 class RedFlag(BaseModel):

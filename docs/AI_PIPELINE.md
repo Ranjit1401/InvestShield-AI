@@ -13,11 +13,13 @@ Input Processing
   ↓
 Text Extraction
   ↓
-Claim Extraction
+Input Normalisation          ← Phase 2, complete
   ↓
-Entity Extraction
+Claim Extraction             ← Phase 2, complete
   ↓
-Red Flag Detection
+Entity Extraction            ← Phase 2, complete
+  ↓
+Red Flag Detection            ← Phase 1, complete
   ↓
 Entity Verification
   ↓
@@ -71,52 +73,108 @@ URL fetch + strip (URL, Phase 12).
 - PDF → PyMuPDF page text. Empty text layer (scanned PDF) ⇒ note to try OCR.
 - Failure never aborts the investigation; it becomes a stated limitation.
 
+### Stage 1.5 — Input Normalisation
+
+**Owner:** `app/services/text_normalization.py` — `normalize_text()`
+
+Extraction runs on normalised text; **every evidence span is reported against
+the original input**. `NormalizedText` carries the reversible index map that
+makes that exact rather than approximate.
+
+Normalisation is deliberately minimal: Unicode NFC composition, removal of
+control/zero-width characters, collapsing of *horizontal* whitespace runs, and
+end trimming. **Newlines are preserved** — collapsing them would merge unrelated
+lines into one "sentence", and with it one giant claim.
+
 ### Stage 2 — Claim Extraction
 
-**Owner:** `ClaimEntityAgent`
+**Owner:** `ExtractionService` (LLM) + `ClaimExtractor` (deterministic).
+Status: **complete (Phase 2)**.
 
 Splits content into **atomic, individually verifiable claims**. Never returns the
-whole message as one claim.
+whole message as one claim. The demo input yields six.
 
 ```json
 {
-  "claim_id": "c1",
-  "claim_text": "Our team is SEBI approved",
-  "claim_type": "REGULATORY",
-  "entities": ["Example Team"],
-  "confidence": 0.8,
-  "verification_required": true
+  "id": "claim_003",
+  "text": "Our SEBI-approved expert team guarantees 35% monthly returns",
+  "claim_type": "GUARANTEE_CLAIM",
+  "confidence": 0.85,
+  "evidence_span": { "start": 42, "end": 96, "text": "Our SEBI-approved expert team guarantees 35% monthly returns" },
+  "entity_ids": ["entity_001"],
+  "is_complete_sentence": true,
+  "signals": ["GUARANTEE_CLAIM", "RETURN_PROMISE", "REGULATORY_STATUS"],
+  "metadata": { "monetary_amounts": "", "percentages": "35%", "periods": "monthly" }
 }
 ```
 
-**Claim types:** `REGULATORY`, `RETURN`, `PAYMENT`, `ENTITY_IDENTITY`,
-`URGENCY`, `PLATFORM`, `COST`, `PERFORMANCE`, `OTHER`.
+**Claim types (14):** `GUARANTEE_CLAIM`, `RETURN_PROMISE`, `PROFIT_PROMISE`,
+`PERFORMANCE_CLAIM`, `CREDENTIAL_CLAIM`, `REGULATORY_STATUS`, `COMPANY_CLAIM`,
+`PRODUCT_CLAIM`, `OWNERSHIP_CLAIM`, `AFFILIATION_CLAIM`, `WITHDRAWAL_CLAIM`,
+`PAYMENT_INSTRUCTION`, `INVESTMENT_OPPORTUNITY`, `OTHER`.
 
-Implementation: `LLMService.structured_generate()` with a deterministic regex
-fallback so the stage works with no API key.
+Notes:
+
+- `signals` preserves every type a clause matched without emitting duplicate
+  claims. `metadata` carries values found in the claim text itself — monetary
+  amounts, percentages, periods. Amounts are **not** entities.
+- `confidence` is extraction confidence (how sure the extractor is that the text
+  makes this kind of claim). It is **never** a probability that the claim is true.
+- A clause that is filler ("Hi there!") or non-assertive is not a claim.
+  `"High returns are possible"` produces no guarantee claim.
 
 ### Stage 3 — Entity Extraction
 
-**Owner:** `ClaimEntityAgent`
+**Owner:** `ExtractionService` (LLM) + `EntityExtractor` (deterministic).
+Status: **complete (Phase 2)**.
 
-**Entity types:** `PERSON`, `COMPANY`, `BROKER`, `INVESTMENT_ADVISER`,
-`PLATFORM`, `WEBSITE`, `DOMAIN`, `REGISTRATION_NUMBER`, `REGULATOR`,
-`SOCIAL_HANDLE`, `PAYMENT_IDENTIFIER`.
+**Entity types (18):** `PERSON`, `COMPANY`, `ORGANIZATION`, `REGULATOR`,
+`BROKER`, `INVESTMENT_ADVISER`, `PLATFORM`, `WEBSITE`, `DOMAIN`, `PRODUCT`,
+`FINANCIAL_INSTRUMENT`, `LOCATION`, `SOCIAL_HANDLE`, `REGISTRATION_NUMBER`,
+`BANK_ACCOUNT`, `UPI_ID`, `PHONE_NUMBER`, `EMAIL`, `OTHER`.
 
 ```json
 {
-  "entity_id": "e1",
-  "name": "Rahul Sharma",
-  "entity_type": "PERSON",
-  "registration_number": null,
-  "mentions": 2,
-  "confidence": 0.7
+  "id": "entity_001",
+  "name": "SEBI",
+  "entity_type": "REGULATOR",
+  "normalized_name": "securities and exchange board of india",
+  "confidence": 0.9,
+  "evidence_span": { "start": 45, "end": 49, "text": "SEBI" },
+  "metadata": {}
 }
 ```
 
-Deterministic extraction handles URLs, domains, registration numbers, UPI/IFSC
-patterns, and currency amounts. Capitalised-name heuristics cover the common
-case where no LLM is available.
+Deterministic extraction handles URLs, domains, emails, UPI ids, IFSC codes,
+phone numbers, registration numbers, social handles, known regulators and
+platforms, financial instruments, and capitalised name sequences with
+organisation/adviser suffixes. It is deliberately **high-precision**: a token it
+cannot locate confidently is not emitted. Known regulator acronyms expand to
+their full names; nothing else is invented, and `@`, `.` and `-` are preserved
+inside identifiers so distinct payment ids never collapse.
+
+**Claim ↔ entity linking:** an entity is linked to a claim when its span falls
+inside the claim or its name appears in the claim text. The earliest-mentioned
+identity entity of an identity-type claim is marked `SUBJECT`; all others are
+`MENTIONS`.
+
+```json
+{
+  "claim_id": "claim_002",
+  "entity_id": "entity_001",
+  "relationship": "SUBJECT"
+}
+```
+
+#### Stage 2+3 operating rules
+
+| Rule | Behaviour |
+| --- | --- |
+| One structured call per input | Claims and entities are extracted together in a single `structured_generate()` call. No per-sentence loop. |
+| Deterministic always runs | The guaranteed-available half; it runs whether or not Groq answers. |
+| Hallucination filter | Any model-supplied claim or entity not locatable verbatim in the input is dropped and recorded in `processing_warnings`. |
+| Mode is honest | `ExtractionMode.LLM` when the model contributed fully; `PARTIAL` when some model output was discarded or nothing survived; `FALLBACK` when the model was unavailable or failed. |
+| No verification | `ExtractionResult` has no verdict field. `VERIFIED`/`CONTRADICTED` belong to Stage 6 (D-006). |
 
 ### Stage 4 — Red Flag Detection
 
@@ -321,28 +379,41 @@ Input:
 > Minimum investment ₹25,000.
 > Pay directly to our account to activate your trading account.
 
-**Claims extracted**
+**Claims extracted** (deterministic mode, exactly as the implementation returns
+them)
 
-| id | claim | type | verifiable |
+| id | claim | type | confidence | verifiable |
+| --- | --- | --- | --- | --- |
+| claim_001 | 🚨 Exclusive AI Trading Opportunity 🚨 | `INVESTMENT_OPPORTUNITY` | 0.85 | no |
+| claim_002 | Our SEBI-approved expert team | `REGULATORY_STATUS` | 0.70 | yes |
+| claim_003 | Our SEBI-approved expert team guarantees 35% monthly returns | `GUARANTEE_CLAIM` | 0.85 | yes |
+| claim_004 | Join our private Telegram group today | `INVESTMENT_OPPORTUNITY` | 0.85 | no |
+| claim_005 | Minimum investment ₹25,000 | `INVESTMENT_OPPORTUNITY` | 0.85 | no |
+| claim_006 | Pay directly to our account to activate your trading account | `PAYMENT_INSTRUCTION` | 0.85 | yes |
+
+claim_002 is the fragment that precedes the guarantee verb; claim_003 is the
+whole sentence. Both are reported because the regulatory claim and the guarantee
+are verified separately later.
+
+**Entities**
+
+| id | name | type | normalized |
 | --- | --- | --- | --- |
-| c1 | The team is SEBI-approved | `REGULATORY` | yes |
-| c2 | The team provides investment advice | `ENTITY_IDENTITY` | yes |
-| c3 | Returns of 35% per month are guaranteed | `RETURN` | yes |
-| c4 | Minimum investment is ₹25,000 | `COST` | no |
-| c5 | Payment is required to activate the trading account | `PAYMENT` | yes |
-| c6 | Investment is conducted through a Telegram group | `PLATFORM` | no |
+| entity_001 | SEBI | `REGULATOR` | securities and exchange board of india |
+| entity_002 | Telegram | `PLATFORM` | telegram |
 
-**Entities:** the team (identity, unnamed), a Telegram group (platform), a
-payment account (payment identifier), SEBI (regulator, mentioned not claimed).
+**Links:** claim_002 → SEBI (`SUBJECT`), claim_003 → SEBI (`MENTIONS`),
+claim_004 → Telegram (`MENTIONS`).
 
 **Red flags detected:** `GUARANTEED_RETURN`, `UNREALISTIC_RETURN`,
 `URGENCY_PRESSURE`, `FAKE_REGULATORY_CLAIM`, `UNVERIFIED_ADVISER`,
 `TELEGRAM_INVESTMENT_GROUP`, `THIRD_PARTY_PAYMENT`,
 `ACCOUNT_ACTIVATION_FEE`.
 
-**Verification:** c1 → targeted SEBI registry search. If nothing matches,
-status `UNVERIFIED` with the reason *"No matching registration could be
-independently verified from the searched authoritative records."*
+**Verification (Phase 4, not built yet):** claim_002 → targeted SEBI registry
+search. If nothing matches, status `UNVERIFIED` with the reason *"No matching
+registration could be independently verified from the searched authoritative
+records."*
 
 **Risk:** multiple independent indicators → HIGH or CRITICAL band, with each
 contribution itemised.
@@ -353,9 +424,14 @@ contribution itemised.
 
 | Failure | Stage | Result |
 | --- | --- | --- |
-| Groq down / no key | 2, 3, 11 | `LLM_SERVICE_ERROR`, regex fallback, report still generated |
+| Groq down / no key | 2, 3, 11 | `LLM_NOT_CONFIGURED` / `LLM_TIMEOUT`; `extraction_mode = FALLBACK`, deterministic extraction used, warning recorded, report still generated |
+| Groq returns malformed JSON | 2, 3 | `LLM_INVALID_RESPONSE`; mode `FALLBACK`, deterministic extraction used |
+| Groq output fails schema validation | 2, 3 | `LLM_SCHEMA_VIOLATION`; mode `FALLBACK`, deterministic extraction used |
+| Groq invents a claim or entity | 2, 3 | Offending item dropped, warning recorded; mode `PARTIAL` if other model output survived |
+| Model returns nothing usable | 2, 3 | Mode `PARTIAL` |
 | SerpAPI down / no key | 6, 7 | `SEARCH_SERVICE_ERROR`, claims become `INSUFFICIENT_EVIDENCE`, limitation stated |
 | Tesseract missing | 1 | `OCR_UNAVAILABLE`, image investigation rejected with a clear message |
 | PDF text extraction fails | 1 | `PDF_EXTRACTION_FAILED`, empty-text investigation with limitation |
 | Invalid URL | 0 | 422 validation error, no investigation created |
+| Empty input text | 1.5–3 | Mode `FALLBACK`, empty result, warning *"Input text was empty; nothing to extract."* |
 | DB write fails | final | Investigation still returned to the user; persistence warning logged |
