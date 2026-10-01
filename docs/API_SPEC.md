@@ -449,3 +449,85 @@ Guarantees a client may rely on:
   `null` whenever `extraction_mode` is `FALLBACK`.
 - There is **no** verification verdict anywhere in this payload. `confidence` is
   extraction confidence only.
+
+---
+
+### Verification payload (built in Phase 4, not yet exposed over HTTP)
+
+`VerificationService.verify_claims(claims, entities)` produces this object. It
+becomes part of the `POST /api/investigations/text` response in Phase 8; until
+then it is a library contract only.
+
+```json
+{
+  "results": [
+    {
+      "claim_id": "claim_002",
+      "claim_type": "REGULATORY_STATUS",
+      "status": "UNVERIFIED",
+      "reason": "No matching entry for Acme Capital Advisors was found in the authoritative records searched. This is an absence of confirmation, not a finding that the claim is false.",
+      "reason_code": "ZERO_RESULTS",
+      "confidence": 0.45,
+      "source_ids": [],
+      "matched_result_ids": [],
+      "queries": [
+        "\"Acme Capital Advisors\" registration",
+        "\"Acme Capital Advisors\" registration site:sebi.gov.in"
+      ],
+      "warnings": [
+        "Absence of a matching record is not evidence that the claim is false."
+      ],
+      "is_positive": false,
+      "is_inconclusive": true
+    }
+  ],
+  "warnings": [],
+  "verified_count": 0,
+  "unverified_count": 1,
+  "contradicted_count": 0,
+  "insufficient_evidence_count": 0,
+  "not_applicable_count": 0
+}
+```
+
+Guarantees a client may rely on:
+
+- `status` is one of `VERIFIED`, `UNVERIFIED`, `CONTRADICTED`,
+  `INSUFFICIENT_EVIDENCE`, `NOT_APPLICABLE`. There is no other value, and there
+  is no verdict status (D-020).
+- `reason` is rendered from a fixed template keyed by `reason_code`. It is never
+  generated, and it never contains verdict vocabulary.
+- `confidence` is confidence **in the status assigned**, given the evidence
+  found. It is **not** a probability that the investment is fraudulent, will
+  lose money, or that the claim is true.
+- `UNVERIFIED` and `INSUFFICIENT_EVIDENCE` both mean "this could not be
+  established". Neither means "the claim is false".
+- `CONTRADICTED` occurs only when a claim-relevant authoritative record directly
+  conflicts with the claim for the identified entity. Zero results, a failed
+  search, an absent key and an identity mismatch never produce it (D-021).
+- `source_ids` is non-empty exactly for `VERIFIED` and `CONTRADICTED`, and every
+  id refers to a document that was actually retrieved.
+- `matched_result_ids` and `source_ids` are `src_` / `res_` identifiers derived
+  as `sha256(canonical_url)[:12]`. Phase 5 attaches evidence objects to them.
+- The five counts are recomputed from `results` by the schema and cannot
+  disagree with them.
+- `reason_code` is one of `AUTHORITATIVE_SOURCE_CONFIRMS`, `NO_CONFIRMATION_FOUND`,
+  `AUTHORITATIVE_SOURCE_CONTRADICTS`, `CONFLICTING_AUTHORITATIVE_SOURCES`,
+  `SEARCH_UNAVAILABLE`, `SEARCH_FAILED`, `ZERO_RESULTS`, `IDENTITY_AMBIGUOUS`,
+  `IDENTITY_NOT_FOUND`, `NO_CLAIM_RELEVANT_SOURCE`, `NO_QUERY_BUILT`,
+  `NOT_A_FACTUAL_CLAIM`.
+- A verification result says nothing about whether the offer is safe, and a
+  `VERIFIED` claim may still carry red flags and a high risk band.
+
+## Enumerations
+
+`verification status`: `VERIFIED` | `UNVERIFIED` | `CONTRADICTED` |
+`INSUFFICIENT_EVIDENCE` | `NOT_APPLICABLE`
+
+`source_tier`: `TIER_1_PRIMARY_REGULATOR` | `TIER_2_GOVERNMENT` |
+`TIER_3_EXCHANGE` | `TIER_4_OFFICIAL_ENTITY` | `TIER_5_TRUSTED_SECONDARY` |
+`TIER_6_GENERAL_WEB` | `UNKNOWN`
+
+Tiers 1–3 are authoritative enough to settle a claim they are relevant to. A
+tier describes the publisher, not the document: a `TIER_1` page that says nothing
+about a claim verifies nothing (D-006, D-021).

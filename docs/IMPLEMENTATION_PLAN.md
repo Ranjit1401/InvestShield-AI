@@ -125,15 +125,38 @@ scoring, risk scoring, LangGraph, public API, database persistence for search
 results. Phase 3 answers only *"can we retrieve and normalize external
 information?"* (D-017).
 
-## Phase 4 — Verification Agent `[ ]`
+## Phase 4 — Verification Agent `[x]`
 
-- [ ] Authoritative source registry / tiering (SEBI, NSE, BSE, MCA, govt)
-- [ ] Targeted query construction per claim type
-- [ ] Claim ↔ evidence comparison
-- [ ] Controlled statuses: `VERIFIED` / `UNVERIFIED` / `CONTRADICTED` / `INSUFFICIENT_EVIDENCE` / `NOT_APPLICABLE`
-- [ ] Hard rule: absence ⇒ `UNVERIFIED`, never `CONTRADICTED`
-- [ ] Guard test asserting no accusation language is ever produced
-- [ ] Tests
+- [x] `app/schemas/verification.py` — `VerificationStatus`, `SourceTier`,
+      `IdentityMatch`, reason codes, frozen `VerificationResult` /
+      `VerificationResponse` with self-recomputing counts
+- [x] `app/services/verification/authority_registry.py` — SEBI, RBI, IRDAI,
+      NFRA, SFIO, MCA, NSE, BSE; hostname-identity lookup and per-claim-type
+      relevance
+- [x] `app/services/verification/target.py` — `VerificationTarget`,
+      claim → entity → authority resolution
+- [x] `app/services/verification/query_builder.py` — deterministic,
+      template-driven queries, `MAX_QUERIES_PER_CLAIM = 5`
+- [x] `app/services/verification/comparator.py` — identity, authority and
+      relevance gates; support/contradiction cue detection; stable
+      `src_`/`res_` ids
+- [x] `app/services/verification/decision_engine.py` — pure decision table and
+      fixed explanation templates
+- [x] `app/services/verification/verification_service.py` — `VerificationService`,
+      `build_verification_service()`
+- [x] Controlled statuses: `VERIFIED` / `UNVERIFIED` / `CONTRADICTED` /
+      `INSUFFICIENT_EVIDENCE` / `NOT_APPLICABLE`
+- [x] Hard rule: absence ⇒ `UNVERIFIED` or `INSUFFICIENT_EVIDENCE`, never
+      `CONTRADICTED` (D-021)
+- [x] Guard test asserting no accusation language is ever produced (D-022)
+- [x] `app/scripts/manual_verification.py` — runnable offline + live smoke test
+- [x] 313 tests, fully offline; every `SearchProvider` path faked
+
+**Intentionally not built:** the Phase 5 `Evidence` model (Phase 4 preserves
+`matched_result_ids` as plain strings instead), evidence strength or ranking,
+risk scoring, entity *legitimacy* judgements (DNS/WHOIS), and any HTTP surface.
+Verification decides claim status; nothing here renders a report or a score
+(D-017, D-020).
 
 ## Phase 5 — Evidence Engine `[ ]`
 

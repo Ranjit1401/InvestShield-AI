@@ -25,11 +25,12 @@ investshield-ai/
 │   │   ├── core/             # config, logging, security helpers
 │   │   ├── models/           # SQLAlchemy ORM models
 │   │   ├── schemas/          # Pydantic contracts (common, red_flags, claims,
-│   │   │                     #   entities, extraction, search)
+│   │   │                     #   entities, extraction, search, verification)
 │   │   ├── prompts/          # versioned LLM prompts
 │   │   ├── scripts/          # runnable developer scripts (manual smoke tests)
 │   │   ├── services/         # external + domain services
-│   │   │   └── search/       # search provider abstraction + SerpAPI provider
+│   │   │   ├── search/       # search provider abstraction + SerpAPI provider
+│   │   │   └── verification/ # registry, target, queries, comparator, decisions
 │   │   ├── agents/           # 5 logical AI components
 │   │   ├── graph/            # LangGraph state + nodes + builder
 │   │   ├── tools/            # small deterministic utilities
@@ -85,6 +86,7 @@ Single-responsibility services, each independently constructible and testable:
 | `ExtractionService` | One structured LLM call + deterministic merge | `ExtractionMode.FALLBACK` |
 | `SearchService` | Query normalization, provider selection, source classification | `SearchStatus.UNAVAILABLE` / `ERROR` |
 | `SearchProvider` | Transport contract for web search | `SEARCH_*` codes |
+| `VerificationService` | Verifies claims against authoritative sources | `INSUFFICIENT_EVIDENCE` / `SEARCH_UNAVAILABLE` |
 | `RiskEngine` | Weighted risk accumulation | none (pure) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
@@ -144,6 +146,68 @@ Contracts:
 - **Deterministic URL handling.** `file:`, `javascript:` and `data:` result URLs
   are rejected at the schema boundary, so a hostile result cannot introduce an
   unusable scheme into a later fetch stage.
+
+### 2.3a Verification layer (Phase 4, complete)
+
+```
+Claim + Entity
+      ↓
+build_target()             → VerificationTarget(claim, parties, identifiers,
+                             relevant authorities, queries)     ← pure, no network
+      ↓
+build_queries()            → ≤ 5 targeted queries               ← pure
+      ↓
+VerificationService ──► SearchService.search() × N              ← the only network call
+      ↓
+decide_verification()      → VerificationResult                 ← pure
+      │   └─ assess_results() → identity / authority / relevance gates
+```
+
+```
+app/schemas/verification.py                 VerificationStatus, SourceTier,
+                                            IdentityMatch, reason codes,
+                                            VerificationResult/Response
+app/services/verification/authority_registry.py   8 official bodies, relevance
+app/services/verification/target.py              VerificationTarget, build_target()
+app/services/verification/query_builder.py       build_queries(), MAX_QUERIES_PER_CLAIM
+app/services/verification/comparator.py          assess_results(), match_identity(),
+                                                detect_stance(), src_/res_ ids
+app/services/verification/decision_engine.py     decide_verification(),
+                                                EXPLANATION_TEMPLATES
+app/services/verification/verification_service.py VerificationService
+```
+
+Contracts:
+
+- **Search goes through Phase 3 only.** `VerificationService` calls
+  `SearchService.search()`; no Phase 4 module imports an HTTP client or names a
+  provider, and a package test enforces both.
+- **Everything except the search loop is pure.** Target, queries, comparison and
+  decision are functions of their inputs, so all twelve decision rows are tested
+  without a key, a network or a provider.
+- **Three gates before any status moves.** *Identity* (token-boundary match on
+  the exact entity; a longer name is `AMBIGUOUS`, never a match), *authority*
+  (registry member, tier 1–3) and *relevance* (that authority's records can
+  speak to this claim family). All three must pass (D-021).
+- **Absence is never contradiction.** `CONTRADICTED` has exactly one route: a
+  direct conflict cue in an identity-matched, claim-relevant authoritative
+  record. Unavailable search, failed search, zero results, identity ambiguity
+  and identity absence all resolve to `UNVERIFIED` or `INSUFFICIENT_EVIDENCE`.
+- **No verdict vocabulary exists.** Five statuses; no `SCAM`, `FRAUD`, `SAFE`
+  or `DANGEROUS` member and no field that would express one (D-020).
+- **`confidence` is confidence in the status**, adjusted by the tier of the
+  source relied on. It is not a probability of fraud, loss, or truth.
+- **Explanation wording is templated.** One fixed string per reason code; no
+  generated prose, guarded by a word-boundary scan for verdict terms (D-022).
+- **Stable, derived ids.** `src_` / `res_` + `sha256(canonical_url)[:12]`, so
+  the same document keeps the same id across claims and runs. Phase 5 attaches an
+  evidence object to these rather than recomputing them.
+- **Bounded, targeted queries.** Site-restricted queries against registered hosts
+  are built first so they always survive `MAX_QUERIES_PER_CLAIM = 5`;
+  identifiers, URLs, amounts and percentages are emitted verbatim (D-019).
+- **Verification reads titles and snippets only.** No page is fetched. This is a
+  coverage limit, not a safety one: it can miss a contradiction, never invent a
+  source.
 
 ### 2.4 Extraction pipeline (Phase 2, complete)
 
@@ -228,7 +292,8 @@ Five logical components only:
 2. **`ScamIntelligenceAgent`** — wrap `RedFlagEngine` plus heuristic reasoning
    over the extracted content.
 3. **`VerificationAgent`** — search authoritative sources; assign verification
-   statuses.
+   statuses. Phase 4 ships the deterministic decision layer behind this; the
+   agent wrapper arrives with Phase 7 orchestration.
 4. **`EvidenceAgent`** — collect, rank, and link evidence to claims.
 5. **`ReportAgent`** — compose the structured investor-safety report and
    optional translation.

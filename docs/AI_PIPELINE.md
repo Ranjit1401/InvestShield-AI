@@ -472,10 +472,31 @@ claim_004 → Telegram (`MENTIONS`).
 `TELEGRAM_INVESTMENT_GROUP`, `THIRD_PARTY_PAYMENT`,
 `ACCOUNT_ACTIVATION_FEE`.
 
-**Verification (Phase 4, not built yet):** claim_002 → targeted SEBI registry
-search. If nothing matches, status `UNVERIFIED` with the reason *"No matching
-registration could be independently verified from the searched authoritative
-records."*
+**Verification (Phase 4, complete):** claim_002 is a `REGULATORY_STATUS` claim, so
+`build_target()` resolves it to SEBI as a relevant authority and builds targeted
+queries — the subject plus the register's own vocabulary, then
+`site:sebi.gov.in` variants. With no `SERPAPI_KEY` the search is never attempted
+and the status is `INSUFFICIENT_EVIDENCE` / `SEARCH_UNAVAILABLE`, stated as a
+limitation.
+
+With a key, the SEBI registry query returns nothing for that name. For a
+registration-style claim that is `UNVERIFIED` / `ZERO_RESULTS` with the reason
+*"No matching entry for the claimed party was found in the authoritative records
+searched. This is an absence of confirmation, not a finding that the claim is
+false."*
+
+Two things it will **not** say, whatever the outcome:
+
+- It will not say `CONTRADICTED` merely because nothing was found. Only a direct
+  conflict in an identity-matched SEBI record produces that status (D-021).
+- It will not say anything about the Telegram group, the 35% figure, or whether
+  the offer is safe. The guarantee is a red flag (Phase 1) and risk is Phase 6;
+  verification answers only whether a *fact* in the content is independently
+  established (D-020).
+
+The SEBI mention itself is never treated as confirmation: `SEBI` is a
+`REGULATOR` entity, but no SEBI entity can be the subject that a "SEBI registered"
+claim is about, so it is excluded from identity matching.
 
 **Risk:** multiple independent indicators → HIGH or CRITICAL band, with each
 contribution itemised.
@@ -498,7 +519,14 @@ contribution itemised.
 | Search provider returns malformed JSON | 5.5 | `SEARCH_INVALID_RESPONSE` |
 | One malformed search result | 5.5 | That entry skipped and counted in warnings; the rest of the search is kept |
 | Query has no searchable content | 5.5 | `SEARCH_INVALID_QUERY`, no request sent |
+| Claim is an instruction or opinion | 6 | `NOT_APPLICABLE` / `NOT_A_FACTUAL_CLAIM`; **no query issued, no quota spent** |
+| No query could be built for a claim | 6 | `INSUFFICIENT_EVIDENCE` / `NO_QUERY_BUILT`, confidence 0.0 |
 | SerpAPI down / no key | 6, 7 | `INSUFFICIENT_EVIDENCE`, limitation stated |
+| Searches partially complete | 6 | Status decided from what was retrieved; a warning states coverage is partial |
+| Results name a similarly named organisation | 6 | `INSUFFICIENT_EVIDENCE` / `IDENTITY_AMBIGUOUS` — never treated as a match |
+| Results come only from unlisted official hosts | 6 | `INSUFFICIENT_EVIDENCE` / `NO_CLAIM_RELEVANT_SOURCE`; the host is reported, not cited |
+| Authoritative sources disagree | 6 | `INSUFFICIENT_EVIDENCE` / `CONFLICTING_AUTHORITATIVE_SOURCES`; no side is picked |
+| A search provider raises despite its contract | 6 | Converted to `SEARCH_FAILED`; the investigation continues |
 | Tesseract missing | 1 | `OCR_UNAVAILABLE`, image investigation rejected with a clear message |
 | PDF text extraction fails | 1 | `PDF_EXTRACTION_FAILED`, empty-text investigation with limitation |
 | Invalid URL | 0 | 422 validation error, no investigation created |

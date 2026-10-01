@@ -90,6 +90,14 @@ Indexes: `ix_investigations_public_id` (unique), `ix_investigations_status`,
 
 Unique constraint: `(investigation_id, claim_id)`.
 
+`status` and `verification_reason` are written from Phase 4's
+`VerificationResult.status` and `.reason` (Phase 9). The permitted values are
+exactly `VERIFIED`, `UNVERIFIED`, `CONTRADICTED`, `INSUFFICIENT_EVIDENCE`,
+`NOT_APPLICABLE` — no verdict value is ever stored. `claims.confidence` stays
+*extraction* confidence; the verification assessment's own confidence has no
+column here, because storing a second number beside the first is how a fraud
+probability eventually appears in a report (D-020).
+
 ---
 
 ## entities

@@ -299,3 +299,83 @@ number would mean verifying a claim nobody wrote. Mechanical cleanup is auditabl
 and reproducible; "improving" a query is neither (project rule 4).
 
 **Date:** 2026-10-01
+
+---
+
+## D-020 — Verification reports a claim's factual status, never a verdict
+
+**Decision:** Verification answers exactly one question — *can external sources
+independently establish this specific factual claim?* — with one of five
+controlled statuses: `VERIFIED`, `UNVERIFIED`, `CONTRADICTED`,
+`INSUFFICIENT_EVIDENCE`, `NOT_APPLICABLE`. No `SCAM`, `FRAUD`, `SAFE` or
+`DANGEROUS` status exists and no field may be added that expresses one.
+`confidence` is confidence *in the status assigned given the evidence found* —
+never a probability of fraud, of loss, or of the claim's truth.
+
+Verification stays separate from red-flag detection (Phase 1) and from risk
+scoring (Phase 6). A claim can be perfectly `VERIFIED` — an authorised,
+registered adviser made the statement — and still carry every red flag in the
+content. Merging the two would produce a status that is confidently wrong about
+the only thing that matters.
+
+**Reason:** This is the product's central honesty constraint (D-006). A verdict
+field would be read as "the system says this is a scam", which no amount of
+downstream hedging could undo, and it would launder a heuristic into a finding.
+Keeping verification to a checkable factual question means every status can be
+traced to specific documents, and keeps risk, where the judgement belongs, in a
+phase that is explicitly allowed to make one — and required to show its working.
+
+**Date:** 2026-10-01
+
+---
+
+## D-021 — Only a direct authoritative conflict produces `CONTRADICTED`
+
+**Decision:** `CONTRADICTED` is reachable from exactly one branch of the
+decision table: an identity-matched record from a registry authority whose
+records are relevant to that claim family, containing an explicit conflict cue
+("registration cancelled", "not registered", …). Absence of evidence never
+produces it. Search unavailable, search failed, zero results, identity
+ambiguity, identity not found and "no relevant source" all resolve to
+`UNVERIFIED` or `INSUFFICIENT_EVIDENCE`, and authority *tier* alone can never
+settle a claim — a regulator page that says nothing about the claim is not
+evidence against it (D-018).
+
+Three gates must pass before any document may move a status: **identity**
+(token-boundary match on the exact claimed entity, with longer names rejected as
+ambiguous), **authority** (registry member, tier 1–3), and **relevance** (that
+authority's records can speak to *this* claim family — SEBI can establish who is
+registered, not what a scheme returns).
+
+**Reason:** "We found nothing" and "we found a contradiction" lead to opposite
+responses from a user, and only one of them is a statement about the world.
+Collapsing them is how a search tool becomes an accusation engine. The three
+gates also address the failure that matters most in identity: transferring one
+entity's record to another. `ABC Capital` must not be confirmed by a page about
+`ABC Capital Advisors`, so a prefix match is treated as ambiguous rather than as
+a match, and relevance is scoped per claim family so the most authoritative
+source on the web cannot rubber-stamp a promised return.
+
+**Date:** 2026-10-01
+
+---
+
+## D-022 — Explanation wording is rendered from fixed templates, never generated
+
+**Decision:** A verification result's human-readable `reason` is rendered from
+`EXPLANATION_TEMPLATES`, a fixed string per `reason_code`, with placeholders
+filled from a known context. No LLM writes, paraphrases or "improves" a
+reason, a warning or a status. A guard test asserts that no template, warning or
+produced result contains verdict vocabulary (`scam`, `fraud`, `safe`,
+`dangerous`, `buy`, `sell`, `invest`, `legitimate`, …), matched on word
+boundaries so ordinary words like *investigation* are unaffected.
+
+**Reason:** The wording of a status is the part a user actually reads, and it is
+where a pipeline drifts into accusation. A generated sentence can say "the
+registration could not be verified, which suggests caution" one run and "the
+registration could not be verified" the next — an accusation whose presence
+depends on sampling. Fixed templates make the phrasing auditable line by line,
+keep statuses reproducible (D-008), and mean a change in tone requires a
+reviewed code change rather than a prompt edit.
+
+**Date:** 2026-10-01

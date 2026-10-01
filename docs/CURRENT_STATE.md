@@ -7,16 +7,17 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 3 — External Services & Search Infrastructure — **COMPLETE (search scope)**
-**Current Subphase:** Phase 4 — Verification Agent — **NOT STARTED**
-**Last Completed Task:** Phase 3 — `SearchService` / `SearchProvider` /
-`SerpAPIProvider` with deterministic query normalization, hostname-identity
-source classification, canonical-URL de-duplication, bounded result limits, and
-explicit `OK` / `UNAVAILABLE` / `ERROR` states. **480 tests passing** (220
-prior + 260 Phase 3).
-**Currently Working On:** Idle. Awaiting instruction to begin Phase 4.
+**Current Phase:** Phase 4 — Verification Agent — **COMPLETE**
+**Current Subphase:** Phase 5 — Evidence Engine — **NOT STARTED**
+**Last Completed Task:** Phase 4 — `VerificationService` with a deterministic
+decision table over Phase 3 search results: authoritative source registry and
+tiering, claim-type-aware query construction, identity/authority/relevance
+comparison, the five controlled statuses, and fixed explanation templates.
+**793 tests passing** (480 prior + 313 Phase 4).
+**Currently Working On:** Idle. Awaiting instruction to begin Phase 5.
 **Latest Commit:** `feat: implement external search infrastructure`
-**Working Tree:** clean at the time of writing.
+(Phase 4 committed separately as `feat: implement claim verification`)
+**Working Tree:** Phase 4 uncommitted at the time of writing.
 
 ### Phase Status Summary
 
@@ -26,30 +27,30 @@ prior + 260 Phase 3).
 | Phase 1 | Red flag engine | **COMPLETE** |
 | Phase 2 | Claim & entity extraction | **COMPLETE** |
 | Phase 3 | External services & search infrastructure | **COMPLETE (search only; see limitations)** |
-| Phase 4 | Verification agent | **NEXT** |
+| Phase 4 | Verification agent | **COMPLETE** |
+| Phase 5 | Evidence engine | **NEXT** |
 
 ### Files Recently Changed
 
 ```
-backend/app/schemas/search.py                    (new — SearchResult/Response/SourceType)
-backend/app/services/search/__init__.py          (new — public surface)
-backend/app/services/search/base.py              (new — SearchProvider ABC, NullSearchProvider)
-backend/app/services/search/query.py             (new — deterministic query normalization)
-backend/app/services/search/domain.py            (new — extract_domain, canonicalize_url)
-backend/app/services/search/source_classifier.py (new — hostname-identity classification)
-backend/app/services/search/serpapi_provider.py  (new — SerpAPI transport)
-backend/app/services/search/search_service.py    (new — orchestration + policy)
-backend/app/scripts/manual_search.py             (new — runnable smoke test)
-backend/app/core/config.py                       (+serpapi_engine)
-backend/pytest.ini                               (+integration marker, offline default)
-backend/tests/test_search_schemas.py             (new — 29 tests)
-backend/tests/test_search_query.py               (new — 38 tests)
-backend/tests/test_search_domain.py              (new — 37 tests)
-backend/tests/test_search_source_classifier.py   (new — 48 tests)
-backend/tests/test_serpapi_provider.py           (new — 55 tests)
-backend/tests/test_search_service.py             (new — 54 tests)
-backend/tests/test_search_integration.py         (new — 4 opt-in live tests)
-.env.example                                     (search settings + credential removed)
+backend/app/schemas/verification.py                     (new — statuses, tiers, reason codes)
+backend/app/services/verification/__init__.py           (new — public surface)
+backend/app/services/verification/authority_registry.py (new — SEBI/RBI/IRDAI/NFRA/SFIO/MCA/NSE/BSE)
+backend/app/services/verification/target.py             (new — claim → target resolution)
+backend/app/services/verification/query_builder.py      (new — deterministic queries)
+backend/app/services/verification/comparator.py         (new — identity/authority/relevance gates)
+backend/app/services/verification/decision_engine.py    (new — decision table + explanations)
+backend/app/services/verification/verification_service.py (new — orchestration)
+backend/app/scripts/manual_verification.py              (new — runnable smoke test)
+backend/tests/verification_factories.py                 (new — shared builders)
+backend/tests/test_verification_schemas.py              (new)
+backend/tests/test_verification_authority_registry.py   (new)
+backend/tests/test_verification_target.py               (new)
+backend/tests/test_verification_query_builder.py        (new)
+backend/tests/test_verification_comparator.py           (new)
+backend/tests/test_verification_decision_engine.py      (new)
+backend/tests/test_verification_service.py              (new)
+backend/tests/test_verification_package.py              (new — package invariants)
 docs/IMPLEMENTATION_PLAN.md / CURRENT_STATE.md / DEVELOPMENT_LOG.md
 docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
 ```
@@ -58,10 +59,7 @@ docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
 
 ```
 cd backend && python -m pytest
-480 passed, 4 deselected
-
-# opt-in live check (skips without a key)
-python -m pytest -m integration
+793 passed, 4 deselected
 ```
 
 ### Tests Failing
@@ -70,18 +68,13 @@ None.
 
 ### Known Bugs
 
-None open. Phase 3 verification found and fixed four issues, all recorded in
+None open. Phase 4 review found and fixed one issue, recorded in
 `DEVELOPMENT_LOG.md`:
 
-1. **Unbounded call-site recursion in the HTTP mock fixture** — the patched
-   `httpx.Client` factory called itself, hanging the suite instead of failing it.
-2. **Under-classification of unlisted public suffixes** — `example.co.uk`
-   returned `UNKNOWN`; now `GENERAL_WEB` once the official registries are ruled
-   out by exact matching.
-3. **Silent result truncation** — a full result page gave no indication that
-   results had been capped.
-4. **A live database credential was committed in `.env.example`** — replaced with
-   a placeholder. **The credential remains in Git history and must be rotated.**
+1. **Site-restricted queries were crowded out of the query cap.** The cap was
+   being consumed by unconstrained topic and authority-vocabulary queries, so
+   the most useful queries — `site:sebi.gov.in` — never ran. Query order now
+   puts them first, and a test asserts a registry host is always targeted.
 
 ### Blocked Items
 
@@ -92,49 +85,51 @@ None.
 | Service | Status | Evidence |
 | --- | --- | --- |
 | `GROQ_API_KEY` | **present** | configured; Phase 2 extraction uses it |
-| `SERPAPI_KEY` | **absent** | `SearchService.available = false`; searches degrade to `UNAVAILABLE` |
+| `SERPAPI_KEY` | **absent** | `SearchService.available = false`; verification degrades to `SEARCH_UNAVAILABLE` |
 | SQLite | working | `/api/health` → `database.connected = true` |
 | `httpx` | installed | used by both `LLMService` and `SerpAPIProvider` |
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; `OCRService` not built |
 | `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred; see limitations |
 
-**Consequence for Phase 4:** claim verification must run against a **fake search
-provider** in tests. Without `SERPAPI_KEY` the live path cannot be exercised, so
-the no-search path must produce a valid report stating that external verification
-could not be completed — and must never produce `CONTRADICTED`.
+**Consequence for Phase 5:** the whole Phase 4 suite runs against a **fake**
+`SearchProvider`. Without `SERPAPI_KEY` the live path has still never executed,
+so real SerpAPI ranking and snippet quality remain unverified assumptions.
 
-### Phase 3 Design Decisions
+### Phase 4 Design Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| `SearchProvider` ABC, SerpAPI behind it | Same rule as `LLMService` (D-004): the provider is the most likely thing to be swapped, rate-limited or paid for. Consumers depend on `SearchService` only. |
-| Transport in the provider, policy in the service | The provider converts its wire format and nothing more; query rules, limits, classification and de-duplication are provider-independent. |
-| `OK` / `UNAVAILABLE` / `ERROR` are distinct, schema-enforced | "Found nothing" and "could not look" lead to opposite conclusions. `SearchResponse` refuses to represent a failure as an empty success (D-017). |
-| Authority by hostname identity only | `fake-sebi-example.com` must never be a regulator; an over-claiming classifier is worse than none (D-018). |
-| Query normalization is deterministic, no LLM | Paraphrasing a query would verify a claim nobody wrote (D-019). |
-| De-duplication by canonical URL only | Merging on title similarity would silently discard sources from an evidence review. |
-| Hard cap of 50 results | Bounds the request a bug can make of a paid provider. |
-| Reuse `SERPAPI_KEY` rather than adding `SERPAPI_API_KEY` | The brief suggested the longer name, but `serpapi_key` already exists in `Settings` from Phase 0. Adding a second name for one setting would split configuration across two keys; the mapping is documented in `.env.example`. |
-| OCR/PDF/embeddings deferred | No consumer until Phase 8+, and the packages are not installed. Stub wrappers would be untestable code. |
+| Five statuses, no verdict vocabulary | Verification answers a checkable factual question; risk is Phase 6 (D-020). |
+| `confidence` = confidence in the status | It is not a probability of fraud, loss, or truth. "We could not look" scores 0.0 honestly. |
+| Three gates: identity, authority, relevance | One entity's record must never confirm another's claim, and a regulator's register cannot establish a promised return (D-021). |
+| Longer names are *ambiguous*, not matches | `ABC Capital` vs `ABC Capital Advisors` — refusing costs an unverified claim; wrongly matching transfers a registration. |
+| An unlisted official host is uncitable | Its tier is still reported, but it cannot settle a claim (D-018). |
+| `matched_result_ids` are strings, not `Evidence` objects | The evidence model belongs to Phase 5; introducing it here would be premature. |
+| Explanations from fixed templates | Wording a user reads must be auditable, not sampled (D-022). |
+| `MAX_QUERIES_PER_CLAIM = 5`, site-restricted first | Bounds cost per claim against a paid provider while always asking a register the question it can answer. |
+| No LLM anywhere in Phase 4 | Statuses, confidence and wording are deterministic and reproducible (D-008, project rule 4). |
 
-### Known Limitations (Phase 3)
+### Known Limitations (Phase 4)
 
-- **`SERPAPI_KEY` is absent on this machine**, so the live SerpAPI path has never
-  run. Transport, normalization and classification are verified against mocks;
-  parameter names follow SerpAPI's documented API. Run
-  `pytest -m integration` once a key is available.
-- **The source registry is small and explicit** by design. Unlisted official
-  bodies classify as `GENERAL_WEB` — safe, but it loses authority ordering.
-- **No DNS or WHOIS.** `classify_domain` decides who *published* a page, not
-  whether a host is *legitimate*. That is a Phase 4 question.
-- **`OFFICIAL_ENTITY` and `TRUSTED_SECONDARY`** are defined but unused, so Phase
-  4/5 can extend the registry without changing the enum.
-- **Near-duplicates are not merged.** Only canonical-URL equality collapses two
-  results; different URLs with identical titles are both kept.
-- **OCR, PDF, embeddings and vector store are not built.** See the scope decision
-  in `DEVELOPMENT_LOG.md`.
-- **No claim/entity → query construction yet.** Phase 3 takes an arbitrary query;
-  building a targeted query from a claim type is Phase 4's first task.
+- **No live SerpAPI run.** `SERPAPI_KEY` is absent, so the live path is
+  unexercised. Transport and normalisation are Phase 3's, tested against mocks.
+- **Verification is snippet-based.** Only title and snippet text are read; no
+  page is fetched and no document is parsed. A claim confirmed on page three of
+  a PDF will not be found.
+- **Cue detection is lexical.** "Registration cancelled" contradicts;
+  a regulator's more roundabout phrasing may not be detected. The failure mode
+  is a missed contradiction (`UNVERIFIED` rather than `CONTRADICTED`), never a
+  false accusation.
+- **The registry is eight bodies.** Unlisted official hosts are reported with a
+  tier but cannot settle a claim.
+- **No `source_type: TIER_4_OFFICIAL_ENTITY` sources.** The tier exists for
+  later phases; nothing populates it yet.
+- **Only the first identity entity drives identity matching**, with the others
+  tried in turn. A claim naming three parties resolves to whichever matches.
+- **Query text is never paraphrased**, so a badly phrased claim produces a
+  badly targeted query. That is a deliberate trade (D-019).
+- **Persisting verification results is Phase 9** work; nothing is written to the
+  database yet.
 
 ### Environment Reality Check (verified)
 
@@ -157,48 +152,42 @@ the next phase:
 | ID | Decision |
 | --- | --- |
 | D-006 | Absence of evidence is never an accusation — `CONTRADICTED` requires direct authoritative contradiction |
-| D-007 | Risk is a transparent weighted heuristic, never a probability |
 | D-009 | Every external service degrades into a typed error code surfaced in report Limitations |
-| D-013 | One structured extraction call per input; deterministic extractors always run alongside it |
-| D-014 | Evidence spans index the **original** input; normalisation is reversible for offsets |
-| D-015 | Model-supplied text must be re-located in the input or dropped |
-| D-016 | `ExtractionResult` has no verification field |
 | D-017 | Search infrastructure retrieves; it does not interpret. `OK`/`UNAVAILABLE`/`ERROR` stay distinct |
 | D-018 | Source authority recognised by hostname identity, never by keyword |
 | D-019 | Query normalization is deterministic and never rewrites terms |
+| D-020 | Verification reports a claim's factual status, never a verdict |
+| D-021 | Only a direct authoritative conflict produces `CONTRADICTED` |
+| D-022 | Explanation wording is rendered from fixed templates, never generated |
 
 ---
 
 ## Next Exact Task
 
-**Phase 4 — Verification Agent.**
+**Phase 5 — Evidence Engine.**
 
-1. Create `backend/app/schemas/verification.py`: `VerificationStatus`
-   (`VERIFIED` / `UNVERIFIED` / `CONTRADICTED` / `INSUFFICIENT_EVIDENCE` /
-   `NOT_APPLICABLE`), `ClaimVerification`, `SourceTier`, `AuthoritativeSource`.
-   **There must be no `SCAM`/`FRAUD` verdict anywhere.**
-2. Build the authoritative source registry/tiering: SEBI, NSE, BSE, MCA and
-   government bodies, with per-tier query templates. Reuse
-   `classify_domain()` for source tiers; do not reimplement domain logic.
-3. Build targeted query construction from `Claim` — claim-type-aware, derived
-   from the claim text and linked entities. Use `SearchService.search()`; never
-   call SerpAPI directly.
-4. Compare claim vs. retrieved evidence and emit a status. **Hard rules:**
-   - no results ⇒ `UNVERIFIED` or `INSUFFICIENT_EVIDENCE`, never `CONTRADICTED`
-   - `SearchStatus.UNAVAILABLE`/`ERROR` ⇒ `INSUFFICIENT_EVIDENCE`
-   - `CONTRADICTED` only when an authoritative source directly disputes the claim
-   - `UNVERIFIED` is not an accusation
-5. Reason text must be hedged: *"No matching registration could be independently
-   verified from the searched authoritative records."*
-6. Write a guard test asserting no accusation language is ever produced, and
-   tests mocking `SearchProvider` for every path (available, no key, zero
-   results, timeout, error).
+1. Create `backend/app/schemas/evidence.py`: `EvidenceItem` with
+   `relationship` ∈ `SUPPORTS` / `CONTRADICTS` / `CONTEXT`, plus
+   `source_type`, `credibility_tier` and `retrieved_at`. It must hold the
+   `src_`/`res_` ids Phase 4 already synthesised rather than recomputing them.
+2. Build `EvidenceEngine` that consumes `VerificationResponse` and produces
+   `EvidenceBundle`: claim → evidence → source wiring.
+3. **Hard invariant:** every evidence item must trace to a source that was
+   actually retrieved. No fabricated sources, ever — enforce with a test that
+   every `source_id` in a bundle exists in the results Phase 4 received.
+4. Source credibility ranking and tiering. Ranking is *weight*, not truth: a
+   `GENERAL_WEB` page may be excellent context and must never be promoted to
+   settle a claim.
+5. Deliberately keep `context` items that did **not** support or contradict —
+   suppressing them would hide the searches that found nothing.
+6. Do **not** add a numeric "evidence strength" that later feeds a risk score
+   without a decision record; D-007 requires transparent weighting.
 7. Run `python -m pytest`, fix failures, update all docs, commit.
 
-### Do not start before Phase 4 is green
+### Do not start before Phase 5 is green
 
-- No evidence ranking/strength (Phase 5), risk scoring (Phase 6), LangGraph
-  (Phase 7), API routes (Phase 8), database persistence (Phase 9).
+- No risk scoring (Phase 6), LangGraph (Phase 7), API routes (Phase 8),
+  database persistence (Phase 9).
 
 ---
 
@@ -211,7 +200,7 @@ If you are reading this in a fresh session:
 3. [ ] Read `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
 4. [ ] Read the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **480 passed, 4 deselected**
+6. [ ] Run `cd backend && python -m pytest` — expect **793 passed, 4 deselected**
 7. [ ] Confirm the test count still matches "Tests Passing" above
 8. [ ] Execute **Next Exact Task**
 

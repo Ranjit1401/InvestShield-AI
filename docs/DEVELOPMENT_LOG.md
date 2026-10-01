@@ -481,3 +481,112 @@ query construction per claim type, claim ↔ evidence comparison, and the
 controlled statuses `VERIFIED` / `UNVERIFIED` / `CONTRADICTED` /
 `INSUFFICIENT_EVIDENCE` / `NOT_APPLICABLE`, consuming Phase 3's `SearchResponse`
 without collapsing "no results" into "contradicted".
+
+---
+
+## Phase 4 — Verification Agent (2026-10-01)
+
+### What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/schemas/verification.py` | Five statuses, `SourceTier` + priority, `IdentityMatch`, twelve reason codes, frozen `VerificationResult` / `VerificationResponse` |
+| `app/services/verification/authority_registry.py` | Eight official bodies, hostname-identity lookup, per-claim-type relevance |
+| `app/services/verification/target.py` | `VerificationTarget`: claim + entities → parties, identifiers, relevant authorities |
+| `app/services/verification/query_builder.py` | Deterministic, template-driven queries, capped at 5 per claim |
+| `app/services/verification/comparator.py` | Identity / authority / relevance gates, support vs contradiction cues, stable ids |
+| `app/services/verification/decision_engine.py` | Pure decision table, confidence table, fixed explanation templates |
+| `app/services/verification/verification_service.py` | Orchestration over Phase 3's `SearchService` |
+| `app/scripts/manual_verification.py` | Offline fixture pass + live pass |
+
+**313 new tests; 793 total, all offline.** Every `SearchProvider` path is
+faked: available, no credentials, zero results, error, and a provider that
+raises despite its no-raise contract.
+
+### The decision table
+
+Twelve rows, each pinned by at least one test, and a coverage test asserting
+that all twelve reason codes are reachable:
+
+| Condition | Status | Reason code |
+| --- | --- | --- |
+| Instruction or opinion | `NOT_APPLICABLE` | `NOT_A_FACTUAL_CLAIM` |
+| No query built, or none issued | `INSUFFICIENT_EVIDENCE` | `NO_QUERY_BUILT` |
+| Search never attempted | `INSUFFICIENT_EVIDENCE` | `SEARCH_UNAVAILABLE` |
+| Search attempted and failed | `INSUFFICIENT_EVIDENCE` | `SEARCH_FAILED` |
+| Nothing from a relevant authority | `INSUFFICIENT_EVIDENCE` | `NO_CLAIM_RELEVANT_SOURCE` |
+| Only a similarly named organisation | `INSUFFICIENT_EVIDENCE` | `IDENTITY_AMBIGUOUS` |
+| Claimed entity not in any source | `UNVERIFIED` | `IDENTITY_NOT_FOUND` |
+| Zero results, registration-style claim | `UNVERIFIED` | `ZERO_RESULTS` |
+| Zero results, other claim family | `INSUFFICIENT_EVIDENCE` | `NO_CONFIRMATION_FOUND` |
+| Relevant authoritative support | `VERIFIED` | `AUTHORITATIVE_SOURCE_CONFIRMS` |
+| Relevant authoritative conflict | `CONTRADICTED` | `AUTHORITATIVE_SOURCE_CONTRADICTS` |
+| Sources both support and contradict | `INSUFFICIENT_EVIDENCE` | `CONFLICTING_AUTHORITATIVE_SOURCES` |
+
+### Design decisions taken
+
+- **`confidence` measures the assessment, not the claim.** A `VERIFIED` status
+  sits at 0.80–0.85 depending on the tier of the source relied on; "we could not
+  look" sits at 0.0. Documented on the field and in `CURRENT_STATE.md`, because
+  a number placed next to a status is exactly where a fraud probability would
+  otherwise be implied.
+- **Three gates, not one.** Identity, authority and relevance must *all* pass
+  before a document can move a status. Relevance is the gate that stops SEBI from
+  rubber-stamping a promised return: `authorities_for_claim_type()` returns
+  nothing for `RETURN_PROMISE`, `PAYMENT_INSTRUCTION` and friends.
+- **Prefix matches are ambiguous, not matches.** `ABC Capital` is not confirmed
+  by `ABC Capital Advisors`, `ABC Capital Limited` or `ABC Capital Holdings`;
+  those resolve to `IDENTITY_AMBIGUOUS`. Refusing costs an `INSUFFICIENT_EVIDENCE`
+  and wrongly accepting transfers one entity's registration to another.
+- **An unlisted official host is reported but uncitable.** Its tier still comes
+  from Phase 3's classifier, so a real `.gov.in` body appears in output with the
+  right rank — but it cannot settle a claim, because nothing vouches for the
+  mapping (D-018).
+- **Contradiction cues are evaluated before support cues.** "The registration has
+  been cancelled" contains the word "registered"; reading that as support would
+  be the most damaging mistake available to this stage.
+- **`source_ids` are only populated for statuses that assert a source said
+  something.** `UNVERIFIED` and `INSUFFICIENT_EVIDENCE` record the results that
+  were examined in `matched_result_ids` and leave `source_ids` empty, so no
+  status ever appears to have support behind it that was not found.
+- **Fixed explanation templates, one per reason code.** No generated prose; a
+  guard test scans every template, warning and produced result for verdict
+  vocabulary on word boundaries (D-022).
+- **The Phase 5 `Evidence` model was deliberately not introduced.** Phase 4
+  synthesises `src_`/`res_` ids from `sha256(canonical_url)[:12]` and stores them
+  as plain strings, so Phase 5 can attach an evidence object without Phase 4
+  guessing its shape.
+
+### Issue found and fixed during review
+
+**Site-restricted queries never ran.** The first query ordering emitted
+unconstrained topic and authority-vocabulary queries first, and those consumed
+all five slots of `MAX_QUERIES_PER_CLAIM`. The most useful queries —
+`site:sebi.gov.in` — were built and then dropped. Order is now: primary topic,
+site-restricted per authority, verbatim identifier, remaining topics, authority
+vocabulary. A test asserts a registry host is always targeted.
+
+Two smaller corrections fell out of the same review: a subject consisting only of
+punctuation produced a query (`"... registration`), and search operators embedded
+in a subject (`site:`, `filetype:`) were not stripped, letting a subject change
+what the query asked for.
+
+### Limitations
+
+- The live SerpAPI path has still never run: `SERPAPI_KEY` is absent on this
+  machine, so real ranking and snippet quality remain unverified assumptions.
+- Verification reads titles and snippets only. No page is fetched, so a claim
+  confirmed deeper in a document will not be found.
+- Cue detection is lexical and bilingual-unaware; a regulator's roundabout
+  phrasing may be missed. The failure direction is a missed `CONTRADICTED`, never
+  a false accusation.
+- Identity matching uses the first identity entity, then the others in turn.
+- Nothing is persisted; `claims.status` / `claims.verification_reason` are
+  Phase 9 work.
+
+### Next step
+
+Phase 5 — Evidence Engine: an `EvidenceItem` model with `relationship` ∈
+`SUPPORTS` / `CONTRADICTS` / `CONTEXT`, claim → evidence → source wiring on top
+of the `src_`/`res_` ids Phase 4 already produces, and source credibility
+ranking. The hard invariant carries over unchanged: no fabricated sources, ever.
