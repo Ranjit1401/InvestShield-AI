@@ -23,11 +23,11 @@ Red Flag Detection            ← Phase 1, complete
   ↓
 Entity Verification
   ↓
-Claim Verification
+Claim Verification            ← Phase 4, complete
   ↓
-Evidence Collection
+Evidence Assembly              ← Phase 5, complete
   ↓
-Evidence Ranking
+Evidence Ordering              ← Phase 5, complete
   ↓
 Risk Calculation
   ↓
@@ -40,6 +40,10 @@ Investigation Report
 
 Each stage is implemented as a service or agent, is unit-testable in isolation,
 and records a `TimelineStep` for the UI.
+
+**No LLM after Stage 2.** Extraction is the only stage that calls a model. Every
+stage below it — verification, evidence, ordering, risk — is deterministic code, so
+a status, a quote and a score are reproducible from the same inputs (D-008).
 
 ---
 
@@ -336,39 +340,105 @@ Reason text is always hedged appropriately:
 *"No matching registration could be independently verified from the searched
 authoritative records."* — never *"This person is a scammer."*
 
-### Stage 7 — Evidence Collection
+### Stage 7 — Evidence Assembly (Phase 5, complete)
 
-**Owner:** `EvidenceAgent`
+**Owner:** `app/services/evidence/` — `EvidenceService`, not an LLM agent.
 
-For each verification result and each red flag, create an `Evidence` record:
+This stage is deterministic. There is no model call anywhere in it, and there
+will not be one: an evidence quote is either retrieved text or it is a
+fabrication (D-023).
+
+For each claim, `EvidenceService.build_claim()` turns Phase 3 results and the
+Phase 4 `VerificationResult` into an `EvidenceResponse`:
 
 ```json
 {
-  "claim_id": "c1",
-  "source_id": "s3",
-  "evidence_text": "No matching adviser found in searched records",
-  "relevance": 0.8,
-  "relationship": "CONTEXT"
+  "claim_id": "claim_001",
+  "verification_status": "VERIFIED",
+  "verification_reason_code": "AUTHORITATIVE_SOURCE_CONFIRMS",
+  "evidence": [
+    {
+      "id": "ev_2c1f0a9b3d47",
+      "claim_id": "claim_001",
+      "evidence_type": "REGULATORY_RECORD",
+      "relationship": "SUPPORTS",
+      "relevance": "HIGH",
+      "excerpt": "Acme Capital Advisors is registered as an investment adviser.",
+      "excerpt_origin": "snippet",
+      "matched_cue": "registered as",
+      "provider_query": "site:sebi.gov.in \"Acme Capital Advisors\"",
+      "source": {
+        "source_id": "src_2d84c639a686",
+        "result_id": "res_2d84c639a686",
+        "url": "https://www.sebi.gov.in/intermediaries/acme",
+        "domain": "sebi.gov.in",
+        "source_type": "REGULATOR",
+        "source_tier": "TIER_1_PRIMARY_REGULATOR",
+        "is_authoritative": true
+      }
+    }
+  ],
+  "sources": ["…"],
+  "warnings": [],
+  "evidence_count": 1,
+  "supports_count": 1,
+  "proof_count": 1
 }
 ```
 
-Relationships: `SUPPORTS`, `CONTRADICTS`, `CONTEXT`.
+Relationships: `SUPPORTS`, `CONTRADICTS`, `IDENTITY_REFERENCE`, `CONTEXT`,
+`MENTIONS`. Relevance: `HIGH`, `MEDIUM`, `LOW` — a label, never a number.
 
-User-provided content is itself a valid evidence source
-(`credibility = USER_PROVIDED`) — e.g. a guaranteed-return promise inside the
-message is evidence *for* the red flag.
+Rules that hold in code, not just in this document:
 
-**No evidence is ever fabricated.** If search returns nothing, the evidence
-source is the user-provided content with the statement: *"No authoritative
-evidence was found during this investigation."*
+- **The excerpt is verbatim.** `SearchResult.snippet`, or `SearchResult.title`
+  when there is no snippet, and `excerpt_origin` says which. Title and snippet are
+  never stitched together, summarised or paraphrased. An excerpt longer than 400
+  characters is truncated on a word boundary — always a prefix of real text.
+- **`relationship` comes from Phase 4**, not from re-reading the snippet. Phase 5
+  may only *narrow* Phase 4: a supporting cue in a document that failed the
+  identity or authority gate is `CONTEXT`/`MENTIONS`, never `SUPPORTS` (D-024).
+- **No evidence without a retrieved document.** Unavailable search, failed
+  search, zero results and `NOT_APPLICABLE` all produce an empty `evidence` tuple
+  plus a factual warning. There is no placeholder item and no synthesised "no
+  authoritative evidence was found" document — that sentence is a *warning*, and
+  it is the only thing produced when nothing was retrieved.
+- **Only documents Phase 4 recorded may be cited.** A supplied result whose
+  `src_`/`res_` id is absent from the claim's `VerificationResult` is dropped, and
+  the count is reported.
+- **Neutral items are kept.** `MENTIONS`, `CONTEXT` and `IDENTITY_REFERENCE`
+  documents are shown, never suppressed; hiding them would hide the searches that
+  found nothing (D-006).
+- **The status is copied, not recomputed.** Where the status and the showable
+  evidence diverge, Phase 4's verdict stands and a warning names the gap.
 
-### Stage 8 — Evidence Ranking
+**User-provided content is a separate concern.** Red-flag evidence spans come
+from Phase 1's `RedFlag.evidence_span`, which is sliced from the submitted input
+and is exact by construction (Phase 2's reversible offset map). The Phase 5
+evidence layer never cites the user's own message as a retrieved document, because
+it has no `SearchResult` to quote.
 
-**Owner:** `EvidenceAgent`
+### Stage 8 — Evidence Ordering (Phase 5, complete)
 
-Order by: source tier → credibility → relevance → recency. Tier 1 outranks
-Tier 4. General-web results are supporting context only and never establish
-verification.
+**Owner:** `app/services/evidence/evidence_dedupe.py`
+
+De-duplication key: claim + canonical URL + result id + excerpt origin + normalized
+excerpt + relationship. First seen wins, so the survivor is the earliest provider
+position. Two pages on one regulator's site saying different things are two
+findings and are both kept — merging them would erase the distinction a reader is
+being asked to check.
+
+Ordering, in sequence:
+
+1. Source authority tier (Phase 4 `TIER_PRIORITY`) — most authoritative first;
+2. Relevance — most directly bearing on the claim first;
+3. Relationship — support, then conflict, then identity, then context, then
+   mention;
+4. Provider position, then the stable `ev_` id, so ties never depend on dict or
+   set iteration order.
+
+No new credibility score is introduced. General-web results are supporting context
+only and never establish verification.
 
 ### Stage 9 — Risk Calculation
 
@@ -527,6 +597,11 @@ contribution itemised.
 | Results come only from unlisted official hosts | 6 | `INSUFFICIENT_EVIDENCE` / `NO_CLAIM_RELEVANT_SOURCE`; the host is reported, not cited |
 | Authoritative sources disagree | 6 | `INSUFFICIENT_EVIDENCE` / `CONFLICTING_AUTHORITATIVE_SOURCES`; no side is picked |
 | A search provider raises despite its contract | 6 | Converted to `SEARCH_FAILED`; the investigation continues |
+| Claim has no search results to show | 7 | `evidence = []` plus a factual warning naming the reason; never a placeholder item |
+| Claim is `NOT_APPLICABLE` | 7 | `evidence = []` unconditionally, even if results were supplied (D-023) |
+| A result was supplied that Stage 6 never saw | 7 | Dropped, with a warning stating how many were excluded |
+| A result carries neither snippet nor title | 7 | That result cannot be quoted and raises rather than producing an empty excerpt |
+| Status is `VERIFIED`/`CONTRADICTED` but nothing is showable | 7 | Status kept as Stage 6 decided it; a warning states the record could not be displayed |
 | Tesseract missing | 1 | `OCR_UNAVAILABLE`, image investigation rejected with a clear message |
 | PDF text extraction fails | 1 | `PDF_EXTRACTION_FAILED`, empty-text investigation with limitation |
 | Invalid URL | 0 | 422 validation error, no investigation created |

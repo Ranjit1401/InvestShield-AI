@@ -379,3 +379,98 @@ keep statuses reproducible (D-008), and mean a change in tone requires a
 reviewed code change rather than a prompt edit.
 
 **Date:** 2026-10-01
+
+---
+
+## D-023 — Evidence type, relationship and relevance are three separate facts
+
+**Decision:** An evidence item carries three independent axes and they never
+collapse into one:
+
+| Axis | Values | Question it answers |
+| --- | --- | --- |
+| `evidence_type` | `REGULATORY_RECORD`, `GOVERNMENT_RECORD`, `EXCHANGE_RECORD`, `OFFICIAL_ENTITY_SOURCE`, `SEARCH_RESULT` | *What kind of record is this?* |
+| `relationship` | `SUPPORTS`, `CONTRADICTS`, `IDENTITY_REFERENCE`, `CONTEXT`, `MENTIONS` | *How does it relate to the claim?* |
+| `relevance` | `HIGH`, `MEDIUM`, `LOW` | *How directly does it bear on the claim?* |
+
+`evidence_type` is derived from Phase 4's authority tier and nothing else.
+`relationship` and `relevance` are derived from Phase 4's `AssessedSource` and
+never from a fresh reading of the text. The longer taxonomy that was considered
+for this phase — with members such as `CLAIM_SUPPORT`, `CLAIM_CONTRADICTION` and
+`CONTEXTUAL` — is rejected: those encode exactly what the other two axes carry,
+and two copies of one fact will eventually disagree. A report reading
+"type: contradiction, relationship: supports" is worse than no type at all.
+
+Alongside this, three structural rules make the no-fabrication guarantee
+enforceable rather than aspirational:
+
+1. **An excerpt is a verbatim slice of a `SearchResult` field** — `snippet`, or
+   `title` when there is no snippet — and `excerpt_origin` records which. Title
+   and snippet are never stitched together, never summarised, never paraphrased.
+   `ALLOWED_EXCERPT_ORIGINS` admits nothing else, at construction time.
+2. **No evidence without a retrieved document.** An empty evidence tuple is the
+   correct answer when search was unavailable, failed, found nothing, or was
+   never applicable; there is no placeholder item and no synthesised "no evidence
+   found" document. `NOT_APPLICABLE` always yields nothing, because no record was
+   ever looked up for it.
+3. **Only documents Phase 4 recorded may be cited.** A supplied result whose
+   `src_`/`res_` id is absent from the claim's `VerificationResult` is dropped,
+   with a warning naming how many. Without this, a caller could attach a
+   document the verification never saw and Phase 5 would have no way to know
+   whether it was real.
+
+**Reason:** Verification answers "can external sources establish this claim?",
+and that answer is worthless alone — "UNVERIFIED, no matching registration
+found" is a claim about the system's work, not about the world. Evidence
+supplies the missing half, so the quote has to be checkable against the document
+it claims to come from. A rewritten excerpt cannot be checked, which is why the
+origin field is mandatory rather than merely convenient. The second and third
+rules exist because a system that fabricates a plausible citation is worse than
+one that reports nothing: the first is invisible to the reader, and the second is
+visible and honest.
+
+Keeping evidence a *separate* axis from risk also stops a quiet promotion. No
+member of any of the three vocabularies states that a claim is true, false, safe
+or fraudulent, and `EvidenceRelevance` is a label rather than a number
+precisely so it cannot be summed into a score by a later phase without a
+reviewed code change (D-007).
+
+**Date:** 2026-10-01
+
+---
+
+## D-024 — Evidence explains verification; it can narrow it, never widen it
+
+**Decision:** `relationship` is a function of Phase 4's `AssessedSource` and the
+claim's `verification_status`/`reason_code`. Phase 5 re-reads no text, re-detects
+no cue and re-classifies no publisher. It may *narrow* Phase 4 in exactly one
+place, and never the other way: a document carrying a supporting cue that Phase 4
+ignored — because it failed the identity gate, the authority gate, or because the
+claim's own reason code was one that relies on no source — is presented as
+`MENTIONS` or `CONTEXT`, never as `SUPPORTS`.
+
+`verification_status` is copied onto every item and onto the bundle, and is never
+recomputed. Where a claim's status and its showable evidence diverge — a
+`VERIFIED` claim whose confirming record was not among the retrieved text, for
+instance — the bundle keeps Phase 4's status and adds a warning naming the gap.
+It does not quietly downgrade the verdict, and it does not upgrade it either.
+
+`CONTEXT` additionally requires an authoritative publisher: a similarly named
+party documented by a relevant authority is context a reader can act on, and the
+same ambiguity on an arbitrary web page is only a `MENTION`.
+
+**Reason:** An evidence layer that can reach its own conclusions is a second
+verification engine, and it would be a worse one: it would have fewer gates,
+no test coverage, and no reason code explaining why it disagreed. The failure
+that matters most is the directional one — a claim marked `UNVERIFIED` whose
+evidence set nonetheless contains a "supports" item reads as a contradiction
+between the status and the detail, and users resolve that by believing whichever
+is more alarming. Narrowing is safe because it can only remove a claim to proof;
+widening is not.
+
+Keeping the status rather than downgrading it is the symmetric requirement. The
+whole point of the phase is to show the reader what was found; overriding Phase
+4 would mean the visible evidence and the stated conclusion disagreed, which is
+the same defect in the other direction.
+
+**Date:** 2026-10-01

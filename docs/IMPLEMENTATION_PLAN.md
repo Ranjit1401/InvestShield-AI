@@ -118,7 +118,7 @@ no consumer until Phase 8+.
 - [x] 260 tests, fully offline; opt-in `integration` marker for a live check
 - [ ] `OCRService` (Phase 13 wiring) — deferred
 - [ ] `PDFService` (Phase 14 wiring) — deferred
-- [ ] `EmbeddingService` / `VectorStore` — deferred to Phase 5 evidence work
+- [ ] `EmbeddingService` / `VectorStore` — deferred to Phase 8+
 
 **Intentionally not built:** claim verification, entity verification, evidence
 scoring, risk scoring, LangGraph, public API, database persistence for search
@@ -156,15 +156,44 @@ information?"* (D-017).
 `matched_result_ids` as plain strings instead), evidence strength or ranking,
 risk scoring, entity *legitimacy* judgements (DNS/WHOIS), and any HTTP surface.
 Verification decides claim status; nothing here renders a report or a score
-(D-017, D-020).
+(D-017, D-020). Phase 5 later turns those preserved ids into formal evidence
+objects.
 
-## Phase 5 — Evidence Engine `[ ]`
+## Phase 5 — Evidence Engine `[x]`
 
-- [ ] Evidence item model with `relationship` ∈ `SUPPORTS` / `CONTRADICTS` / `CONTEXT`
-- [ ] Claim → evidence → source wiring
-- [ ] Source credibility ranking and tiering
-- [ ] No fabricated sources, ever (hard invariant + test)
-- [ ] Tests
+- [x] `app/schemas/evidence.py` — `EvidenceType` (5 members), `EvidenceRelation`
+      (5 members), `EvidenceRelevance` (3 members), frozen `EvidenceSource` /
+      `EvidenceItem` / `EvidenceResponse` / `EvidenceBundleResponse` with
+      self-recomputing counts and provenance enforced at construction
+- [x] `app/services/evidence/source_normalizer.py` — Phase 3 `SearchResult` →
+      `EvidenceSource`, reusing `canonicalize_url()`, `extract_domain()` and
+      Phase 4 `source_id_for()` / `result_id_for()` / `resolve_authority()`
+- [x] `app/services/evidence/relationship.py` — the layer's **only** judgement:
+      relationship, relevance and record type derived from Phase 4's
+      `AssessedSource`; never a re-read of the snippet
+- [x] `app/services/evidence/evidence_builder.py` — verbatim excerpts with
+      `excerpt_origin`, stable `ev_` ids, `group_by_query()` query provenance
+- [x] `app/services/evidence/evidence_dedupe.py` — first-seen-wins de-duplication
+      and deterministic ordering on Phase 4 `TIER_PRIORITY`, relevance,
+      relationship, provider position and stable id
+- [x] `app/services/evidence/evidence_service.py` — `EvidenceService`,
+      `build_evidence_service()`, per-claim and batch assembly, no-evidence and
+      coverage warnings
+- [x] Claim → evidence → source wiring
+- [x] Source credibility ranking and tiering, **reused** from Phase 3/4 rather
+      than reimplemented (D-012, D-018, D-023)
+- [x] No fabricated sources, ever (hard invariant + tests): excerpts are verbatim
+      `snippet` or `title`, `NOT_APPLICABLE` yields nothing, and a supplied
+      result Phase 4 never saw is dropped with a warning
+- [x] Context items deliberately retained, never suppressed
+- [x] `app/scripts/manual_evidence.py` — runnable offline + live smoke test
+- [x] 368 tests, fully offline; every `SearchProvider` path faked
+
+**Intentionally not built:** any numeric "evidence strength" score, risk scoring
+or banding, entity *legitimacy* judgements, page fetching or HTML parsing,
+persistence, and any HTTP surface. Evidence explains a verification result; it
+does not judge the investment and cannot contradict Phase 4 (D-020, D-021,
+D-023).
 
 ## Phase 6 — Risk Engine `[ ]`
 

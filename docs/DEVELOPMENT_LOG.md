@@ -590,3 +590,137 @@ Phase 5 — Evidence Engine: an `EvidenceItem` model with `relationship` ∈
 `SUPPORTS` / `CONTRADICTS` / `CONTEXT`, claim → evidence → source wiring on top
 of the `src_`/`res_` ids Phase 4 already produces, and source credibility
 ranking. The hard invariant carries over unchanged: no fabricated sources, ever.
+
+---
+
+## Phase 5 — Evidence Engine
+
+**Date:** 2026-10-01
+**Phase:** 5 — Evidence Engine
+**Tests:** 1161 passing (793 before Phase 5, +368), fully offline
+
+### What was implemented
+
+- `app/schemas/evidence.py` — `EvidenceType` (5), `EvidenceRelation` (5) and
+  `EvidenceRelevance` (3) as three independent axes, plus frozen `EvidenceSource`,
+  `EvidenceItem`, `EvidenceResponse` and `EvidenceBundleResponse`. Provenance is
+  enforced at construction: a non-empty `excerpt`, a `claim_id`, a `source`, an
+  `excerpt_origin` in `ALLOWED_EXCERPT_ORIGINS`, an `ev_`-prefixed id, and a rule
+  rejecting any item that belongs to another claim or cites an unlisted source.
+  Counts are recomputed, so they cannot drift from the items.
+- `app/services/evidence/source_normalizer.py` — Phase 3 `SearchResult` →
+  `EvidenceSource`, reusing `canonicalize_url()`, `extract_domain()`, Phase 4's
+  `source_id_for()` / `result_id_for()` and `resolve_authority()`. Nothing is
+  re-derived: `source_type` is Phase 3's classification and `source_tier` is
+  Phase 4's registry result, both carried through.
+- `app/services/evidence/relationship.py` — the layer's **only** judgement. Its
+  input is Phase 4's `AssessedSource` plus the claim's status and reason code. A
+  document can only be `SUPPORTS`/`CONTRADICTS` when Phase 4 read a non-neutral
+  stance on a claim-relevant, identity-matched document *and* relied on such a
+  document for that reason code.
+- `app/services/evidence/evidence_builder.py` — verbatim excerpts (`snippet`, else
+  `title`; never merged), `MAX_EXCERPT_CHARS = 400` truncation on a word boundary,
+  derived `ev_` ids, `group_by_query()` query provenance, and
+  `status_supports_evidence()`, which makes a `NOT_APPLICABLE` bundle structurally
+  impossible to fill.
+- `app/services/evidence/evidence_dedupe.py` — de-duplication keyed on claim +
+  canonical URL + result id + excerpt origin + normalized excerpt + relationship,
+  first seen wins; ordering on Phase 4 `TIER_PRIORITY`, relevance, relationship,
+  provider position and stable id; `distinct_sources()`.
+- `app/services/evidence/evidence_service.py` — `EvidenceService` and
+  `build_evidence_service()`, per-claim and batch assembly, fixed no-evidence
+  warnings per reason code, and coverage warnings when a `VERIFIED` or
+  `CONTRADICTED` status has nothing showable.
+- `app/scripts/manual_evidence.py` — offline fixture pass plus an optional live
+  pass. Six scenarios: confirmation, contradiction, conflicting records, a
+  similarly named company on a regulator's site, a lookalike domain, and a
+  promised return with no register to check it against.
+- Tests: `tests/evidence_factories.py` plus eight new modules covering schemas,
+  normalization, relationship derivation, construction, de-duplication and
+  ordering, service orchestration, the Phase 3 → 4 → 5 chain, and package
+  invariants (no HTTP client, no provider reference, no `.search()`, no
+  summariser, no `classify_domain()`, no local tier table, no randomness).
+
+### Decisions recorded
+
+- **D-023 — Evidence type, relationship and relevance are three separate facts.**
+  The longer taxonomy considered for this phase (`CLAIM_SUPPORT`,
+  `CLAIM_CONTRADICTION`, `CONTEXTUAL`, …) was rejected: it encodes what the other
+  two axes already carry, and two copies of one fact eventually disagree. Three
+  structural rules ship with it — verbatim excerpts with a mandatory
+  `excerpt_origin`, no evidence without a retrieved document, and no citation of a
+  document Phase 4 did not record.
+- **D-024 — Evidence explains verification; it can narrow it, never widen it.**
+  A supporting cue in a document that failed the identity or authority gate is
+  `CONTEXT`/`MENTIONS`, never `SUPPORTS`. `verification_status` is copied, and
+  where status and showable evidence diverge the bundle keeps Phase 4's verdict
+  and warns.
+
+### Issues found and fixed during review
+
+**A document cited only by `src_` id was dropped from its own bundle.**
+`EvidenceService._restrict_to_seen_results()` filtered supplied results against
+`matched_result_ids` alone. Phase 4 records two id families — `source_ids` and
+`matched_result_ids` — and a document can appear in only the first. Such a
+document was therefore excluded from the evidence explaining it. Both families are
+now checked.
+
+**A list of warnings was passed where a single string was expected.** Any claim
+whose supplied results were all filtered out reached `EvidenceResponse` with a
+`list[str]` in `warnings`, raising `ValidationError` instead of returning an
+empty bundle. `_empty()` now accepts either form and de-duplicates through the
+same helper as the populated path. The failure mode was the worst available for
+this product: a crash on the "nothing found" path rather than an honest empty
+result.
+
+### Behaviours narrowed after review
+
+**`CONTEXT` now requires an authoritative publisher.** A similarly named party
+documented by a relevant authority is context a reader can act on; the same
+ambiguity on an arbitrary web page is only a `MENTION`. Previously any
+`AMBIGUOUS` identity produced `CONTEXT` regardless of who published it.
+
+### Corrected in the manual script
+
+**`manual_evidence.py` bypassed Phase 3's classification.** The script handed
+`EvidenceService` hand-built `SearchResult` objects, so the demo printed
+`sebi.gov.in (UNKNOWN)` next to `TIER_1_PRIMARY_REGULATOR` — the publisher
+category and the authority tier disagreeing in one line. That was the script's
+shortcut, not a normalizer bug: `SearchService._enrich()` assigns `source_type`,
+and a caller that skips the service skips the classification. The script now
+retrieves through `SearchService` exactly as `VerificationService` does, so the
+results handed to Phase 5 are the classified, de-duplicated ones an earlier phase
+produced. Worth keeping as a reminder for Phase 7 wiring: **every real caller goes
+through `SearchService`, and Phase 5 is handed its output rather than raw
+provider results.**
+
+### Deliberately not built
+
+- No numeric "evidence strength" score, and no way to derive one: `relevance` is a
+  label. D-007 requires transparent weighting, and a number here would silently
+  become the Phase 6 risk input.
+- No page fetching, HTML parsing or document text. The layer has only ever seen
+  title and snippet, and `excerpt_origin` says so.
+- No persistence, no HTTP surface, no risk scoring, no entity legitimacy
+  judgement.
+
+### Limitations
+
+- The live SerpAPI path has still never run: `SERPAPI_KEY` is absent, so evidence
+  over real provider output is unexercised.
+- Evidence is snippet-based for the same reason Phase 4 is. A reader cannot always
+  confirm a finding from a snippet alone, and the report must state that.
+- Excerpts are truncated at 400 characters on a word boundary — always a prefix of
+  real text, never a rephrasing.
+- Coverage counts are per claim. Nothing yet reports cross-claim source diversity,
+  which Phase 6 will need for its weighting.
+- Nothing is persisted; `sources` and `evidence` rows are Phase 9 work, with the
+  column list already aligned to the Phase 5 schemas.
+
+### Next step
+
+Phase 6 — Risk Engine: weighted, transparent indicator accumulation over Phase 1
+red flags, Phase 4 statuses and Phase 5 counts, with a per-factor breakdown and no
+probabilistic language. The constraint carried forward from this phase is that
+`EvidenceRelevance` must never be summed into a number — Phase 6 consumes
+`proof_count` and `source_count` as counts and shows the items behind them.

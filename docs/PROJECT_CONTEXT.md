@@ -94,6 +94,33 @@ produce an accusation of fraud.**
 Required phrasing: *"Could not independently verify the claimed registration."*
 Forbidden phrasing: *"This person is a fraudster."*
 
+### What "evidence" means here
+
+An evidence item is **retrieved text plus its provenance**, and nothing else:
+
+```
+CLAIM ──► EVIDENCE ──► SOURCE (url, title, publisher, tier, retrieved_at)
+          └─ verbatim snippet (or title), never summarised
+             └─ SUPPORTS | CONTRADICTS | IDENTITY_REFERENCE | CONTEXT | MENTIONS
+```
+
+Three rules follow from rule 10 above and are enforced in code, not by convention:
+
+- **An excerpt is copied, never written.** It comes from the provider's snippet,
+  or from the result title when there is no snippet, and the item records which.
+  A rewritten quote cannot be checked against the page it claims to come from.
+- **No evidence without a document.** When search is unavailable, fails, finds
+  nothing, or the claim was never externally verifiable, the answer is an empty
+  evidence set plus a factual statement of why — never a placeholder, never an
+  invented "no authoritative evidence found" citation.
+- **Evidence never re-decides.** Relationship and relevance are read off the
+  verification stage's own assessment. The evidence layer may make a finding
+  *harder* to treat as proof; it can never make one easier.
+
+`SUPPORTS` means an authoritative record was read as supporting the claim. It is
+not a statement that the claim is true, and it is not a statement that the
+investment is safe.
+
 ## 6. Technology Stack
 
 ### Frontend

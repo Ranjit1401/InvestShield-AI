@@ -16,14 +16,19 @@ Column types are deliberately portable — no `JSONB`, `ARRAY`, or server-side
 users (1) ──────< (0..N) investigations
                       │
                       ├──< claims ──────< evidence >────── sources
-                      │       │
-                      │       └────────── (evidence.claim_id FK)
+                      │       │               │
+                      │       │               └── (evidence.source_id FK)
+                      │       └────────────── (evidence.claim_id FK)
                       ├──< entities
                       ├──< red_flags
                       └──< reports (1:1)
 
 users is optional/unused in the MVP (no auth); investigations.user_id is nullable.
 ```
+
+Nothing in this schema is written yet — persistence is Phase 9. The `sources` and
+`evidence` tables above are aligned with Phase 5's `EvidenceSource` and
+`EvidenceItem` so that no field needs reshaping when they are built.
 
 ---
 
@@ -140,44 +145,87 @@ Unique constraint: `(investigation_id, code)` — one row per distinct indicator
 
 ## sources
 
+Persisting a source row is **Phase 9** work. The columns below are the Phase 5
+`EvidenceSource` fields as they will need to be stored; they are aligned with
+`app/schemas/evidence.py` so that no field has to be reshaped on the way in.
+
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
 | `id` | Integer | PK, autoincrement | |
 | `investigation_id` | Integer | FK → `investigations.id`, not null, indexed | cascade delete |
-| `source_id` | String(32) | not null | per-investigation id, e.g. `s1` |
-| `title` | String(512) | nullable | |
-| `url` | String(2048) | nullable | may be null for user-provided content |
-| `snippet` | Text | nullable | search snippet / extracted passage |
-| `source_type` | String(24) | not null, indexed | `OFFICIAL` \| `TRUSTED` \| `GENERAL_WEB` \| `USER_PROVIDED` |
-| `tier` | Integer | not null, default 4 | 1 = most authoritative |
-| `credibility` | String(24) | not null | same enum as `source_type` |
-| `retrieved_at` | DateTime | not null, default utcnow | |
+| `source_id` | String(32) | not null | Phase 4 `src_` id, `sha256(canonical_url)[:12]` |
+| `result_id` | String(32) | not null | Phase 4 `res_` id for the individual result |
+| `canonical_url` | String(2048) | not null, indexed | Phase 3 canonical form; the de-duplication key |
+| `url` | String(2048) | not null | exactly as the provider returned it |
+| `domain` | String(255) | not null, indexed | Phase 3 `extract_domain()` |
+| `title` | String(512) | not null | result title as published |
+| `source_type` | String(24) | not null, indexed | Phase 3 `SourceType`: `REGULATOR` \| `GOVERNMENT` \| `EXCHANGE` \| `OFFICIAL_ENTITY` \| `TRUSTED_SECONDARY` \| `GENERAL_WEB` \| `UNKNOWN` |
+| `source_tier` | String(32) | not null, indexed | Phase 4 `SourceTier`, e.g. `TIER_1_PRIMARY_REGULATOR` |
+| `position` | Integer | not null, default 1 | provider rank; a stable tie-breaker |
+| `retrieved_at` | DateTime | not null | the provider's retrieval time, never re-stamped |
 | `created_at` | DateTime | not null, default utcnow | |
 
 Unique constraint: `(investigation_id, source_id)`.
-Index: `ix_sources_credibility`.
+
+Note the change from the earlier sketch: there is **no** `credibility` column.
+Phase 3's `source_type` and Phase 4's `source_tier` already express how
+authoritative a publisher is, and a third credibility column would be a second
+answer to the same question that could disagree with both (D-012, D-018). There
+is also no `snippet` column: the verbatim text lives on the evidence row that
+quotes it, so one document can be cited by several items without its text being
+duplicated.
 
 ---
 
 ## evidence
 
+Persisting an evidence row is **Phase 9** work. The columns below mirror Phase 5's
+`EvidenceItem`.
+
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
 | `id` | Integer | PK, autoincrement | |
 | `investigation_id` | Integer | FK → `investigations.id`, not null, indexed | cascade delete |
-| `claim_id` | String(32) | nullable | FK-style link to `claims.claim_id`; null for red-flag-only evidence |
-| `entity_id` | String(32) | nullable | link to `entities.entity_id` when entity-scoped |
+| `evidence_id` | String(32) | not null | Phase 5 `ev_` id, derived by digest |
+| `claim_id` | String(32) | not null, indexed | FK → `claims.claim_id`; evidence is meaningless without its claim |
 | `source_id` | String(32) | not null, FK → `sources.source_id` | the traceable origin |
-| `evidence_text` | Text | not null | what the source actually says |
-| `relevance` | Float | nullable, 0..1 | similarity/relevance score |
-| `relationship` | String(16) | not null, indexed | `SUPPORTS` \| `CONTRADICTS` \| `CONTEXT` |
+| `excerpt` | Text | not null | verbatim `SearchResult.snippet`, else `.title` |
+| `excerpt_origin` | String(8) | not null | `snippet` \| `title` — which field `excerpt` was copied from |
+| `evidence_type` | String(32) | not null, indexed | `REGULATORY_RECORD` \| `GOVERNMENT_RECORD` \| `EXCHANGE_RECORD` \| `OFFICIAL_ENTITY_SOURCE` \| `SEARCH_RESULT` |
+| `relationship` | String(24) | not null, indexed | `SUPPORTS` \| `CONTRADICTS` \| `IDENTITY_REFERENCE` \| `CONTEXT` \| `MENTIONS` |
+| `relevance` | String(8) | not null, indexed | `HIGH` \| `MEDIUM` \| `LOW` |
+| `verification_status` | String(24) | not null | Phase 4's status, copied so the row explains its own decision |
+| `matched_cue` | String(64) | nullable | Phase 4's cue, for auditing *why* the relationship was derived |
+| `provider_query` | Text | nullable | the Phase 3 query that surfaced the document |
 | `created_at` | DateTime | not null, default utcnow | |
 
-Index: `ix_evidence_claim_id`, `ix_evidence_relationship`.
+Index: `ix_evidence_claim_id`, `ix_evidence_relationship`,
+`ix_evidence_evidence_type`.
+
+Notes carried forward:
+
+- **`relevance` is a `String(8)`, not a `Float`.** The original sketch had
+  `relevance Float 0..1`. That was dropped in Phase 5 deliberately: a numeric
+  relevance becomes an undeclared input to the Phase 6 risk score, and D-007
+  requires transparent, declared weighting rather than a number that silently
+  multiplies something. Phase 6 consumes `proof_count` and `source_count` as
+  counts and shows the rows behind them.
+- **`evidence_type`, `relationship` and `relevance` are three separate columns.**
+  Collapsing them into one taxonomy encodes the same fact twice, and two copies
+  eventually disagree (D-023).
+- **`excerpt_origin` is not optional.** Without it, a stored excerpt is an
+  unattributable string, and an unattributable quote cannot be checked against the
+  page it claims to come from.
+- **`claim_id` is not nullable.** A claim-free evidence row cannot be attributed
+  to a statement, and this product's red-flag spans are already stored on
+  `red_flags.evidence`.
 
 **Invariant:** `source_id` must reference a real row in `sources`. Evidence may
 never be created without a traceable source — that is what makes the product
-trustworthy (D-006, evidence rule in the product brief).
+trustworthy (D-006, D-023). In Phase 5 the same rule is enforced in memory: an
+`EvidenceResponse` is rejected if any item cites a source absent from its own
+`sources` list, and `EvidenceService` drops any supplied document the claim's
+Phase 4 `VerificationResult` never recorded.
 
 ---
 

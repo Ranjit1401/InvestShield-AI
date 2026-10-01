@@ -208,32 +208,58 @@ Full result of one investigation.
   ],
   "verification_results": [
     {
-      "claim_id": "c1",
-      "status": "UNVERIFIED",
-      "reason": "No matching registration could be independently verified from the searched authoritative records.",
-      "sources_consulted": ["SEBI public records"],
-      "search_queries": ["site:sebi.gov.in \"Example Team\" investment adviser"]
+      "claim_id": "claim_001",
+      "status": "VERIFIED",
+      "reason_code": "AUTHORITATIVE_SOURCE_CONFIRMS",
+      "reason": "A SEBI public record confirms this claim.",
+      "confidence": 0.85,
+      "source_ids": ["src_2d84c639a686"],
+      "matched_result_ids": ["res_2d84c639a686"],
+      "queries": ["site:sebi.gov.in \"Acme Capital Advisors\""],
+      "warnings": []
     }
   ],
   "evidence": [
     {
-      "claim_id": "c1",
-      "source_id": "s1",
-      "evidence_text": "No matching adviser record found in searched records.",
-      "relevance": 0.8,
-      "relationship": "CONTEXT"
+      "id": "ev_2c1f0a9b3d47",
+      "claim_id": "claim_001",
+      "verification_status": "VERIFIED",
+      "evidence_type": "REGULATORY_RECORD",
+      "relationship": "SUPPORTS",
+      "relevance": "HIGH",
+      "excerpt": "Acme Capital Advisors is registered as an investment adviser.",
+      "excerpt_origin": "snippet",
+      "matched_cue": "registered as",
+      "provider_query": "site:sebi.gov.in \"Acme Capital Advisors\"",
+      "is_proof": true,
+      "url": "https://www.sebi.gov.in/intermediaries/acme",
+      "source": {
+        "source_id": "src_2d84c639a686",
+        "result_id": "res_2d84c639a686",
+        "url": "https://www.sebi.gov.in/intermediaries/acme",
+        "canonical_url": "https://www.sebi.gov.in/intermediaries/acme",
+        "domain": "sebi.gov.in",
+        "title": "Acme Capital Advisors",
+        "source_type": "REGULATOR",
+        "source_tier": "TIER_1_PRIMARY_REGULATOR",
+        "retrieved_at": "2026-10-01T00:00:00Z",
+        "position": 1,
+        "source_priority": 1,
+        "is_authoritative": true
+      }
     }
   ],
   "sources": [
     {
-      "source_id": "s1",
-      "title": "SEBI — Investment Adviser",
-      "url": "https://www.sebi.gov.in/...",
-      "snippet": "...",
-      "source_type": "OFFICIAL",
-      "tier": 1,
-      "credibility": "OFFICIAL",
-      "retrieved_at": "2026-10-01T00:00:00Z"
+      "source_id": "src_2d84c639a686",
+      "result_id": "res_2d84c639a686",
+      "url": "https://www.sebi.gov.in/intermediaries/acme",
+      "domain": "sebi.gov.in",
+      "title": "Acme Capital Advisors",
+      "source_type": "REGULATOR",
+      "source_tier": "TIER_1_PRIMARY_REGULATOR",
+      "retrieved_at": "2026-10-01T00:00:00Z",
+      "position": 1
     }
   ],
   "why_flagged": [
@@ -251,6 +277,7 @@ Full result of one investigation.
     { "step": "claims_extracted",   "label": "Claims extracted",        "status": "COMPLETED", "detail": "5 claims", "timestamp": "..." },
     { "step": "red_flags_detected", "label": "Red flags detected",      "status": "COMPLETED", "detail": "6 red flags", "timestamp": "..." },
     { "step": "sources_searched",   "label": "Authoritative sources searched", "status": "SKIPPED", "detail": "Search service unavailable", "timestamp": "..." },
+    { "step": "evidence_assembled", "label": "Evidence assembled",      "status": "COMPLETED", "detail": "1 evidence item", "timestamp": "..." },
     { "step": "risk_calculated",    "label": "Risk assessment completed", "status": "COMPLETED", "detail": "HIGH", "timestamp": "..." },
     { "step": "report_generated",   "label": "Report generated",        "status": "COMPLETED", "detail": null, "timestamp": "..." }
   ],
@@ -276,14 +303,29 @@ Full result of one investigation.
 `claim_entity_relationship`: `MENTIONS` | `SUBJECT`
 `risk_level`: `LOW` | `MEDIUM` | `HIGH` | `CRITICAL`
 `verification status`: `VERIFIED` | `UNVERIFIED` | `CONTRADICTED` | `INSUFFICIENT_EVIDENCE` | `NOT_APPLICABLE`
-`relationship`: `SUPPORTS` | `CONTRADICTS` | `CONTEXT`
-`source_credibility` (Phase 5 evidence tiering): `OFFICIAL` | `TRUSTED` |
-`GENERAL_WEB` | `USER_PROVIDED`
+`evidence_type` (Phase 5): `REGULATORY_RECORD` | `GOVERNMENT_RECORD` |
+`EXCHANGE_RECORD` | `OFFICIAL_ENTITY_SOURCE` | `SEARCH_RESULT`
+`relationship` (Phase 5): `SUPPORTS` | `CONTRADICTS` | `IDENTITY_REFERENCE` |
+`CONTEXT` | `MENTIONS`
+`relevance` (Phase 5): `HIGH` | `MEDIUM` | `LOW`
+`excerpt_origin` (Phase 5): `snippet` | `title`
 
-Note: `source_credibility` (an evidence *tier*, Phase 5) is a different concept
-from `source_type` (a search-result *publisher category*, Phase 3). They are kept
-as separate enums so that a search result's category is never mistaken for an
-evidence judgment.
+Note: `evidence_type`, `relationship` and `relevance` are three independent
+axes, not one taxonomy. `evidence_type` describes *the kind of record*,
+`relationship` describes *its bearing on the claim*, and `relevance` describes
+*how directly it bears on it*. They are kept separate because a combined
+vocabulary encodes the same fact twice and the two copies eventually disagree
+(D-023).
+
+There is no `source_credibility` enum. The credibility of a publisher is already
+expressed by Phase 3's `source_type` and Phase 4's `source_tier`, both carried
+through unchanged; a third credibility enum would be a second answer to the same
+question (D-012, D-018).
+
+`relevance` is a **label, not a number**. The `0..1` score sketched before Phase 5
+was deliberately not implemented, because any such number becomes an undeclared
+input to the Phase 6 risk score (D-007). Phase 6 consumes `proof_count` and
+`source_count` as counts and shows the items behind them.
 
 Note that `claim.confidence` is **extraction** confidence — how sure the
 extractor is that the text makes this kind of claim. It is not a probability
@@ -508,7 +550,8 @@ Guarantees a client may rely on:
 - `source_ids` is non-empty exactly for `VERIFIED` and `CONTRADICTED`, and every
   id refers to a document that was actually retrieved.
 - `matched_result_ids` and `source_ids` are `src_` / `res_` identifiers derived
-  as `sha256(canonical_url)[:12]`. Phase 5 attaches evidence objects to them.
+  as `sha256(canonical_url)[:12]`. Phase 5 attaches evidence objects to them, and
+  rejects any supplied document whose id is absent from here.
 - The five counts are recomputed from `results` by the schema and cannot
   disagree with them.
 - `reason_code` is one of `AUTHORITATIVE_SOURCE_CONFIRMS`, `NO_CONFIRMATION_FOUND`,
@@ -531,3 +574,99 @@ Guarantees a client may rely on:
 Tiers 1–3 are authoritative enough to settle a claim they are relevant to. A
 tier describes the publisher, not the document: a `TIER_1` page that says nothing
 about a claim verifies nothing (D-006, D-021).
+
+---
+
+### Evidence payload (built in Phase 5, not yet exposed over HTTP)
+
+`EvidenceService.build_claim()` produces an `EvidenceResponse`. It becomes part of
+the `GET /api/investigations/{id}` response in Phase 8; until then it is a library
+contract only.
+
+```json
+{
+  "claim_id": "claim_001",
+  "verification_status": "VERIFIED",
+  "verification_reason_code": "AUTHORITATIVE_SOURCE_CONFIRMS",
+  "evidence": [
+    {
+      "id": "ev_2c1f0a9b3d47",
+      "claim_id": "claim_001",
+      "verification_status": "VERIFIED",
+      "evidence_type": "REGULATORY_RECORD",
+      "relationship": "SUPPORTS",
+      "relevance": "HIGH",
+      "excerpt": "Acme Capital Advisors is registered as an investment adviser.",
+      "excerpt_origin": "snippet",
+      "matched_cue": "registered as",
+      "provider_query": "site:sebi.gov.in \"Acme Capital Advisors\"",
+      "is_proof": true,
+      "trace_path": "claim_001 -> ev_2c1f0a9b3d47 -> res_2d84c639a686 -> src_2d84c639a686 (https://www.sebi.gov.in/intermediaries/acme)"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "src_2d84c639a686",
+      "result_id": "res_2d84c639a686",
+      "url": "https://www.sebi.gov.in/intermediaries/acme",
+      "domain": "sebi.gov.in",
+      "title": "Acme Capital Advisors",
+      "source_type": "REGULATOR",
+      "source_tier": "TIER_1_PRIMARY_REGULATOR",
+      "retrieved_at": "2026-10-01T00:00:00Z",
+      "position": 1
+    }
+  ],
+  "warnings": [],
+  "built_at": "2026-10-01T00:00:00Z",
+  "evidence_count": 1,
+  "supports_count": 1,
+  "contradicts_count": 0,
+  "context_count": 0,
+  "source_count": 1,
+  "proof_count": 1
+}
+```
+
+Guarantees a client may rely on:
+
+- `excerpt` is **verbatim text the provider returned** — `SearchResult.snippet`, or
+  `SearchResult.title` when there is no snippet. `excerpt_origin` names which. It
+  is never summarised, paraphrased, or stitched together from two fields
+  (D-023).
+- `id` is `ev_` + `sha256(claim, source, result, excerpt origin, relationship,
+  excerpt)[:12]`. It is derived, never minted, so rebuilding the same evidence
+  yields the same id. `trace_path` uses ASCII `->` and is safe to print anywhere.
+- `source.source_id` / `source.result_id` are Phase 4's `src_` / `res_` ids for
+  the same document, and `source.source_type` / `source.source_tier` are Phase 3's
+  and Phase 4's classifications carried through unchanged.
+- `retrieved_at` is the provider's retrieval time, never re-stamped when the
+  evidence bundle is assembled.
+- `verification_status` is **copied** from the claim's `VerificationResult`, never
+  recomputed. Evidence cannot contradict the decision it explains (D-024).
+- `evidence` is empty — never a placeholder item — whenever nothing was
+  genuinely retrieved: search unavailable, search failed, zero results, or a
+  `NOT_APPLICABLE` claim. `warnings` states which (D-023).
+- `warnings` may report that supplied results were excluded because the claim's
+  verification never examined them, and may report that a `VERIFIED` or
+  `CONTRADICTED` status has no retrieved text to show. In both cases the status
+  stands as verification decided it.
+- `proof_count` counts items that speak to the claim — authoritative,
+  identity-matched, claim-relevant records that say something about it. It is not
+  a probability and not a safety judgement; a claim can be `VERIFIED` and still
+  carry red flags and a high risk band.
+- `context_count` counts items that inform without establishing anything. These
+  are shown, not suppressed, so a reader can see what was searched and found
+  nothing (D-006).
+- The five counts are recomputed by the schema and cannot disagree with `evidence`.
+- `EvidenceBundleResponse.claims_without_evidence` is tracked explicitly, because
+  "we found nothing" must stay visible rather than vanish.
+
+## Enumerations
+
+`evidence_type`: `REGULATORY_RECORD` | `GOVERNMENT_RECORD` | `EXCHANGE_RECORD` |
+`OFFICIAL_ENTITY_SOURCE` | `SEARCH_RESULT`
+`relationship`: `SUPPORTS` | `CONTRADICTS` | `IDENTITY_REFERENCE` | `CONTEXT` |
+`MENTIONS`
+`relevance`: `HIGH` | `MEDIUM` | `LOW`
+`excerpt_origin`: `snippet` | `title`

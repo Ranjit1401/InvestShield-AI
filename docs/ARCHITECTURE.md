@@ -87,6 +87,7 @@ Single-responsibility services, each independently constructible and testable:
 | `SearchService` | Query normalization, provider selection, source classification | `SearchStatus.UNAVAILABLE` / `ERROR` |
 | `SearchProvider` | Transport contract for web search | `SEARCH_*` codes |
 | `VerificationService` | Verifies claims against authoritative sources | `INSUFFICIENT_EVIDENCE` / `SEARCH_UNAVAILABLE` |
+| `EvidenceService` | Assembles traceable, verbatim-sourced evidence bundles | none (inherits Phase 3/4 codes) |
 | `RiskEngine` | Weighted risk accumulation | none (pure) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
@@ -208,6 +209,69 @@ Contracts:
 - **Verification reads titles and snippets only.** No page is fetched. This is a
   coverage limit, not a safety one: it can miss a contradiction, never invent a
   source.
+
+### 2.3b Evidence layer (Phase 5, complete)
+
+```
+Claim + Entity
+VerificationResult ─┐
+Phase 3 results ────┼─► EvidenceService.build_claim()
+Phase 3 responses ──┘        │
+                             ▼
+                    EvidenceResponse
+                    (evidence + sources + counts + warnings)
+```
+
+```
+app/schemas/evidence.py                       EvidenceType, EvidenceRelation,
+                                              EvidenceRelevance,
+                                              EvidenceSource/Item/Response/Bundle
+app/services/evidence/source_normalizer.py    normalize_source(), canonical_url_for(),
+                                              evidence_type_for_tier()
+app/services/evidence/relationship.py         relationship_for(), relevance_for(),
+                                              is_probative(), evidence_type_for()
+app/services/evidence/evidence_builder.py     build_evidence_item(), excerpt_for(),
+                                              evidence_id_for(), group_by_query()
+app/services/evidence/evidence_dedupe.py      dedupe_evidence(), order_evidence(),
+                                              distinct_sources()
+app/services/evidence/evidence_service.py     EvidenceService, build_evidence_service()
+```
+
+Contracts:
+
+- **No network, no provider, no LLM.** Phase 5 issues no search, imports no HTTP
+  client and names no provider; a package test enforces all three. Its only
+  inputs are objects an earlier phase produced.
+- **One judgement, one place.** `relationship.py` is the only module that decides
+  what a document *means*, and its only input is Phase 4's `AssessedSource`. No
+  Phase 5 module calls `detect_stance()`.
+- **Evidence may narrow Phase 4, never widen it.** A supporting cue in a document
+  that failed the identity or authority gate — or in a claim whose reason code
+  relies on no source — is `CONTEXT`/`MENTIONS`, never `SUPPORTS` (D-024).
+- **Excerpts are verbatim.** `snippet`, else `title`; `excerpt_origin` records
+  which. Title and snippet are never merged, summarised or paraphrased, and
+  `ALLOWED_EXCERPT_ORIGINS` rejects anything else at construction time (D-023).
+- **No evidence without a retrieved document.** An empty tuple is the correct
+  answer for unavailable search, failed search, zero results and
+  `NOT_APPLICABLE`. There is no placeholder item and no synthesised document.
+- **Only Phase 4's documents may be cited.** A supplied result whose `src_`/`res_`
+  id is absent from the claim's `VerificationResult` is dropped with a warning
+  naming how many.
+- **Three independent axes.** `evidence_type` (from the authority tier),
+  `relationship` (from Phase 4's stance) and `relevance` (closeness, never a
+  number). A single taxonomy encoding all three was rejected: two copies of one
+  fact eventually disagree (D-023).
+- **Reused priority, no second ranking.** Ordering is Phase 4 `TIER_PRIORITY`,
+  then relevance, relationship, provider position and the stable `ev_` id. No
+  credibility score and no numeric "evidence strength" is defined (D-007, D-012).
+- **Derived, never minted.** `ev_` ids are `sha256` over claim, source, result,
+  excerpt origin, relationship and excerpt — no counter, no clock, no salt — so
+  rebuilding the same evidence yields the same id.
+- **Neutral context is kept.** `MENTIONS`, `CONTEXT` and `IDENTITY_REFERENCE`
+  items are shown, never suppressed; hiding them would hide the searches that
+  found nothing (D-006).
+- **A status is copied, not recomputed.** Where the status and the showable
+  evidence diverge, the bundle keeps Phase 4's verdict and warns about the gap.
 
 ### 2.4 Extraction pipeline (Phase 2, complete)
 
@@ -423,19 +487,47 @@ Credibility enum: `OFFICIAL`, `TRUSTED`, `GENERAL_WEB`, `USER_PROVIDED`.
 
 ## 6. Evidence System
 
-```python
-class Evidence:
-    evidence_id
-    claim_id
-    source_id
-    evidence_text
-    relevance        # 0..1
-    relationship     # SUPPORTS | CONTRADICTS | CONTEXT
+Implemented in Phase 5. The conceptual model is unchanged; the detail is now
+fixed.
+
+```
+CLAIM ──► EvidenceResponse ──► EvidenceItem ──► EvidenceSource
+              │                    │                 │
+              │                    │                 └─ url, canonical_url, domain,
+              │                    │                    title, source_type,
+              │                    │                    source_tier, retrieved_at
+              │                    └─ excerpt (verbatim), excerpt_origin,
+              │                       relationship, relevance, evidence_type,
+              │                       matched_cue, provider_query
+              └─ verification_status + reason_code (copied from Phase 4),
+                 counts, warnings
 ```
 
-Evidence is always traceable: `claim → evidence → source(url, title, retrieved_at)`.
-Evidence items are only ever created from a real search result or from the
-user-provided content. Synthetic sources are forbidden and guarded by a test.
+```
+EvidenceType       REGULATORY_RECORD | GOVERNMENT_RECORD | EXCHANGE_RECORD |
+                   OFFICIAL_ENTITY_SOURCE | SEARCH_RESULT
+EvidenceRelation   SUPPORTS | CONTRADICTS | IDENTITY_REFERENCE | CONTEXT | MENTIONS
+EvidenceRelevance  HIGH | MEDIUM | LOW
+```
+
+Evidence is always traceable: `claim -> evidence -> result -> source`, printed by
+`EvidenceItem.trace_path`. Items are only ever created from a real Phase 3 search
+result; synthetic sources are forbidden structurally (D-023) and guarded by tests.
+
+Notes carried forward:
+
+- **`excerpt` is verbatim.** `snippet`, else `title`. Never merged, summarised or
+  paraphrased. `excerpt_origin` names the field so a reader can check the quote
+  against the page.
+- **`relationship` is derived, never re-derived.** It is a function of Phase 4's
+  `AssessedSource` and the claim's reason code, and Phase 5 may only narrow it
+  (D-024).
+- **An empty evidence set is a valid answer.** Unavailable search, failed search,
+  zero results and `NOT_APPLICABLE` all produce no items plus a factual warning.
+- **Relevance is a label, not a number.** The `0..1` score sketched before Phase 5
+  is deliberately not implemented: it would become an undeclared risk input
+  (D-007). Phase 6 consumes `proof_count` and `source_count` as *counts* and shows
+  the items behind them.
 
 ---
 
