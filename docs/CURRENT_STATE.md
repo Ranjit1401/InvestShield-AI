@@ -7,37 +7,35 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 0 — Project foundation — **COMPLETE**
-**Current Subphase:** Phase 1 — Red Flag Engine — **NOT STARTED**
-**Last Completed Task:** Phase 0 verification — full test suite green (43
-passing), backend booted under Uvicorn, `GET /api/health` returning `ok`.
-**Currently Working On:** Idle. Awaiting instruction to begin Phase 1.
-**Phase Started:** — (Phase 1 not yet started)
+**Current Phase:** Phase 1 — Red Flag Engine — **COMPLETE**
+**Current Subphase:** Phase 2 — Claim & Entity Extraction — **NOT STARTED**
+**Last Completed Task:** Phase 1 verification — 148 tests passing (43 Phase 0 +
+105 Phase 1); all 15 rules fire on their positive samples; every per-rule
+negative sample stays clean; backend still imports and boots.
+**Currently Working On:** Idle. Awaiting instruction to begin Phase 2.
+**Phase Started:** — (Phase 2 not yet started)
 
 ### Files Recently Changed
 
 ```
-backend/app/api/deps.py                     (settings dependency now reads app.state)
-backend/app/main.py                         (app.state.settings, trimmed lifespan)
-backend/app/api/routes/health.py            (Depends-based settings injection)
-backend/tests/test_config.py                (rewritten: OS-env isolation)
-backend/tests/test_health.py                (rewritten: sentinel-credential leak test)
-backend/tests/test_db.py                    (create_all assertions corrected)
-docs/CURRENT_STATE.md                       (this file)
-docs/DEVELOPMENT_LOG.md                     (Phase 0 entry)
-docs/IMPLEMENTATION_PLAN.md                 (Phase 0 marked complete)
+backend/app/schemas/red_flags.py              (new — typed result schemas)
+backend/app/services/red_flag_rules.py        (new — 15-rule catalogue)
+backend/app/services/red_flag_engine.py       (new — detection engine)
+backend/app/core/config.py                    (15 per-rule weights + 6 thresholds)
+backend/tests/test_red_flag_rules.py          (new — catalogue invariants)
+backend/tests/test_red_flag_engine.py         (new — detection behaviour)
+backend/requirements.txt                      (corrected pytest pins to 9.1.1)
+.env.example                                  (new threshold settings)
+docs/CURRENT_STATE.md / DEVELOPMENT_LOG.md / IMPLEMENTATION_PLAN.md
+docs/ARCHITECTURE.md / AI_PIPELINE.md
 ```
 
 ### Tests Passing
 
 ```
 cd backend && python -m pytest
-43 passed
+148 passed
 ```
-
-Coverage areas: config loading & derived settings, OS-env isolation, health
-endpoint contract, secret non-leakage, database engine/session/pragma
-behaviour, capability probes.
 
 ### Tests Failing
 
@@ -45,14 +43,52 @@ None.
 
 ### Known Bugs
 
-None open. Five failures were found and fixed during Phase 0 verification; see
-`DEVELOPMENT_LOG.md` for the list (settings dependency bound to the global
-rather than the running app, over-strict secret-leak assertion, and a
-`create_all()` assertion written against an empty table set).
+None open. Six defects were found and fixed during Phase 1 verification (all
+recorded in `DEVELOPMENT_LOG.md`). The two most significant were real engine
+bugs, not test bugs:
+
+1. **Ungrouped alternation corruption.** `_CREDENTIAL_STATUS` and `_REGULATORS`
+   were interpolated as bare `a|b|c` strings. Concatenating them into a larger
+   pattern split that pattern at the top level, so e.g. "SEBI requires
+   investment advisers to be registered" matched a rule it should never match.
+   Both vocabularies are now pre-grouped and `test_red_flag_rules.py` guards it.
+2. **Negation window was one-sided.** Only cues *before* a match suppressed it,
+   so "Returns cannot be guaranteed in any market" was flagged. Negation is now
+   checked both before and inside the match.
 
 ### Blocked Items
 
 None.
+
+### Phase 1 Design Decisions
+
+| Decision | Rationale |
+| --- | --- |
+| Rules live in one module (`red_flag_rules.py`) | The brief forbids scattering scam regexes; all pattern knowledge is now in one catalogue. |
+| Six detector *types* rather than 100 raw regexes | Numeric rules ("30% monthly") need threshold comparison and historical-figure exclusion, which a bare regex cannot express correctly. |
+| Negation handling | "Past performance does not guarantee returns" is a disclaimer, not a promise. Suppressing it is a false-positive fix, not a loophole. |
+| Sentence = `[.!?…]` or **blank line** | Marketing posts are line-broken; treating a single `\n` as a sentence boundary would break evidence spans. |
+| ContextKeywordDetector for Telegram/WhatsApp/URL | A bare "Telegram" is not an indicator. Investment context must appear in the same sentence. |
+| `weight` configurable, `severity` fixed per rule | Weight tunes risk contribution; severity is the intrinsic seriousness of the indicator type. |
+| `verification_note` on credential rules | Forces the wording "requires verification" rather than "is fake" (D-006). |
+
+### Known Limitations (Phase 1)
+
+- **English + partial Hindi patterns only.** Marathi and other scripts are not
+  covered yet; Phase 2/15 handle presentation-layer translation, and the
+  analysis layer needs more script work before this is genuinely
+  language-independent.
+- **Text only.** `FAKE_PROFIT_SCREENSHOT` reads the *language* referencing
+  proof; no image authenticity analysis (out of scope until Phase 13).
+- **`SUSPICIOUS_URL` is pattern-based.** A shortener, raw IP, punycode or
+  plain-HTTP investment link is an indicator, never a malware verdict. No
+  reputation/DNS lookup yet (that belongs to Phase 4 search).
+- **Adviser-credential false positives are accepted.** "Consult a certified
+  financial planner" will raise `UNVERIFIED_ADVISER`. This is deliberate: the
+  rule detects a credential claim needing verification, and Phase 4 resolves it.
+- **Historical-figure exclusion is heuristic.** "Our fund returned 95% in 2023"
+  is suppressed by the year/reported cues. A promotional claim that happens to
+  mention a year could be missed.
 
 ### Environment Reality Check (verified live)
 
@@ -93,38 +129,33 @@ the next phase:
 
 ## Next Exact Task
 
-**Phase 1 — RedFlagEngine.**
+**Phase 2 — Claim & Entity Extraction.**
 
-1. Create `backend/app/services/red_flag_rules.py` holding the 15 rule
-   definitions from `PROJECT_CONTEXT.md` §18, each with
-   `code`, `name`, `description`, `severity`, `default_weight`, and regex
-   patterns.
-2. Create `backend/app/services/red_flag_engine.py`:
-   - `detect(text: str, settings: Settings | None = None) -> list[RedFlag]`
-   - captures the exact matched evidence span and its offsets
-   - dedupes by rule code, keeping the strongest occurrence
-   - reads weights from settings (`risk_weight_*`) so they stay configurable
-   - returns red flags sorted by severity then weight
-3. Create `backend/app/schemas/investigation.py` with the Pydantic
-   `RedFlag` / `Severity` models.
-4. Write `backend/tests/test_red_flag_engine.py` covering:
-   - the synthetic demo input → all 8 expected indicators
-   - each rule firing in isolation
-   - **false-positive guards** (§43): `"High returns are possible"` must NOT
-     trigger `GUARANTEED_RETURN`; `"We offer long-term mutual funds"` must not
-     trigger anything; a benign financial-information text must produce zero or
-     near-zero indicators
-   - weights come from settings when overridden
-   - evidence spans are non-empty and appear verbatim in the input
-5. Run `python -m pytest`, fix failures.
-6. Update `DEVELOPMENT_LOG.md`, `IMPLEMENTATION_PLAN.md`, and this file.
-7. Commit: `feat: implement red flag engine` (+ `test: add red flag engine tests`).
+1. Create `backend/app/schemas/claims.py` and `backend/app/schemas/entities.py`:
+   `ClaimType` (`REGULATORY`, `RETURN`, `PAYMENT`, `ENTITY_IDENTITY`, `URGENCY`,
+   `PLATFORM`, `COST`, `PERFORMANCE`, `OTHER`), `EntityType` (11 members), and
+   the `Claim` / `Entity` models (`claim_id`, `claim_text`, `claim_type`,
+   `entities`, `confidence`, `verification_required` / `entity_id`, `name`,
+   `entity_type`, `registration_number`, `mentions`, `confidence`).
+2. Create `backend/app/services/claim_extractor.py` with a **deterministic**
+   sentence/claim splitter as the baseline. It must split the demo input into
+   ~6 atomic claims, never the whole message as one claim.
+3. Create `backend/app/services/entity_extractor.py` with deterministic
+   extraction for: URLs, domains, registration numbers, UPI/IFSC identifiers,
+   currency amounts, percentages, phone numbers, and capitalised person/company
+   names.
+4. Only then add the LLM path: `LLMService.structured_generate()` with Groq and a
+   `NullProvider` fallback to the deterministic extractors.
+5. Write `backend/tests/test_claims.py`, `test_entities.py` and
+   `test_extractors.py`. Required cases: the demo input splits into multiple
+   atomic claims; `"High returns are possible"` produces no fabricated
+   guarantee claim; entities typed correctly; no-key mode still extracts.
+6. Run `python -m pytest`, fix failures, update all docs, commit.
 
-### Do not start before Phase 1 is green
+### Do not start before Phase 2 is green
 
-- Phase 2 (claim/entity extraction) — needs the `Claim` schema, which depends on
-  the `RedFlag` schema created in step 3.
-- No LLM calls, no LangGraph, no frontend, no auth.
+- Phase 3 (external services) beyond the minimum `LLMService` needed here.
+- No LangGraph, no frontend, no auth, no DB persistence.
 
 ---
 
@@ -137,6 +168,6 @@ If you are reading this in a fresh session:
 3. [ ] Read `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
 4. [ ] Read the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -10`
-6. [ ] Run `cd backend && python -m pytest`
+6. [ ] Run `cd backend && python -m pytest` — expect **148 passed**
 7. [ ] Confirm the test count still matches "Tests Passing" above
 8. [ ] Execute **Next Exact Task**

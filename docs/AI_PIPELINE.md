@@ -124,43 +124,65 @@ case where no LLM is available.
 
 **This stage is deterministic code, not LLM inference.**
 
-Codes:
+**Implementation:** `app/services/red_flag_rules.py` (rule catalogue) +
+`app/services/red_flag_engine.py` (`RedFlagEngine.detect`). Status: **complete
+(Phase 1)**.
 
-```
-GUARANTEED_RETURN
-UNREALISTIC_RETURN
-URGENCY_PRESSURE
-FAKE_REGULATORY_CLAIM
-UNVERIFIED_ADVISER
-SUSPICIOUS_URL
-THIRD_PARTY_PAYMENT
-APK_DOWNLOAD
-TELEGRAM_INVESTMENT_GROUP
-WHATSAPP_INVESTMENT_GROUP
-BORROW_TO_INVEST
-WITHDRAWAL_FEE
-ACCOUNT_ACTIVATION_FEE
-FAKE_PROFIT_SCREENSHOT
-IMPERSONATION
-```
+Codes, severities and default heuristic weights:
 
-Each detection carries an exact evidence span from the source text:
+| Code | Severity | Weight |
+| --- | --- | --- |
+| `GUARANTEED_RETURN` | HIGH | 20 |
+| `UNREALISTIC_RETURN` | HIGH | 20 |
+| `URGENCY_PRESSURE` | MEDIUM | 15 |
+| `FAKE_REGULATORY_CLAIM` | HIGH | 25 |
+| `UNVERIFIED_ADVISER` | MEDIUM | 20 |
+| `SUSPICIOUS_URL` | MEDIUM | 10 |
+| `THIRD_PARTY_PAYMENT` | HIGH | 15 |
+| `APK_DOWNLOAD` | HIGH | 15 |
+| `TELEGRAM_INVESTMENT_GROUP` | MEDIUM | 10 |
+| `WHATSAPP_INVESTMENT_GROUP` | MEDIUM | 10 |
+| `BORROW_TO_INVEST` | HIGH | 15 |
+| `WITHDRAWAL_FEE` | HIGH | 20 |
+| `ACCOUNT_ACTIVATION_FEE` | MEDIUM | 15 |
+| `FAKE_PROFIT_SCREENSHOT` | MEDIUM | 10 |
+| `IMPERSONATION` | HIGH | 25 |
+
+All weights are **configurable** via `risk_weight_*` settings and are heuristic
+indicators, not probabilities.
+
+Each detection carries the exact evidence span from the submitted content:
 
 ```json
 {
   "code": "GUARANTEED_RETURN",
-  "name": "Guaranteed return",
+  "name": "Guaranteed Return",
   "severity": "HIGH",
   "weight": 20,
-  "description": "The message promises a fixed investment return.",
-  "evidence": "guarantees 35% monthly returns"
+  "description": "The content promises or guarantees an investment return.",
+  "matched_text": "guarantees 35% monthly returns",
+  "evidence_span": { "start": 42, "end": 73, "text": "guarantees 35% monthly returns" },
+  "rule_reason": "The content uses guaranteed-return language.",
+  "occurrence_count": 2
 }
 ```
 
 **False-positive discipline (§43):** a single suspicious phrase is never
-sufficient for a fraud verdict. "High returns are possible" is a normal
-statement; only *guarantee / assured / risk-free / fixed* framings trigger
-`GUARANTEED_RETURN`. Risk level aggregates **multiple independent indicators**.
+sufficient for a fraud verdict. "High returns are possible" and "Investment
+returns vary depending on market conditions" produce **no** findings, and a
+plain-HTTPS regulator URL or a phone number is not a suspicious link. Guard
+mechanisms:
+
+| Mechanism | Effect |
+| --- | --- |
+| Negation cues (before and inside a match) | "Past performance does not guarantee future results" is a disclaimer, not a claim |
+| Historical-figure exclusion | "reported 30% annual return last year" is not an unrealistic *promised* return |
+| Sentence-level exclusions | "SEBI requires advisers to be registered" is a requirement statement, not a claim |
+| `ContextKeywordDetector` | "Contact support on WhatsApp" is not an investment group |
+| Threshold comparison | A promised monthly return must exceed `unrealistic_monthly_return_threshold` |
+
+Risk level aggregates **multiple independent indicators**; a lone match never
+produces a verdict.
 
 ### Stage 5 — Entity Verification
 

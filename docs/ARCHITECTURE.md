@@ -75,10 +75,52 @@ Single-responsibility services, each independently constructible and testable:
 | `OCRService` | Image → text (pytesseract) | `OCR_UNAVAILABLE` |
 | `PDFService` | PDF → text (PyMuPDF) | `PDF_EXTRACTION_FAILED` |
 | `RedFlagEngine` | Deterministic red-flag detection | none (pure) |
+| `ClaimExtractor` | Deterministic atomic-claim splitting (Phase 2) | none (pure) |
+| `EntityExtractor` | Deterministic entity/identifier extraction (Phase 2) | none (pure) |
 | `RiskEngine` | Weighted risk accumulation | none (pure) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
-### 2.3 Agents (`app/agents/`)
+### 2.3 Red-flag engine (Phase 1, complete)
+
+All scam-pattern knowledge lives in **one** module: `app/services/red_flag_rules.py`.
+No other file may contain an investment-scam regex.
+
+```
+red_flag_rules.py
+    RedFlagRule(code, name, description, severity, default_weight,
+                weight_attr, detectors, verification_note)
+    ALL_RULES / RULES_BY_CODE / get_rule()
+    Detector types: RegexDetector, PercentThresholdDetector,
+                    MultiplierDetector, CurrencyGrowthDetector,
+                    ShortPeriodProfitDetector, ContextKeywordDetector
+
+red_flag_engine.py
+    RedFlagEngine.detect(text) -> list[RedFlag]   # dedup + sort
+    RedFlagEngine.detect_codes(text) -> set[RedFlagCode]
+    RedFlagEngine.weight_for(code) -> int          # settings-driven
+```
+
+Contracts:
+
+- **Detection only.** A rule detects *language*. It never decides whether a
+  claim is true. `FAKE_REGULATORY_CLAIM` and `UNVERIFIED_ADVISER` carry an
+  explicit `verification_note` so the report says "requires verification".
+- **Exact spans.** `evidence_span.start/end` index the *original* input;
+  `matched_text` is `text[start:end]`, never reconstructed.
+- **Deduplication.** One finding per `RedFlagCode`. The primary span is chosen
+  by `(detector priority, longest span, earliest offset)`; the rest go to
+  `additional_spans`.
+- **Sorting.** `(severity desc, weight desc, code asc)` — never dict order.
+- **False-positive discipline.** Negation cues (checked before *and* inside a
+  match) turn disclaimers into non-matches; sentence-level exclusions suppress
+  requirement statements; `ContextKeywordDetector` requires investment context
+  in the same sentence; numeric rules ignore historical/reported figures.
+- **Configurability.** Weights and thresholds come from `Settings`. Severity is
+  fixed per rule (intrinsic seriousness) and is deliberately not tunable.
+- **Sentences.** `[.!?।]`, an ellipsis, or a **blank line** ends one. A single
+  newline is soft, because promotional posts are line-broken.
+
+### 2.4 Agents (`app/agents/`)
 
 Five logical components only:
 

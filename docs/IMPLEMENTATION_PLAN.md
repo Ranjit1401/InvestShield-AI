@@ -32,15 +32,20 @@ tests fail, unless the failure is documented as an accepted blocker in
 - [x] Verify server boots with uvicorn
 - [x] First git commit
 
-## Phase 1 — Red Flag Engine `[ ]`
+## Phase 1 — Red Flag Engine `[x]`
 
-- [ ] `app/services/red_flag_engine.py` with 16 rule codes
-- [ ] Rule definitions (`code`, `name`, `description`, `severity`, `weight`, patterns)
-- [ ] Configurable weights (`app/core/risk_weights.py` or settings)
-- [ ] Evidence span capture (exact matched substring + offsets)
-- [ ] Multi-indicator requirement to avoid false positives (§43)
-- [ ] Unit tests: positive, negative, and false-positive-guard cases
-- [ ] Bench against the synthetic demo input
+- [x] `app/schemas/red_flags.py` — `Severity`, `RedFlagCode`, `EvidenceSpan`, `RedFlag`
+- [x] `app/services/red_flag_rules.py` — centralised rule catalogue with all 15 rules
+- [x] Detector types: `RegexDetector`, `PercentThresholdDetector`,
+      `MultiplierDetector`, `CurrencyGrowthDetector`, `ShortPeriodProfitDetector`,
+      `ContextKeywordDetector`
+- [x] `app/services/red_flag_engine.py` — `detect()`, dedupe, deterministic sort
+- [x] Configurable weights + thresholds in `app/core/config.py` and `.env.example`
+- [x] Exact evidence spans sliced from the original input
+- [x] Negation handling (disclaimers are not claims)
+- [x] False-positive guards (context requirements, historical-figure exclusions)
+- [x] 105 new tests: per-rule positives, per-rule negatives, edge cases, spans,
+      dedupe, sorting, configurability, determinism
 
 ## Phase 2 — Claim / Entity Extraction `[ ]`
 

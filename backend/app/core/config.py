@@ -74,23 +74,45 @@ class Settings(BaseSettings):
     allowed_upload_types: str = "image/png,image/jpeg,image/webp,application/pdf"
 
     # ---------- Risk engine ----------
+    # Heuristic indicator weights (Phase 1). These are tuning knobs for the
+    # explainable risk score. They are NOT scientifically validated
+    # probabilities of fraud and must never be presented as such (D-007).
     risk_weight_guaranteed_return: int = 20
-    risk_weight_unrealistic_return: int = 25
+    risk_weight_unrealistic_return: int = 20
     risk_weight_urgency_pressure: int = 15
     risk_weight_fake_regulatory_claim: int = 25
     risk_weight_unverified_adviser: int = 20
     risk_weight_suspicious_url: int = 10
     risk_weight_third_party_payment: int = 15
-    risk_weight_apk_download: int = 25
-    risk_weight_messaging_investment_group: int = 10
-    risk_weight_borrow_to_invest: int = 20
-    risk_weight_withdrawal_fee: int = 25
-    risk_weight_account_activation_fee: int = 20
-    risk_weight_fake_profit_screenshot: int = 15
-    risk_weight_impersonation: int = 20
+    risk_weight_apk_download: int = 15
+    risk_weight_telegram_investment_group: int = 10
+    risk_weight_whatsapp_investment_group: int = 10
+    risk_weight_borrow_to_invest: int = 15
+    risk_weight_withdrawal_fee: int = 20
+    risk_weight_account_activation_fee: int = 15
+    risk_weight_fake_profit_screenshot: int = 10
+    risk_weight_impersonation: int = 25
+
     risk_band_medium_max: int = 20
     risk_band_high_max: int = 50
     risk_band_critical_max: int = 90
+
+    # ---------- Red flag engine thresholds ----------
+    # A promised monthly/annual return above these percentages is treated as
+    # an unrealistic-return indicator. Thresholds are promotional/promissory
+    # thresholds, not fraud determinations.
+    unrealistic_monthly_return_threshold: float = 20.0
+    unrealistic_annual_return_threshold: float = 50.0
+    # "Double your money" is 2x; this threshold flags 3x-and-above claims.
+    unrealistic_multiplier_threshold: float = 3.0
+    # Claims of very large short-period profits (e.g. "100% profit in 7 days").
+    unrealistic_short_period_pct_threshold: float = 100.0
+    unrealistic_short_period_days_threshold: int = 30
+    # Currency growth claims such as "₹10,000 becomes ₹1,00,000".
+    unrealistic_currency_growth_multiple: float = 5.0
+    # Character window used when a detector needs nearby context (urgency cues,
+    # messaging-platform investment context).
+    red_flag_context_window: int = 80
 
     # ---------- Derived helpers ----------
     @property
