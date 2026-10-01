@@ -1,0 +1,15 @@
+# InvestShield AI — backend core dependencies
+# Pinned to versions verified on Python 3.14.5 (Windows).
+# AI/OCR/PDF extras live in requirements-ai.txt and are installed per phase.
+
+fastapi==0.141.1
+uvicorn[standard]==0.30.1
+pydantic==2.13.4
+pydantic-settings==2.14.2
+SQLAlchemy==2.0.52
+httpx==0.27.0
+python-multipart==0.0.20
+
+# --- testing ---
+pytest==8.4.2
+pytest-asyncio==1.2.0

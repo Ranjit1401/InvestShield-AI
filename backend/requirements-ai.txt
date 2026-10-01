@@ -1,0 +1,26 @@
+# InvestShield AI — optional AI / document-processing dependencies.
+# Installed in Phase 3 (services) and Phase 7 (LangGraph).
+# Every one of these is OPTIONAL: the app must run and produce a report without
+# any of them (D-009).
+
+# --- orchestration ---
+langgraph>=0.6.0
+
+# --- LLM provider (Groq) ---
+langchain-core>=0.3.0
+langchain-groq>=0.3.0
+
+# --- embeddings (optional runtime download of all-MiniLM-L6-v2) ---
+sentence-transformers>=5.0.0
+
+# --- OCR ---
+pytesseract>=0.3.13
+Pillow>=11.0.0
+# NOTE: the Tesseract *binary* must be installed separately.
+# On this machine: C:\Program Files\Tesseract-OCR\tesseract.exe
+
+# --- PDF ---
+PyMuPDF>=1.26.0
+
+# --- database (only needed when moving off SQLite) ---
+psycopg[binary]>=3.2.0

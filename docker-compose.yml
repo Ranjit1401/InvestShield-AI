@@ -1,0 +1,54 @@
+# InvestShield AI — local stack.
+#
+# The backend runs fine with `uvicorn` alone (see README). This file exists so
+# the API and a managed Postgres are available for Phase 9+ and for demoing a
+# production-shaped deployment.
+#
+# Secrets are injected from the repo-root `.env`, which is never committed.
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: investshield-api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://investshield:investshield@db:5432/investshield
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      SERPAPI_KEY: ${SERPAPI_KEY:-}
+      TESSERACT_CMD: /usr/bin/tesseract
+      ENVIRONMENT: docker
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: investshield-db
+    environment:
+      POSTGRES_USER: investshield
+      POSTGRES_PASSWORD: investshield
+      POSTGRES_DB: investshield
+    ports:
+      - "5432:5432"
+    volumes:
+      - investshield_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U investshield -d investshield"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  investshield_pgdata:
