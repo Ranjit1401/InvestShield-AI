@@ -369,3 +369,115 @@ so `python -m pytest` is the sole gate.
 Phase 3 — External Services: `SearchService` (SerpAPI + `NullProvider`),
 `EmbeddingService`, `VectorStore`, `OCRService`, `PDFService`, each degrading
 into a typed error code.
+
+---
+
+## Phase 3 — External Services & Search Infrastructure (2026-10-01)
+
+**Commit:** `feat: implement external search infrastructure`
+**Status:** search infrastructure complete — **480 tests passing** (220 prior +
+260 Phase 3). `OCRService`, `PDFService`, `EmbeddingService` and `VectorStore`
+are explicitly deferred (see Scope below).
+
+### Scope decision
+
+The phase brief listed all external services. Only search was built, for a
+concrete reason: OCR, PDF and embeddings have **no consumer until Phase 8+**,
+and `pytesseract`, `Pillow` and `PyMuPDF` are not installed on this machine.
+Adding three untested wrappers around absent packages would create code that
+cannot be exercised, and `sentence-transformers` would pull `torch` into the
+import path of every test. They are recorded as pending rather than stubbed.
+
+### What was built
+
+```
+Claim / Entity
+      ↓
+SearchService        ← policy: normalize, validate, classify, dedupe, limit
+      ↓
+SearchProvider (ABC) ← abstraction
+      ↓
+SerpAPIProvider      ← transport: only module that speaks SerpAPI's wire format
+      ↓
+Normalized SearchResult
+```
+
+| Module | Role |
+| --- | --- |
+| `app/schemas/search.py` | `SourceType`, `SearchStatus`, `SearchResult`, `SearchResponse`, `SOURCE_PRIORITY`, 7 error codes |
+| `app/services/search/base.py` | `SearchProvider` ABC, `NullSearchProvider`, `results_or_empty()` |
+| `app/services/search/query.py` | `normalize_query()`, `is_meaningful_query()` |
+| `app/services/search/domain.py` | `extract_domain()`, `canonicalize_url()` |
+| `app/services/search/source_classifier.py` | `classify_domain()`, `classify_url()` |
+| `app/services/search/serpapi_provider.py` | `SerpAPIProvider`, `clean_text()` |
+| `app/services/search/search_service.py` | `SearchService`, `build_search_service()` |
+| `app/scripts/manual_search.py` | runnable smoke test (§27) |
+| `app/core/config.py` | added `serpapi_engine` |
+
+Decisions D-017 … D-019 record the load-bearing choices.
+
+### Verification
+
+- 260 new tests, **completely offline**. HTTP is mocked with
+  `httpx.MockTransport`; failure paths that are otherwise hard to trigger
+  (timeout, 429, 401/403, non-JSON, HTTP-200-with-`error`) are all covered.
+- Default `python -m pytest` deselects the `integration` marker via `pytest.ini`
+  (`-m "not integration"`), so the suite can never call a paid service.
+  `pytest -m integration` runs the live check and skips without a key.
+- `fake-sebi-example.com` and nine other lookalikes are asserted **not** to
+  classify as regulator/government/exchange.
+- API-key absence is asserted across the response body, warnings, and captured
+  log output.
+- Determinism: two identical runs over identical provider output produce
+  byte-identical normalized results (excluding retrieval timestamps).
+- Manual script confirms graceful degradation with no key:
+  `UNAVAILABLE` / `SEARCH_NOT_CONFIGURED` / `provider_query_sent = false`.
+
+### Problems encountered
+
+Three defects were found while testing, plus one security issue:
+
+1. **Unbounded call-site recursion (test bug, severe).** The fixture replaced
+   `httpx.Client` module-wide, and the replacement factory called
+   `httpx.Client(...)` — itself. The suite hung rather than failing. Fixed by
+   capturing the real class at import time (`_REAL_HTTPX_CLIENT`).
+2. **Under-classification of unlisted TLDs.** `classify_domain` only recognised a
+   fixed suffix list, so `example.co.uk` and `site.com.br` fell through to
+   `UNKNOWN`. A real domain with an unrecognised public suffix should be ordinary
+   web content once the official registries have been ruled out by exact
+   matching. Now any multi-label host with an alphabetic TLD is `GENERAL_WEB`;
+   bare intranet names and IP literals stay `UNKNOWN`.
+3. **Silent result truncation.** A full page produced no indication that results
+   had been capped, so a truncated list could read as "everything that exists".
+   The service now reports when a page came back at the limit.
+4. **Live credential committed to `.env.example` (security).** The file contained
+   a populated Neon `DATABASE_URL` with a password, in a tracked file. Replaced
+   with a `sqlite:///` default and a `USER:PASSWORD@HOST/DBNAME` template.
+   **This credential is still in Git history and should be rotated.**
+
+Test-data corrections: one entry in the "unusable provider result" parametrize
+list (`{"title": "t", "link": "https://example.com/a"}`) was in fact a valid
+result and was wrongly expected to be skipped.
+
+### Remaining issues / limitations
+
+- **`SERPAPI_KEY` is not set on this machine**, so the live path has not been
+  exercised against the real service. Transport, normalization and
+  classification are verified against mocks; prompt/param names follow SerpAPI's
+  documented API.
+- The source registry is small and explicit by design (D-018). Unlisted official
+  bodies classify as `GENERAL_WEB`, which is safe but loses authority ordering.
+- `classify_domain` does no DNS/WHOIS. Whether a host is *legitimate* rather than
+  *official* is a Phase 4 question.
+- `OFFICIAL_ENTITY` and `TRUSTED_SECONDARY` are defined but unused; they exist so
+  Phase 4/5 can extend the registry without changing the enum.
+- Result de-duplication is exact-canonical-URL only; near-duplicate pages with
+  different URLs are both kept (intentional — see D-017 rationale in code).
+
+### Next step
+
+Phase 4 — Verification Agent: authoritative source registry/tiering, targeted
+query construction per claim type, claim ↔ evidence comparison, and the
+controlled statuses `VERIFIED` / `UNVERIFIED` / `CONTRADICTED` /
+`INSUFFICIENT_EVIDENCE` / `NOT_APPLICABLE`, consuming Phase 3's `SearchResponse`
+without collapsing "no results" into "contradicted".

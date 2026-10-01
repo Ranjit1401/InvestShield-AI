@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     search_provider: str = "serpapi"
     serpapi_key: str = ""
     serpapi_base_url: str = "https://serpapi.com/search"
+    serpapi_engine: str = "google"
     search_timeout_seconds: int = 15
     search_max_results: int = 10
 

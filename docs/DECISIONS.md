@@ -235,3 +235,67 @@ risk" is strong; separating the two vocabularies in the schema makes the mistake
 impossible to express. Verification and risk belong to Stages 5, 6 and 9.
 
 **Date:** 2026-10-01
+
+---
+
+## D-017 — Search infrastructure retrieves; it does not interpret
+
+**Decision:** Phase 3 delivers retrieval and normalization only.
+`SearchService` returns normalized documents with a publisher category and a
+customary-authority rank. It produces **no** statement about whether a claim is
+verified, contradicted, supported, or risky. `SearchResponse` has no verdict,
+score or evidence-strength field, and no schema in this layer may gain one
+without a deliberate decision.
+
+Three states are modelled explicitly and must not be collapsed:
+
+| State | Meaning | Phase 4 must not read it as |
+| --- | --- | --- |
+| `OK`, zero results | We looked; nothing matched | A contradiction |
+| `UNAVAILABLE` | No credentials; we never asked | Evidence either way |
+| `ERROR` | We asked and failed | Evidence either way |
+
+**Reason:** The single most dangerous failure mode in this product is silently
+turning "we could not check" into "we found nothing supporting it". An empty
+result set and an absent service look identical unless the schema forces them
+apart, and only one of them says anything about the world. `SOURCE_PRIORITY`
+ranks *source categories* for a later stage to weigh; it is metadata about who
+published a document, not a finding about the document's claim. Reading
+`REGULATOR` as "verified" or `GENERAL_WEB` as "false" would violate D-006 from
+the opposite direction.
+
+**Date:** 2026-10-01
+
+---
+
+## D-018 — Authority is recognised by hostname identity, never by keyword
+
+**Decision:** `SourceType` is derived by exact hostname and label-boundary
+suffix matching against a small explicit registry
+(`sebi.gov.in`, `rbi.org.in`, `nseindia.com`, …) plus government suffixes
+(`*.gov.in`, `*.nic.in`). A host containing a suggestive word is never promoted:
+`fake-sebi-example.com` classifies as `GENERAL_WEB`. Unrecognised hosts fall
+back to `GENERAL_WEB`/`UNKNOWN`, never to a specific category.
+
+**Reason:** An over-claiming classifier is worse than none. If a scammer's own
+site could be labelled `REGULATOR`, a later stage would present it to the user
+as authoritative confirmation — precisely the harm the product exists to
+prevent. The registry is deliberately small and explicit; a false negative costs
+one unchecked source, a false positive corrupts the investigation.
+
+**Date:** 2026-10-01
+
+---
+
+## D-019 — Query normalization is deterministic and never rewrites terms
+
+**Decision:** `normalize_query()` only strips control/invisible characters,
+folds whitespace, trims, and truncates at a word boundary. It never paraphrases,
+expands, translates or adds terms. No LLM is involved.
+
+**Reason:** A search engine cannot tell that a paraphrased query came from a
+claim the user actually made. Rewriting `acmefunds@okhdfcbank` or a registration
+number would mean verifying a claim nobody wrote. Mechanical cleanup is auditable
+and reproducible; "improving" a query is neither (project rule 4).
+
+**Date:** 2026-10-01

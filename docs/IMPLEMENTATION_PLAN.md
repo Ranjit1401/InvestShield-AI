@@ -91,16 +91,39 @@ tests fail, unless the failure is documented as an accepted blocker in
       fallback, hallucination rejection, partial/partial-output mode reporting,
       multilingual (en/hi/mr/Hinglish), exact original-text spans
 
-## Phase 3 — External Services `[ ]`
+## Phase 3 — External Services `[~]`
 
-- [ ] `LLMService` (Groq + Null provider)
-- [ ] `SearchService` (SerpAPI + Null provider)
-- [ ] `EmbeddingService` (sentence-transformers, optional at runtime)
-- [ ] `VectorStore` (NumPy cosine similarity default)
-- [ ] `OCRService` (pytesseract, `TESSERACT_CMD` + Windows fallback)
-- [ ] `PDFService` (PyMuPDF)
-- [ ] Graceful degradation on every service (never crash an investigation)
-- [ ] Tests
+Search infrastructure complete. OCR/PDF/embeddings/vector-store are deferred:
+they are not required by the verification design and would add dependencies with
+no consumer until Phase 8+.
+
+- [x] `app/schemas/search.py` — `SourceType`, `SearchStatus`, `SearchResult`,
+      `SearchResponse`, `SOURCE_PRIORITY`, typed error codes
+- [x] Three states kept distinct: `OK` (zero results is a success), `UNAVAILABLE`
+      (never asked), `ERROR` (asked and failed)
+- [x] `app/services/search/base.py` — `SearchProvider` contract,
+      `NullSearchProvider`, `results_or_empty()`
+- [x] `app/services/search/serpapi_provider.py` — `SerpAPIProvider`; the only
+      module that speaks SerpAPI's wire format
+- [x] `app/services/search/query.py` — deterministic query normalization, no LLM
+- [x] `app/services/search/domain.py` — `extract_domain()`, `canonicalize_url()`
+- [x] `app/services/search/source_classifier.py` — hostname-identity classification
+- [x] `app/services/search/search_service.py` — `SearchService`,
+      `build_search_service()`
+- [x] Canonical-URL deduplication; earliest position preserved
+- [x] Result limits with a hard ceiling (`HARD_MAX_RESULTS = 50`)
+- [x] No-key behaviour: explicit `UNAVAILABLE`, no request, no fabricated results
+- [x] Provider failures mapped to stable codes; never converted to "no results"
+- [x] Secrets never logged, returned, or embedded in warnings
+- [x] 260 tests, fully offline; opt-in `integration` marker for a live check
+- [ ] `OCRService` (Phase 13 wiring) — deferred
+- [ ] `PDFService` (Phase 14 wiring) — deferred
+- [ ] `EmbeddingService` / `VectorStore` — deferred to Phase 5 evidence work
+
+**Intentionally not built:** claim verification, entity verification, evidence
+scoring, risk scoring, LangGraph, public API, database persistence for search
+results. Phase 3 answers only *"can we retrieve and normalize external
+information?"* (D-017).
 
 ## Phase 4 — Verification Agent `[ ]`
 

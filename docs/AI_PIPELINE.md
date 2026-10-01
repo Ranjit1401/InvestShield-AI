@@ -250,6 +250,63 @@ For each identity-type entity, build a targeted query against the authoritative
 registry tier and record what was found. Output is a `VerificationResult`
 attached to the entity, never to a person named as a fraudster.
 
+### Stage 5.5 — External Search Retrieval
+
+**Owner:** `SearchService` → `SearchProvider` → `SerpAPIProvider`
+Status: **infrastructure complete (Phase 3)**. The *interpretation* of results
+is Stage 6 and is deliberately not built.
+
+```
+Claim / Entity
+      ↓  normalize_query()  (deterministic; no LLM)
+SearchService.search(query, max_results)
+      ↓
+SearchProvider.search()               ← abstraction
+      ↓
+SerpAPIProvider                        ← q, api_key, engine=google, num
+      ↓
+SearchResult[] + source classification
+```
+
+```json
+{
+  "query": "SEBI approved trading platform",
+  "results": [
+    {
+      "title": "SEBI | Securities and Exchange Board of India",
+      "url": "https://www.sebi.gov.in/",
+      "snippet": "Securities and Exchange Board of India",
+      "source_domain": "sebi.gov.in",
+      "source_type": "REGULATOR",
+      "position": 1,
+      "retrieved_at": "2026-10-01T00:00:00Z"
+    }
+  ],
+  "provider": "serpapi",
+  "status": "OK",
+  "error_code": null,
+  "provider_query_sent": true,
+  "warnings": []
+}
+```
+
+What this stage guarantees, and nothing more:
+
+| Guarantee | Detail |
+| --- | --- |
+| Three states stay distinct | `OK` (zero results is a success), `UNAVAILABLE` (never asked), `ERROR` (asked and failed) |
+| No invented sources | Missing key ⇒ explicit `UNAVAILABLE`, empty results, stated limitation |
+| Authority by hostname identity | Exact registry + label-boundary matching; `fake-sebi-example.com` is `GENERAL_WEB` |
+| Deterministic query handling | Whitespace/control cleanup only; identifiers and URLs untouched |
+| Bounded results | Clamped to `[1, min(SEARCH_MAX_RESULTS, 50)]` |
+| De-duplicated | Canonical URL only; similar titles are never merged |
+| Secrets protected | Key never logged, returned, or placed in a warning |
+
+**This stage draws no conclusion about any claim.** `source_type` and
+`SOURCE_PRIORITY` describe *who published a document*, not whether it supports or
+refutes anything. A `REGULATOR` result is not "verified" and a `GENERAL_WEB`
+result is not "false" (D-017).
+
 ### Stage 6 — Claim Verification
 
 **Owner:** `VerificationAgent`
@@ -269,6 +326,11 @@ STATUS ∈ {VERIFIED, UNVERIFIED, CONTRADICTED, INSUFFICIENT_EVIDENCE, NOT_APPLI
 **Hard invariant (D-006):** no search result ⇒ `UNVERIFIED` or
 `INSUFFICIENT_EVIDENCE`. `CONTRADICTED` requires an authoritative source that
 directly disputes the claim.
+
+A failed Stage 5.5 search maps here as `INSUFFICIENT_EVIDENCE` — *verification
+could not be completed* — and never as `CONTRADICTED`. The distinction depends
+entirely on `SearchStatus`, which is why the three states are modelled
+separately in Phase 3 (D-017).
 
 Reason text is always hedged appropriately:
 *"No matching registration could be independently verified from the searched
@@ -429,7 +491,14 @@ contribution itemised.
 | Groq output fails schema validation | 2, 3 | `LLM_SCHEMA_VIOLATION`; mode `FALLBACK`, deterministic extraction used |
 | Groq invents a claim or entity | 2, 3 | Offending item dropped, warning recorded; mode `PARTIAL` if other model output survived |
 | Model returns nothing usable | 2, 3 | Mode `PARTIAL` |
-| SerpAPI down / no key | 6, 7 | `SEARCH_SERVICE_ERROR`, claims become `INSUFFICIENT_EVIDENCE`, limitation stated |
+| `SERPAPI_KEY` missing | 5.5 | `SearchStatus.UNAVAILABLE`, `SEARCH_NOT_CONFIGURED`, no request sent, limitation stated → `INSUFFICIENT_EVIDENCE` in Stage 6 |
+| Search provider timeout | 5.5 | `SEARCH_TIMEOUT`, `SearchStatus.ERROR`, zero results, limitation stated |
+| Search provider rate-limited | 5.5 | `SEARCH_RATE_LIMITED`; never reported as "no results" |
+| Search provider rejects the key | 5.5 | `SEARCH_AUTH_ERROR`; the key is never echoed back or logged |
+| Search provider returns malformed JSON | 5.5 | `SEARCH_INVALID_RESPONSE` |
+| One malformed search result | 5.5 | That entry skipped and counted in warnings; the rest of the search is kept |
+| Query has no searchable content | 5.5 | `SEARCH_INVALID_QUERY`, no request sent |
+| SerpAPI down / no key | 6, 7 | `INSUFFICIENT_EVIDENCE`, limitation stated |
 | Tesseract missing | 1 | `OCR_UNAVAILABLE`, image investigation rejected with a clear message |
 | PDF text extraction fails | 1 | `PDF_EXTRACTION_FAILED`, empty-text investigation with limitation |
 | Invalid URL | 0 | 422 validation error, no investigation created |

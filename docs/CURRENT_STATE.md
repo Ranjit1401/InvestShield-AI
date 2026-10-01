@@ -7,34 +7,49 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 2 — Claim & Entity Extraction — **COMPLETE**
-**Current Subphase:** Phase 3 — External Services — **NOT STARTED**
-**Last Completed Task:** Phase 2 — multilingual claim/entity extraction with
-original-text evidence spans, deterministic fallback, and one structured LLM call
-per input. 220 tests passing (43 Phase 0 + 105 Phase 1 + 72 Phase 2).
-**Currently Working On:** Idle. Awaiting instruction to begin Phase 3.
-**Phase Started:** Phase 2 completed and committed as
-`feat: implement claim and entity extraction`.
+**Current Phase:** Phase 3 — External Services & Search Infrastructure — **COMPLETE (search scope)**
+**Current Subphase:** Phase 4 — Verification Agent — **NOT STARTED**
+**Last Completed Task:** Phase 3 — `SearchService` / `SearchProvider` /
+`SerpAPIProvider` with deterministic query normalization, hostname-identity
+source classification, canonical-URL de-duplication, bounded result limits, and
+explicit `OK` / `UNAVAILABLE` / `ERROR` states. **480 tests passing** (220
+prior + 260 Phase 3).
+**Currently Working On:** Idle. Awaiting instruction to begin Phase 4.
+**Latest Commit:** `feat: implement external search infrastructure`
+**Working Tree:** clean at the time of writing.
+
+### Phase Status Summary
+
+| Phase | Scope | Status |
+| --- | --- | --- |
+| Phase 0 | Project foundation | **COMPLETE** |
+| Phase 1 | Red flag engine | **COMPLETE** |
+| Phase 2 | Claim & entity extraction | **COMPLETE** |
+| Phase 3 | External services & search infrastructure | **COMPLETE (search only; see limitations)** |
+| Phase 4 | Verification agent | **NEXT** |
 
 ### Files Recently Changed
 
 ```
-backend/app/schemas/common.py                  (new — shared EvidenceSpan)
-backend/app/schemas/red_flags.py               (now imports the shared span)
-backend/app/schemas/claims.py                  (new — 14 ClaimTypes + Claim)
-backend/app/schemas/entities.py                (new — 18 EntityTypes + Entity)
-backend/app/schemas/extraction.py              (new — mode, links, result)
-backend/app/services/text_normalization.py     (new — reversible offset map)
-backend/app/services/llm_service.py            (new — Groq + null providers)
-backend/app/prompts/extraction.py              (new — extraction-v1 prompt)
-backend/app/prompts/__init__.py                (new — prompt exports)
-backend/app/services/claim_extractor.py        (new — deterministic claims)
-backend/app/services/entity_extractor.py       (new — deterministic entities)
-backend/app/services/extraction_service.py     (new — merge, align, link)
-backend/app/services/red_flag_rules.py         (shared SENTENCE_BOUNDARY)
-backend/tests/test_extraction_schemas.py       (new — 27 tests)
-backend/tests/test_text_normalization.py       (new — 15 tests)
-backend/tests/test_extraction_service.py       (new — 30 tests)
+backend/app/schemas/search.py                    (new — SearchResult/Response/SourceType)
+backend/app/services/search/__init__.py          (new — public surface)
+backend/app/services/search/base.py              (new — SearchProvider ABC, NullSearchProvider)
+backend/app/services/search/query.py             (new — deterministic query normalization)
+backend/app/services/search/domain.py            (new — extract_domain, canonicalize_url)
+backend/app/services/search/source_classifier.py (new — hostname-identity classification)
+backend/app/services/search/serpapi_provider.py  (new — SerpAPI transport)
+backend/app/services/search/search_service.py    (new — orchestration + policy)
+backend/app/scripts/manual_search.py             (new — runnable smoke test)
+backend/app/core/config.py                       (+serpapi_engine)
+backend/pytest.ini                               (+integration marker, offline default)
+backend/tests/test_search_schemas.py             (new — 29 tests)
+backend/tests/test_search_query.py               (new — 38 tests)
+backend/tests/test_search_domain.py              (new — 37 tests)
+backend/tests/test_search_source_classifier.py   (new — 48 tests)
+backend/tests/test_serpapi_provider.py           (new — 55 tests)
+backend/tests/test_search_service.py             (new — 54 tests)
+backend/tests/test_search_integration.py         (new — 4 opt-in live tests)
+.env.example                                     (search settings + credential removed)
 docs/IMPLEMENTATION_PLAN.md / CURRENT_STATE.md / DEVELOPMENT_LOG.md
 docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
 ```
@@ -43,7 +58,10 @@ docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
 
 ```
 cd backend && python -m pytest
-220 passed
+480 passed, 4 deselected
+
+# opt-in live check (skips without a key)
+python -m pytest -m integration
 ```
 
 ### Tests Failing
@@ -52,75 +70,84 @@ None.
 
 ### Known Bugs
 
-None open. Phase 2 verification found and fixed four real defects (all recorded
-in `DEVELOPMENT_LOG.md`), none of them test-only:
+None open. Phase 3 verification found and fixed four issues, all recorded in
+`DEVELOPMENT_LOG.md`:
 
-1. **Whitespace leaked into evidence spans.** The normalised→original map gave an
-   emitted space the offset of the *following* character, so every span ending
-   before a space included that space (`'Telegram '`). Spaces now map to the last
-   whitespace character of their run.
-2. **NFC never actually composed.** Normalisation applied `unicodedata.normalize`
-   to one character at a time, and a combining mark cannot compose in isolation —
-   `"cafe" + U+0301` survived unchanged. Units (base + combining marks) are now
-   composed as a group.
-3. **`LLMService(settings=None)` crashed.** The factory signature allows `None`,
-   but `__post_init__` dereferenced it before falling back to `get_settings()`.
-4. **Identifiers collapsed when normalised.** Stripping punctuation turned
-   `acmefunds@okhdfcbank` into `acmefunds okhdfcbank`, merging distinct payment
-   ids. `@`, `.` and `-` are now preserved, with edge punctuation trimmed.
+1. **Unbounded call-site recursion in the HTTP mock fixture** — the patched
+   `httpx.Client` factory called itself, hanging the suite instead of failing it.
+2. **Under-classification of unlisted public suffixes** — `example.co.uk`
+   returned `UNKNOWN`; now `GENERAL_WEB` once the official registries are ruled
+   out by exact matching.
+3. **Silent result truncation** — a full result page gave no indication that
+   results had been capped.
+4. **A live database credential was committed in `.env.example`** — replaced with
+   a placeholder. **The credential remains in Git history and must be rotated.**
 
 ### Blocked Items
 
 None.
 
-### Phase 2 Design Decisions
+### Available Services
+
+| Service | Status | Evidence |
+| --- | --- | --- |
+| `GROQ_API_KEY` | **present** | configured; Phase 2 extraction uses it |
+| `SERPAPI_KEY` | **absent** | `SearchService.available = false`; searches degrade to `UNAVAILABLE` |
+| SQLite | working | `/api/health` → `database.connected = true` |
+| `httpx` | installed | used by both `LLMService` and `SerpAPIProvider` |
+| Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; `OCRService` not built |
+| `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred; see limitations |
+
+**Consequence for Phase 4:** claim verification must run against a **fake search
+provider** in tests. Without `SERPAPI_KEY` the live path cannot be exercised, so
+the no-search path must produce a valid report stating that external verification
+could not be completed — and must never produce `CONTRADICTED`.
+
+### Phase 3 Design Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| One structured LLM call per input | Claims and entities are extracted together in a single request; a per-sentence call loop multiplies cost and latency and makes partial failure likely. |
-| Deterministic extractors always run | The guaranteed-available half. When Groq is missing or errors, extraction degrades instead of failing, and the report says so. |
-| Model output is re-located in the input | Any claim or entity the service cannot find verbatim is dropped with a warning. This is the anti-hallucination gate, and it holds even when Groq is available. |
-| `PARTIAL` when some model output is discarded | A mix of LLM and deterministic content must not be reported as a clean `LLM` result. |
-| Normalisation preserves newlines | Collapsing them would destroy paragraph structure and merge unrelated lines into one giant claim. |
-| Money amounts live on the claim, not the entity list | The entity taxonomy is for named parties, instruments and identifiers; an amount is a property of a claim. |
-| `CLAIM_VOCABULARY` derived from the signal patterns | A capitalised phrase built only from claim words ("Verified Fraud") is claim language, not a person's name. Deriving the stopword set keeps the two stages in step. |
-| `RedFlagEngine` untouched | Phase 2 only shared `SENTENCE_BOUNDARY`; no behaviour change, no regression. |
+| `SearchProvider` ABC, SerpAPI behind it | Same rule as `LLMService` (D-004): the provider is the most likely thing to be swapped, rate-limited or paid for. Consumers depend on `SearchService` only. |
+| Transport in the provider, policy in the service | The provider converts its wire format and nothing more; query rules, limits, classification and de-duplication are provider-independent. |
+| `OK` / `UNAVAILABLE` / `ERROR` are distinct, schema-enforced | "Found nothing" and "could not look" lead to opposite conclusions. `SearchResponse` refuses to represent a failure as an empty success (D-017). |
+| Authority by hostname identity only | `fake-sebi-example.com` must never be a regulator; an over-claiming classifier is worse than none (D-018). |
+| Query normalization is deterministic, no LLM | Paraphrasing a query would verify a claim nobody wrote (D-019). |
+| De-duplication by canonical URL only | Merging on title similarity would silently discard sources from an evidence review. |
+| Hard cap of 50 results | Bounds the request a bug can make of a paid provider. |
+| Reuse `SERPAPI_KEY` rather than adding `SERPAPI_API_KEY` | The brief suggested the longer name, but `serpapi_key` already exists in `Settings` from Phase 0. Adding a second name for one setting would split configuration across two keys; the mapping is documented in `.env.example`. |
+| OCR/PDF/embeddings deferred | No consumer until Phase 8+, and the packages are not installed. Stub wrappers would be untestable code. |
 
-### Known Limitations (Phase 2)
+### Known Limitations (Phase 3)
 
-- **Claim typing is English-led.** Devanagari cues exist (`गारंटी`, `पक्का`,
-  `मुनाफा`, `लाभ`) but coverage is thin. Marathi relies on shared Devanagari
-  vocabulary; a genuinely Marathi-specific promise may still fall through to
-  `OTHER`.
-- **Deterministic entity typing is deliberately high-precision.** A bare
-  capitalised two-word phrase becomes a `PERSON` only when it is not claim
-  vocabulary; ambiguous names are missed rather than guessed.
-- **`Claim.metadata` amounts are pattern-extracted.** `₹25,000` and `35%` are
-  recognised in their common written forms; `Rs`/`INR`/lakh/crore spellings are
-  covered, unusual formats are not.
-- **No verification, deliberately.** `ExtractionResult` has no verdict field.
-  `VERIFIED`/`CONTRADICTED` belong to Phase 4 (D-006).
-- **No API route yet.** `ExtractionService` is library-only; Phase 8 exposes it.
-- **LLM path is unit-tested against a fake provider.** No live Groq call runs in
-  the suite, so prompt wording is validated structurally, not empirically.
+- **`SERPAPI_KEY` is absent on this machine**, so the live SerpAPI path has never
+  run. Transport, normalization and classification are verified against mocks;
+  parameter names follow SerpAPI's documented API. Run
+  `pytest -m integration` once a key is available.
+- **The source registry is small and explicit** by design. Unlisted official
+  bodies classify as `GENERAL_WEB` — safe, but it loses authority ordering.
+- **No DNS or WHOIS.** `classify_domain` decides who *published* a page, not
+  whether a host is *legitimate*. That is a Phase 4 question.
+- **`OFFICIAL_ENTITY` and `TRUSTED_SECONDARY`** are defined but unused, so Phase
+  4/5 can extend the registry without changing the enum.
+- **Near-duplicates are not merged.** Only canonical-URL equality collapses two
+  results; different URLs with identical titles are both kept.
+- **OCR, PDF, embeddings and vector store are not built.** See the scope decision
+  in `DEVELOPMENT_LOG.md`.
+- **No claim/entity → query construction yet.** Phase 3 takes an arbitrary query;
+  building a targeted query from a claim type is Phase 4's first task.
 
-### Environment Reality Check (verified live)
+### Environment Reality Check (verified)
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
-| `GROQ_API_KEY` | **present** in OS environment | `/api/health` → `services.llm.configured = true` |
-| `SERPAPI_KEY` | **absent** | `/api/health` → `services.search.configured = false` |
+| `GROQ_API_KEY` | **present** in OS environment | Phase 2 extraction configured |
+| `SERPAPI_KEY` | **absent** | `SearchService.available = false` |
 | Tesseract binary | present at `C:\Program Files\Tesseract-OCR\tesseract.exe`, not on `PATH` | resolved by `resolve_tesseract_cmd()` |
-| `pytesseract` / `Pillow` | not installed | install in Phase 3 |
-| PyMuPDF (`fitz`) | not installed | install in Phase 3 |
-| `sentence-transformers` | not installed | install in Phase 3 |
-| `langgraph` / `langchain-groq` | not installed | install in Phase 7 / Phase 3 |
+| `pytesseract` / `Pillow` | not installed | deferred |
+| PyMuPDF (`fitz`) | not installed | deferred |
+| `sentence-transformers` | not installed | deferred |
+| `langgraph` / `langchain-groq` | not installed | Phase 7 |
 | SQLite | working | `/api/health` → `database.connected = true` |
-
-**Consequence for Phase 4:** without `SERPAPI_KEY`, claim verification cannot run
-live. The verification agent must still be built and unit-tested against a fake
-search provider, and the no-search path must produce a valid report stating that
-external verification could not be completed.
 
 ### Important Decisions
 
@@ -129,44 +156,49 @@ the next phase:
 
 | ID | Decision |
 | --- | --- |
-| D-003 | NumPy cosine similarity is the default `VectorStore`; FAISS is optional (no cp314 wheel) |
-| D-004 | Groq behind `LLMService` with a `NullProvider` that never raises |
-| D-005 | SerpAPI behind `SearchService`; results are normalised and tiered |
 | D-006 | Absence of evidence is never an accusation — `CONTRADICTED` requires direct authoritative contradiction |
 | D-007 | Risk is a transparent weighted heuristic, never a probability |
-| D-008 | Red-flag detection is deterministic, tested, rule-based code — not LLM inference |
 | D-009 | Every external service degrades into a typed error code surfaced in report Limitations |
-| D-010 | Pydantic API schemas are separate from SQLAlchemy models |
-| D-011 | LangGraph nodes are thin coordinators; logic lives in testable services |
-| D-012 | Environment configuration via pydantic-settings only |
 | D-013 | One structured extraction call per input; deterministic extractors always run alongside it |
 | D-014 | Evidence spans index the **original** input; normalisation is reversible for offsets |
-| D-015 | Model-supplied text must be re-located in the input or dropped — extraction never trusts generated text |
-| D-016 | `ExtractionResult` has no verification field; that is Phase 4's job |
+| D-015 | Model-supplied text must be re-located in the input or dropped |
+| D-016 | `ExtractionResult` has no verification field |
+| D-017 | Search infrastructure retrieves; it does not interpret. `OK`/`UNAVAILABLE`/`ERROR` stay distinct |
+| D-018 | Source authority recognised by hostname identity, never by keyword |
+| D-019 | Query normalization is deterministic and never rewrites terms |
 
 ---
 
 ## Next Exact Task
 
-**Phase 3 — External Services.**
+**Phase 4 — Verification Agent.**
 
-1. `LLMService` and the Phase 2 `GroqProvider` are already in place. Add
-   `SearchService` (SerpAPI + `NullProvider`), normalising results into a typed
-   `SearchResult` with source tiering (D-005).
-2. Add `EmbeddingService` (sentence-transformers, optional at runtime — it is not
-   installed and must not become a hard dependency) and `VectorStore` with NumPy
-   cosine similarity as the default (D-003).
-3. Add `OCRService` (pytesseract; resolve the Tesseract binary via the existing
-   `resolve_tesseract_cmd()` Windows fallback) and `PDFService` (PyMuPDF).
-   Neither library is installed yet — add them to `requirements.txt`.
-4. Every service must degrade into a typed error code and never crash an
-   investigation (D-009). Tests must cover the unavailable path for each.
-5. Tests must mock every external boundary; no live network calls.
-6. Run `python -m pytest`, fix failures, update all docs, commit.
+1. Create `backend/app/schemas/verification.py`: `VerificationStatus`
+   (`VERIFIED` / `UNVERIFIED` / `CONTRADICTED` / `INSUFFICIENT_EVIDENCE` /
+   `NOT_APPLICABLE`), `ClaimVerification`, `SourceTier`, `AuthoritativeSource`.
+   **There must be no `SCAM`/`FRAUD` verdict anywhere.**
+2. Build the authoritative source registry/tiering: SEBI, NSE, BSE, MCA and
+   government bodies, with per-tier query templates. Reuse
+   `classify_domain()` for source tiers; do not reimplement domain logic.
+3. Build targeted query construction from `Claim` — claim-type-aware, derived
+   from the claim text and linked entities. Use `SearchService.search()`; never
+   call SerpAPI directly.
+4. Compare claim vs. retrieved evidence and emit a status. **Hard rules:**
+   - no results ⇒ `UNVERIFIED` or `INSUFFICIENT_EVIDENCE`, never `CONTRADICTED`
+   - `SearchStatus.UNAVAILABLE`/`ERROR` ⇒ `INSUFFICIENT_EVIDENCE`
+   - `CONTRADICTED` only when an authoritative source directly disputes the claim
+   - `UNVERIFIED` is not an accusation
+5. Reason text must be hedged: *"No matching registration could be independently
+   verified from the searched authoritative records."*
+6. Write a guard test asserting no accusation language is ever produced, and
+   tests mocking `SearchProvider` for every path (available, no key, zero
+   results, timeout, error).
+7. Run `python -m pytest`, fix failures, update all docs, commit.
 
-### Do not start before Phase 3 is green
+### Do not start before Phase 4 is green
 
-- No LangGraph, no verification agent, no frontend, no auth, no DB persistence.
+- No evidence ranking/strength (Phase 5), risk scoring (Phase 6), LangGraph
+  (Phase 7), API routes (Phase 8), database persistence (Phase 9).
 
 ---
 
@@ -178,7 +210,8 @@ If you are reading this in a fresh session:
 2. [ ] Read `docs/IMPLEMENTATION_PLAN.md`
 3. [ ] Read `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
 4. [ ] Read the last entry in `docs/DEVELOPMENT_LOG.md`
-5. [ ] Run `git status` and `git log --oneline -10`
-6. [ ] Run `cd backend && python -m pytest` — expect **220 passed**
+5. [ ] Run `git status` and `git log --oneline -5`
+6. [ ] Run `cd backend && python -m pytest` — expect **480 passed, 4 deselected**
 7. [ ] Confirm the test count still matches "Tests Passing" above
 8. [ ] Execute **Next Exact Task**
+

@@ -277,7 +277,13 @@ Full result of one investigation.
 `risk_level`: `LOW` | `MEDIUM` | `HIGH` | `CRITICAL`
 `verification status`: `VERIFIED` | `UNVERIFIED` | `CONTRADICTED` | `INSUFFICIENT_EVIDENCE` | `NOT_APPLICABLE`
 `relationship`: `SUPPORTS` | `CONTRADICTS` | `CONTEXT`
-`source_type` / `credibility`: `OFFICIAL` | `TRUSTED` | `GENERAL_WEB` | `USER_PROVIDED`
+`source_credibility` (Phase 5 evidence tiering): `OFFICIAL` | `TRUSTED` |
+`GENERAL_WEB` | `USER_PROVIDED`
+
+Note: `source_credibility` (an evidence *tier*, Phase 5) is a different concept
+from `source_type` (a search-result *publisher category*, Phase 3). They are kept
+as separate enums so that a search result's category is never mistaken for an
+evidence judgment.
 
 Note that `claim.confidence` is **extraction** confidence — how sure the
 extractor is that the text makes this kind of claim. It is not a probability
@@ -322,6 +328,61 @@ Paginated history.
 ```
 
 ---
+
+### Search payload (built in Phase 3, not yet exposed over HTTP)
+
+`SearchService.search(query, max_results)` produces this object. Phase 4 consumes
+it internally; it reaches `POST /api/investigations/text` only in Phase 8.
+
+```json
+{
+  "query": "SEBI approved trading platform",
+  "results": [
+    {
+      "title": "SEBI | Securities and Exchange Board of India",
+      "url": "https://www.sebi.gov.in/",
+      "snippet": "Securities and Exchange Board of India",
+      "source_domain": "sebi.gov.in",
+      "source_type": "REGULATOR",
+      "canonical_url": "https://sebi.gov.in/",
+      "retrieved_at": "2026-10-01T00:00:00Z",
+      "position": 1
+    }
+  ],
+  "provider": "serpapi",
+  "status": "OK",
+  "error_code": null,
+  "provider_query_sent": true,
+  "warnings": [],
+  "searched_at": "2026-10-01T00:00:00Z"
+}
+```
+
+Guarantees a client may rely on:
+
+- `status` distinguishes `OK` (**including** zero results), `UNAVAILABLE` (never
+  searched) and `ERROR` (searched and failed). A failure is never presented as an
+  empty successful search.
+- `success` is `true` only for `OK`. `degraded` is `true` for `UNAVAILABLE` and
+  `ERROR`.
+- `provider_query_sent` is `false` whenever `UNAVAILABLE`, so "we never looked" is
+  auditable.
+- `source_type` describes **who published** a document. It is not a verdict; see
+  `SourceType` below.
+- `error_code`, when present, is one of `SEARCH_NOT_CONFIGURED`,
+  `SEARCH_INVALID_QUERY`, `SEARCH_SERVICE_ERROR`, `SEARCH_TIMEOUT`,
+  `SEARCH_RATE_LIMITED`, `SEARCH_AUTH_ERROR`, `SEARCH_INVALID_RESPONSE`.
+- API keys never appear in any field, warning, or log.
+
+## Enumerations
+
+`source_type`: `REGULATOR` | `GOVERNMENT` | `EXCHANGE` | `OFFICIAL_ENTITY` |
+`TRUSTED_SECONDARY` | `GENERAL_WEB` | `UNKNOWN`
+`search status`: `OK` | `UNAVAILABLE` | `ERROR`
+
+`source_type` ranks *who published a document*, by hostname identity only. It is
+**not** a verification outcome: `REGULATOR` does not mean "verified" and
+`GENERAL_WEB` does not mean "false".
 
 ## Implementation Status
 

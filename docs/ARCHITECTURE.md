@@ -25,9 +25,11 @@ investshield-ai/
 │   │   ├── core/             # config, logging, security helpers
 │   │   ├── models/           # SQLAlchemy ORM models
 │   │   ├── schemas/          # Pydantic contracts (common, red_flags, claims,
-│   │   │                     #   entities, extraction)
+│   │   │                     #   entities, extraction, search)
 │   │   ├── prompts/          # versioned LLM prompts
+│   │   ├── scripts/          # runnable developer scripts (manual smoke tests)
 │   │   ├── services/         # external + domain services
+│   │   │   └── search/       # search provider abstraction + SerpAPI provider
 │   │   ├── agents/           # 5 logical AI components
 │   │   ├── graph/            # LangGraph state + nodes + builder
 │   │   ├── tools/            # small deterministic utilities
@@ -81,12 +83,69 @@ Single-responsibility services, each independently constructible and testable:
 | `ClaimExtractor` | Deterministic atomic-claim splitting | none (pure) |
 | `EntityExtractor` | Deterministic entity/identifier extraction | none (pure) |
 | `ExtractionService` | One structured LLM call + deterministic merge | `ExtractionMode.FALLBACK` |
+| `SearchService` | Query normalization, provider selection, source classification | `SearchStatus.UNAVAILABLE` / `ERROR` |
+| `SearchProvider` | Transport contract for web search | `SEARCH_*` codes |
 | `RiskEngine` | Weighted risk accumulation | none (pure) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
-Bold names are implemented; the rest arrive in Phase 3+.
+Bold names are implemented; the rest arrive in later phases.
 
-### 2.3 Extraction pipeline (Phase 2, complete)
+### 2.3 Search infrastructure (Phase 3, complete)
+
+```
+Claim / Entity
+      ↓
+SearchService            ← policy: normalize, validate, classify, dedupe, limit
+      ↓
+SearchProvider           ← abstraction (ABC)
+      ↓
+SerpAPIProvider          ← transport: the only SerpAPI-shaped module
+      ↓
+SearchResult (normalized)
+```
+
+```
+app/schemas/search.py              SourceType, SearchStatus, SearchResult,
+                                   SearchResponse, SOURCE_PRIORITY, error codes
+app/services/search/base.py        SearchProvider (ABC), NullSearchProvider
+app/services/search/query.py       normalize_query(), is_meaningful_query()
+app/services/search/domain.py      extract_domain(), canonicalize_url()
+app/services/search/source_classifier.py   classify_domain(), classify_url()
+app/services/search/serpapi_provider.py    SerpAPIProvider, clean_text()
+app/services/search/search_service.py      SearchService, build_search_service()
+```
+
+Contracts:
+
+- **Consumers depend on `SearchService`, never on SerpAPI.** Adding Bing, Brave,
+  DuckDuckGo or a recorded fixture means implementing `search()` and registering a
+  name; no consumer changes (D-004 analogue).
+- **Transport in the provider, policy in the service.** The provider converts its
+  wire format into `SearchResult` and nothing more; the service owns query rules,
+  result limits, classification and de-duplication, because those are
+  provider-independent.
+- **Three states stay distinct.** `OK` (including zero results), `UNAVAILABLE`
+  (never asked), `ERROR` (asked, failed). The `SearchResponse` validator refuses
+  to represent "failure" as "empty success" (D-017).
+- **No interpretation.** There is no verdict, score or evidence-strength field.
+  `SOURCE_PRIORITY` ranks *source categories* for later stages; it never decides
+  whether a claim is true (D-006, D-017).
+- **Authority by hostname identity.** Exact registry and label-boundary suffix
+  matching only. `fake-sebi-example.com` is `GENERAL_WEB` (D-018).
+- **Deterministic query cleanup.** Whitespace/control/invisible characters only;
+  identifiers, names and URLs pass through untouched; no LLM (D-019).
+- **Bounded requests.** `max_results` is clamped to
+  `[1, min(SEARCH_MAX_RESULTS, HARD_MAX_RESULTS=50)]`.
+- **De-duplication by canonical URL only.** Similar titles are never merged;
+  merging them would silently discard sources from a later evidence review.
+- **Secrets stay in the provider.** The key is sent as a request parameter and
+  never logged, returned, or placed in a warning. Logged fields are limited to
+  provider name, HTTP status, error type and duration.
+- **Deterministic URL handling.** `file:`, `javascript:` and `data:` result URLs
+  are rejected at the schema boundary, so a hostile result cannot introduce an
+  unusable scheme into a later fetch stage.
+
+### 2.4 Extraction pipeline (Phase 2, complete)
 
 ```
 ExtractionService.extract(raw_text) -> ExtractionResult
@@ -120,7 +179,7 @@ Contracts:
 - **No verification.** `ExtractionResult` deliberately has no verdict field
   (D-006, D-014). Verification is Stage 5/6.
 
-### 2.4 Red-flag engine (Phase 1, complete)
+### 2.5 Red-flag engine (Phase 1, complete)
 
 All scam-pattern knowledge lives in **one** module: `app/services/red_flag_rules.py`.
 No other file may contain an investment-scam regex.
@@ -160,7 +219,7 @@ Contracts:
 - **Sentences.** `[.!?।]`, an ellipsis, or a **blank line** ends one. A single
   newline is soft, because promotional posts are line-broken.
 
-### 2.4 Agents (`app/agents/`)
+### 2.6 Agents (`app/agents/`)
 
 Five logical components only:
 
