@@ -7,19 +7,20 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 8 — API layer — **COMPLETE**
-**Current Subphase:** Phase 9 — Database models & repositories — **NOT STARTED**
-**Last Completed Task:** Phase 8 — the HTTP surface over the Phase 7 graph, plus
-the dependency-boundary fix that had been holding the suite red. Request and
-response contracts in `app/schemas/api.py`; a state-to-response adapter; three
-endpoints (`POST /api/investigations/text`, `POST /api/investigations`,
-`GET /api/investigations/limits`); a typed error taxonomy mapping graph failures
-onto 422 versus 500; and the graph warnings surfaced as a deduplicated
-`limitations` code array alongside readable messages. `/api/health` now probes a
-`Database` built from the settings the app was given, and the database probe no
-longer returns a driver message. The suite is fully green for the first time.
-**Latest Commit:** `feat: implement investigation API layer` (Phase 8)
-**Working Tree:** clean.
+**Current Phase:** Phase 9 — Database persistence — **COMPLETE**
+**Current Subphase:** Phase 10 — Report generation — **NOT STARTED**
+**Last Completed Task:** Phase 9 — the persistence layer. Fourteen tables in
+`app/models/investigation.py` registered on `Base.metadata`; a repository in
+`app/repositories/investigations.py` that round-trips a finished
+`InvestigationState` through them and back into an `InvestigationState`; schema
+creation in the `lifespan` handler; and two new endpoints,
+`GET /api/investigations/{id}` and `GET /api/investigations`. The `POST`
+endpoints now store what they return. The load-bearing property is that a
+retrieved investigation is byte-identical to the live one, because both are
+shaped by the same Phase 8 adapter from the same domain models — there is no
+second rendering path that could disagree.
+**Latest Commit:** `feat: implement investigation persistence` (Phase 9)
+**Working Tree:** see `git status`.
 
 ### Phase Status Summary
 
@@ -34,40 +35,44 @@ longer returns a driver message. The suite is fully green for the first time.
 | Phase 6 | Risk engine | **COMPLETE** |
 | Phase 7 | LangGraph orchestration | **COMPLETE** |
 | Phase 8 | API layer (FastAPI endpoints) | **COMPLETE** |
-| Phase 9 | Database models & repositories | **NEXT** |
+| Phase 9 | Database models & repositories | **COMPLETE** |
+| Phase 10 | Report generation | **NEXT** |
 
 ### Files Recently Changed
 
 ```
-backend/app/schemas/api.py                     (new — request/response contracts)
-backend/app/api/adapters.py                    (new — InvestigationState -> response)
-backend/app/api/errors.py                      (new — typed failures, 422 vs 500 mapping)
-backend/app/api/routes/investigations.py       (new — three endpoints)
-backend/app/api/routes/health.py               (probes app.state.database, not a global)
-backend/app/api/routes/__init__.py             (+ investigations_router)
-backend/app/api/deps.py                        (+ get_database_dep, get_graph_context_dep)
-backend/app/main.py                            (Database + graph context on app.state)
-backend/app/services/capabilities.py           (probe_database no longer leaks str(exc))
-backend/tests/api/conftest.py                  (new — offline client fixtures)
-backend/tests/api/test_investigation_endpoints.py
-backend/tests/api/test_api_adapters.py
-backend/tests/api/test_api_errors.py
-backend/tests/api/test_api_schemas.py
-backend/tests/api/test_health_boundary.py      (regression tests for the health fix)
-docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
-docs/IMPLEMENTATION_PLAN.md / DEVELOPMENT_LOG.md / CURRENT_STATE.md / README.md
+backend/app/models/__init__.py                   (new — registers every table on Base.metadata)
+backend/app/models/investigation.py              (new — 14 tables)
+backend/app/db/types.py                          (new — UtcDateTime for SQLite/PostgreSQL parity)
+backend/app/repositories/__init__.py             (new)
+backend/app/repositories/investigations.py       (new — state <-> rows, history, delete)
+backend/app/api/routes/investigations.py         (+ 2 GET endpoints, stores on write)
+backend/app/api/deps.py                          (+ get_repository_dep)
+backend/app/api/errors.py                        (+ InvestigationNotFound, 404)
+backend/app/schemas/api.py                       (+ InvestigationSummaryResponse, InvestigationListResponse)
+backend/app/db/session.py                        (get_db reads app.state.database, not the global)
+backend/app/main.py                              (lifespan creates the schema, tolerating failure)
+backend/tests/conftest.py                        (+ 6 persistence fixtures)
+backend/tests/persistence_factories.py           (new — content and run helpers)
+backend/tests/db/__init__.py                     (new)
+backend/tests/db/test_round_trip.py              (new)
+backend/tests/db/test_history.py                 (new)
+backend/tests/db/test_schema.py                  (new)
+backend/tests/api/test_persistence_endpoints.py  (new)
+docs/DATABASE_SCHEMA.md                          (rewritten to match the implemented schema)
+docs/ARCHITECTURE.md / DECISIONS.md / DEVELOPMENT_LOG.md / CURRENT_STATE.md
 ```
 
 ### Tests Passing
 
 ```
 cd backend && python -m pytest
-1997 passed, 4 deselected
+2085 passed, 4 deselected
 ```
 
-**Zero failures.** Baseline before Phase 8 was `1882 passed, 1 failed`. Phase 8
-added **114 tests** (`tests/api/`) and fixed the one outstanding failure. No
-Phase 1-7 test was modified or removed.
+**Zero failures.** Baseline before Phase 9 was `1997 passed, 4 deselected`. Phase 9
+added **88 tests** (`tests/db/`, `tests/api/test_persistence_endpoints.py`) and
+modified **no** Phase 1-8 test.
 
 ### Tests Failing
 
@@ -75,11 +80,17 @@ None.
 
 ### Known Bugs
 
-1. **Phase 4 discards the search responses Phase 5 needs.** Phase 7 works around
+1. **Phase 7 declares `InvestigationState.completed_at` and no node ever writes
+   it.** The Phase 8 response exposes the field and Phase 9 persists it, so it is
+   stored and returned faithfully — but it is always `None`. This is a Phase 7
+   gap, deliberately not fixed in Phase 9: inventing a finish time at storage time
+   would be a claim the pipeline never made. Pinned by
+   `test_run_timings_are_preserved_exactly_as_recorded`.
+2. **Phase 4 discards the search responses Phase 5 needs.** Phase 7 works around
    this with `RecordingSearchService` rather than editing Phase 4 (D-031). The
    clean fix is for `VerificationService` to return its responses, which should be
    done if Phase 4 is ever reopened.
-2. **Phase 1's `SUSPICIOUS_URL` description asserts the word "fraudulent".**
+3. **Phase 1's `SUSPICIOUS_URL` description asserts the word "fraudulent".**
    Known, pinned by `TestPhaseOneCatalogueTripwire`, and a Phase 1 fix.
 
 > The Phase 7 revision's Known Bug 1 — `/api/health` ignoring injected settings —
@@ -96,81 +107,92 @@ None.
 | --- | --- | --- |
 | `GROQ_API_KEY` | present but **not working** | a local `.env` supplies one; the LLM returns an error status and Phase 2 degrades to deterministic patterns, which it reports honestly |
 | `SERPAPI_KEY` | **absent** | `SearchService.available = false`; verification degrades to `SEARCH_UNAVAILABLE` |
-| SQLite | working | used by the tests via `sqlite:///:memory:` and per-test tmp files |
+| SQLite | working | tests use per-test temporary files; `PRAGMA foreign_keys=ON` is set per connection |
+| PostgreSQL | **not installed** | DDL is verified by compiling every table and index against the PostgreSQL dialect in `tests/db/test_schema.py`, but no live PostgreSQL run has been made |
 | `httpx` | installed | used by `LLMService` and `SerpAPIProvider` |
 | `langgraph` | **installed, 1.2.12** | `requirements.txt`; verified on CPython 3.14 |
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; `OCRService` not built |
 | `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred |
 
 > A repository-root `.env` exists (gitignored, contains real credentials). It is
-> **not** committed. Both `tests/graph/graph_factories.py` and
-> `tests/api/conftest.py` pass `_env_file=None` so the suites stay offline
+> **not** committed. `tests/graph/graph_factories.py`, `tests/api/conftest.py` and
+> `tests/conftest.py` all pass `_env_file=None` so the suites stay offline
 > regardless of what it contains.
 
-### Phase 8 Architecture
+### Phase 9 Architecture
 
 ```
 POST /api/investigations/text ─┐
-                               ├─► validate ─► run_investigation ─► raise_for_graph_errors ─► serialize ─► 200
-POST /api/investigations ─────┘                                   │                │
-                                                                   │                └─ absent keys become empty lists;
-                                                                   │                   status read off the timeline
-                                                                   └─ only when an ERROR was recorded:
-                                                                      INPUT_* → 422, anything else → 500
+                                ├─► run_investigation ─► raise_for_graph_errors ─► repo.save() + commit
+POST /api/investigations ─────┘                                                          │
+                                                                                          ▼
+                                                          14 tables, one transaction
+                                                                                          │
+GET /api/investigations/{id} ──► repo.load() ──► InvestigationState ─┐                    │
+GET /api/investigations ──────► repo.list_page() ──► summaries (1 table)                   │
+                                                                                          ▼
+                                                        serialize_investigation() ──► 200
 ```
 
 | Concern | Where |
 | --- | --- |
-| Request/response contracts | `app/schemas/api.py`, `extra="forbid"` on every body |
-| State to response | `app/api/adapters.py::serialize_investigation` |
-| Run status | `investigation_status()` — read off `TimelineStatus`, never off the warning list |
-| Limitation codes | `dedupe_codes()` — first-seen order, one entry per code |
-| Error taxonomy | `app/api/errors.py`; `ApiError` handler registered in `app/main.py` |
-| Dependency injection | `get_database_dep`, `get_graph_context_dep`, both read `app.state` |
-| Offline testing | `app.dependency_overrides[get_graph_context_dep]` with a fake context |
+| Table definitions | `app/models/investigation.py`, registered by `app/models/__init__.py` |
+| State ⇄ rows mapping | `app/repositories/investigations.py` |
+| Datetime portability | `app/db/types.py::UtcDateTime` — naive UTC in storage, aware UTC out |
+| Session lifecycle | `get_db(request)` reads `app.state.database`; the route commits, never the dependency |
+| Schema creation | `lifespan` calls `database.create_all()`, logging and continuing on failure |
+| Response shaping | **unchanged** — `app/api/adapters.py::serialize_investigation` serves both paths |
+| 404 on a missing id | `app/api/errors.py::InvestigationNotFound` |
 
-### Phase 8 Design Decisions
+### Phase 9 Design Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| The run returns synchronously and whole; no `202` and no job handle | Persistence is Phase 9. Returning an id with nothing behind it invites a lookup that cannot succeed (D-036) |
-| `status` is derived from the stage timeline, not from the warnings | `NO_RED_FLAGS_DETECTED` is recorded on clean content; treating any warning as a degradation would report every benign submission as a partial run (D-037) |
-| A degraded run is a `200` with `status: PARTIAL` | A search provider being down says nothing about the request; failing it makes the product look broken while it is being truthful (D-009) |
-| Domain models are embedded, not re-projected | A second definition of "a claim" in the API would drift from Phase 2's (D-038) |
-| Warnings carry no `error_type` | It is a log-side diagnostic and must not appear in a body a user may read |
-| 422 for caller faults, 500 for contract violations | Only the second is our defect; softening it would dress a bug up as a normal outcome |
-| `RiskAssessment` forwarded verbatim | The heuristic indicator count must not be restated as a probability on its way out (D-025) |
-| `language` accepted and echoed, not honoured | Keeps the contract stable when Phase 15 ships translations without pretending Phase 8 translates |
+| The repository returns an `InvestigationState`, not a bespoke result type | Both the write and read paths then feed the same Phase 8 adapter. A `GET` that disagreed with the `POST` that stored the run would be worse than no retrieval (D-039) |
+| `id` is the primary key; `public_id` is **not** unique | `investigation_id_for` digests the submitted content, so a unique constraint would make re-running content an error and would destroy the evidence that it was run twice (D-040) |
+| Retrieval returns the newest run under a shared id | A client posts and then retrieves with the id it was just handed; returning the older run would show it a result disagreeing with the one it was just given |
+| `red_flags` unique on `(investigation_id, code, span_start, span_end)` | Phase 1 emits one flag per span with its own `rf_` id and Phase 6 cites those ids. The sketch's "one row per indicator" would destroy findings the risk trace points at |
+| `sources` keyed on `(investigation_id, source_id, result_id)` | Phase 5 derives `ev_` ids from both. Keying on `source_id` alone would force one retrieval to borrow another's `result_id` (D-023) |
+| No `caveat` column on `risk_assessments` | The caveat is `SCORE_NOT_A_PROBABILITY`, which `RiskAssessment` appends to `warnings` during validation. A second column would be a copy free to drift from the one the model emits (D-025) |
+| `investigation_warnings` has no `error_type` | A warning is something a user may read; Phase 8 already established that the log-side diagnostic does not cross that boundary |
+| `investigation_errors` stores `error_type` but never a message | An error diagnoses our own defect and a class name is not a secret; driver text routinely embeds a DSN (D-024) |
+| No `users` and no `reports` tables | `reports` is Phase 10; an empty placeholder table looks decided when nothing has been asked to design it |
+| Seven denormalised counts on `investigations` | Listing a hundred runs is one indexed query instead of a thousand joins. Pinned by a test so a count cannot drift from its children |
+| `sequence` on every ordered collection | Phase 5's ordering is a function the database cannot reproduce; inferring it would list a retrieved run's findings in a different order with nothing to detect it |
+| `create_all()` at startup, failures tolerated | A database that is reachable but not writable must not stop the read-only endpoints. `create_all` is idempotent, so this is safe on every boot |
+| A storage failure is a `500`, not a swallowed error | Returning `200` while discarding the result would tell a client its investigation is safe to look up later when it is not |
+| The Phase 8 response shape is unchanged | A client written against Phase 8 keeps working. No `persisted` flag: the id was already there and is what the client uses |
 
-### Known Limitations (Phase 8)
+### Known Limitations (Phase 9)
 
+- **No authentication, therefore no ownership check.** Anyone holding an id can
+  read that investigation. Acceptable only because there is nothing to
+  authenticate against; it must be revisited before there is.
+- **No `DELETE` endpoint.** The repository exposes `delete()`, which removes every
+  run under a public id, but no route calls it.
+- **No migrations.** `create_all()` creates missing tables and will **not** add a
+  column to an existing one. Fine while the schema is still changing and the
+  database is disposable; Alembic is the right tool the first time a deployed
+  database has to be migrated in place. Recorded in `docs/DATABASE_SCHEMA.md`
+  rather than glossed over.
+- **No live PostgreSQL run.** DDL compiles against the PostgreSQL dialect and
+  `UtcDateTime` handles the offset asymmetry, but no test has connected to a real
+  PostgreSQL server. `SERPAPI_KEY` is absent and there is no database URL for one.
+- **`limit`/`offset` paging only.** Fine at this scale; offset paging would need
+  replacing for a table large enough for it to hurt.
+- **`limitations` is still a flat code array** with no per-claim attribution, so a
+  limitation cannot be joined back to the claim it affected. Phase 10 may need a
+  junction table.
+- **`completed_at` is always `NULL`** — see Known Bugs.
 - **Only `TEXT` input is analysed.** `URL`, `IMAGE` and `PDF` are recognised and
-  refused with `422`, and the error detail names the kinds that do work. There is
-  no ingestion stage yet.
-- **No persistence.** The run is returned in memory; there is no
-  `GET /api/investigations/{id}` and nothing to list. Phase 9.
-- **`investigation_id` is a digest of the input**, so two different investigations
-  of identical content share an id. That is what makes a re-run comparable, but it
-  means the id is not unique per investigation. Phase 9 will need a real id.
-- **`extraction` is not exposed.** The raw Phase 2 result stays internal; claims,
-  entities, red flags, verification, evidence and the assessment are forwarded.
-- **No report layer.** The response is evidence and indicators, not prose. Phase 10.
-- **No translation.** `language` is recorded and echoed; every `message` is English.
-- **`limitations` is a flat code array with no per-claim attribution.** A client
-  that needs to know *which* claim went unchecked must read `verification_results`.
-- **No live SerpAPI run.** `SERPAPI_KEY` is absent, so real ranking and snippet
-  quality remain unverified assumptions. The end-to-end API tests run against the
-  genuine Phase 3, 4 and 5 services with a fixture search provider.
-- **No LLM-backed extraction has succeeded.** The local `.env` supplies a key the
-  API rejects, so Phase 2 degrades to deterministic patterns in every manual run.
-  That path is honest — it reports `EXTRACTION_FALLBACK` — but the model-assisted
-  path is untested against a live model.
+  refused with `422`.
 
 ### Environment Reality Check (verified)
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
 | `langgraph` | **1.2.12, installed** | `python -m pip show langgraph`; graph compiles and runs |
+| `sqlalchemy` | **installed** | 14 tables create on SQLite; all DDL compiles for PostgreSQL |
 | `GROQ_API_KEY` | present but rejected by the API | extraction falls back, reports `EXTRACTION_FALLBACK` |
 | `SERPAPI_KEY` | **absent** | `SearchService.available = false` |
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` |
@@ -198,31 +220,36 @@ the next phase:
 | D-037 | Run status is derived from the stage timeline, never from the warning list |
 | D-038 | The API embeds domain models rather than re-projecting them |
 | D-039 | The API layer interprets; it never computes a score, threshold or verdict |
+| D-040 | `public_id` is a content fingerprint, so a surrogate key owns identity |
+| D-041 | Persistence returns an `InvestigationState`; the adapter shapes both paths |
+| D-042 | Order is stored, never inferred from a value the database already stores |
 
 ---
 
 ## Next Exact Task
 
-**Phase 9 — Database models & repositories.**
+**Phase 10 — Report generation.**
 
-1. Build the ORM models and repositories behind `Database`, which Phase 8 now
-   parks on `app.state.database` and disposes on shutdown. That lifecycle is the
-   seam Phase 9 plugs into — see `app/db/session.py` and the `lifespan` handler in
-   `app/main.py`.
-2. `investigation_id` is currently a digest of the input, so two runs of the same
-   content share an id. Phase 9 needs a real unique id, and Phase 8's response
-   field is where it will surface.
-3. Decide what persists: the investigation and its stages, and which of the Phase
-   1-6 objects are stored whole versus by reference. `docs/DATABASE_SCHEMA.md`
-   already sketches this.
-4. The synchronous POST does not need to change when persistence lands. Add
-   `GET /api/investigations/{id}` and a list endpoint; keeping the POST returning
-   the whole investigation means a client that persists nothing still works.
-5. Do not let persistence introduce a verdict, a probability or advice.
+1. Build the report layer over a *stored* investigation. The retrieval path
+   `Phase 9` established — `repo.load()` returning an `InvestigationState` — is
+   the input a report generator needs, and it is the first consumer that reads an
+   investigation some time after the run that produced it.
+2. A report renders evidence and indicators. It must not introduce a probability,
+   a verdict or advice, and it must not restate `risk_score` as a likelihood
+   (D-025). The `RiskAssessment` caveat has to survive into the rendered text.
+3. Decide where reports live. `docs/DATABASE_SCHEMA.md` sketches a `reports` table;
+   it was deliberately **not** created in Phase 9, so this is an open decision
+   rather than a continuation of existing work.
+4. Rendering is multilingual in intent — `Language` accepts `en`/`hi`/`mr` and the
+   value is already stored on the run — but Phase 10 should still ship English
+   only and record the requested language, as Phase 8 did.
+5. A report that cites a risk factor must be able to walk to the claim, red flag
+   and source behind it. Phase 9 stored that trace, so this is a read, not a
+   reconstruction.
 
-### Do not start before Phase 9 is green
+### Do not start before Phase 10 is green
 
-- No report generation (Phase 10), no frontend (11+).
+- No frontend (Phase 11+).
 
 ---
 
@@ -232,10 +259,10 @@ If you are reading this in a fresh session:
 
 1. [x] Read `docs/CURRENT_STATE.md` (this file)
 2. [ ] Read `docs/IMPLEMENTATION_PLAN.md`
-3. [ ] Read `docs/ARCHITECTURE.md` (§2.3d for the graph, §2.3e for the API) and
-       `docs/DECISIONS.md` (D-030…D-039)
-4. [ ] Read the last entry in `docs/DEVELOPMENT_LOG.md`
+3. [ ] Read `docs/ARCHITECTURE.md` (§2.3d for the graph, §2.3e for the API,
+       §2.3f for persistence) and `docs/DECISIONS.md` (D-030…D-042)
+4. [ ] Read `docs/DATABASE_SCHEMA.md` and the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **1997 passed, 4 deselected,
+6. [ ] Run `cd backend && python -m pytest` — expect **2085 passed, 4 deselected,
        0 failed**
 7. [ ] Execute **Next Exact Task**

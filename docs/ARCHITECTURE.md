@@ -755,17 +755,39 @@ number (D-006, D-007, D-027).
 
 ## 8. Database Architecture
 
-SQLAlchemy 2.x ORM. Eight tables, fully normalized:
+SQLAlchemy 2.x ORM. **Fourteen tables** (Phase 9, complete), normalized around
+`investigations`:
 
 ```
-users
-investigations ──┬── claims ──── evidence ──── sources
-                 ├── entities
+investigations ──┬── claims ──┬── claim_entity_links ── entities
+                 │            ├── evidence ──── sources
+                 │            └── evidence_responses
                  ├── red_flags
-                 └── reports
+                 ├── verification_results
+                 ├── risk_assessments ── risk_factors
+                 ├── timeline_events
+                 ├── investigation_warnings
+                 └── investigation_errors
 ```
 
-`investigations.user_id` is nullable (no auth). See `DATABASE_SCHEMA.md`.
+There is no `users` table — there is no authentication — and no `reports` table,
+which is Phase 10's to design. `DATABASE_SCHEMA.md` is authoritative and
+tabulates where this differs from the Phase 0 sketch.
+
+**Identity.** `id` (surrogate autoincrement) is every primary key. The Phase 7
+`investigation_id` content digest is stored in the indexed, non-unique
+`public_id` (and duplicated in `content_hash`), so Phase 8 clients keep the id
+they already hold while re-running identical content produces a second row rather
+than a constraint violation (D-040).
+
+**Time.** `app/db/types.py` defines `UtcDateTime`, which writes naive UTC and
+reads back aware UTC. SQLite has no timezone type, so without it the same column
+returns naive values on SQLite and aware ones on PostgreSQL — an asymmetry that
+does not fail locally and fails later, on the hosted database only.
+
+**Ordering.** Every ordered collection carries an explicit `sequence` column, and
+`evidence_responses.source_refs_json` preserves source order that a join cannot
+reconstruct (D-042).
 
 ---
 
@@ -1047,3 +1069,82 @@ Only exception **class names**. `GraphError.error_type` is forwarded because it
 diagnoses a defect; `GraphWarning.error_type` is dropped, because a warning is
 something a user may read and its diagnostic field is not for them. Provider
 messages, stack traces and connection strings never leave the log.
+---
+
+### 2.3f Persistence layer (Phase 9, complete)
+
+#### Files
+
+| File | Role |
+| --- | --- |
+| `app/models/investigation.py` | The 14 ORM tables |
+| `app/models/__init__.py` | Re-exports; importing a model is what registers it on `Base.metadata` |
+| `app/db/base.py` | `Base(DeclarativeBase)` |
+| `app/db/session.py` | `Database` — engine, session factory, `create_all()`, request-scoped dependency |
+| `app/db/types.py` | `UtcDateTime`, `utc_now()`, `as_utc()` |
+| `app/repositories/investigations.py` | `InvestigationRepository` — the only code that writes rows |
+
+#### The write path
+
+```
+POST /api/investigations/text
+  → run_investigation()          graph returns InvestigationState
+  → serialize_investigation()    Phase 8 adapter, unchanged
+  → repository.save(state)       state → 14 tables, one transaction
+  → 200 with the Phase 8 body
+```
+
+The adapter runs **before** the save, not after. A storage failure then returns
+an error instead of a response claiming the investigation exists, which is the
+opposite of the two-step ordering that produces a client holding an id for a run
+the database never accepted.
+
+`save()` builds the full object graph and flushes once. SQLAlchemy assigns the
+surrogate keys, so the parents are known before the children are inserted and the
+foreign keys are populated by the ORM rather than by hand.
+
+#### The read path
+
+```
+GET /api/investigations/{public_id}
+  → repository.load(public_id)   rows → InvestigationState
+  → serialize_investigation()    the same Phase 8 adapter
+  → 200
+```
+
+Both paths converge on one adapter, so a retrieved investigation cannot drift
+from the live one field by field — the alternative gives two mappers that
+disagree silently (D-041). The guarantee is measured directly:
+`tests/db/test_round_trip.py` asserts
+`semantic_view(reloaded) == semantic_view(live)`.
+
+#### Transaction boundary
+
+`save()`, `delete()` and the list/load reads all take an explicit session and
+leave `commit()`/`rollback()` to the caller. The route owns the boundary because
+the route is the only layer that knows whether the response has already been
+decided.
+
+#### Dependency injection
+
+`get_db(request)` resolves the session factory from `request.app.state.database`.
+The module-level `SessionLocal` from Phase 0 is no longer on the request path, so
+tests that point `DATABASE_URL` at a temporary file get that database rather than
+the one the import happened to bind — the defect that made Phase 8's tests unable
+to see their own writes.
+
+`lifespan` calls `create_all()` once and swallows the failure, so a database that
+is reachable but not writable degrades the POST to an error rather than stopping
+the app from serving the endpoints that do not read.
+
+#### Reading history
+
+`GET /api/investigations` reads the `investigations` table alone — id, status,
+timestamps, counts. It does not load the state, because the dashboard list needs
+a summary and loading fourteen tables per row to render it would make the
+endpoint quadratic in content size for no benefit. `InvestigationSummary` is
+therefore a repository type rather than a pydantic response model holding a full
+investigation.
+
+Because `public_id` is not unique, two runs of the same content both appear in
+the history and `load()` returns the most recent.

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_DIR.parent
@@ -17,7 +20,21 @@ for candidate in (BACKEND_DIR, REPO_ROOT):
         sys.path.insert(0, str(candidate))
 
 from app.core.config import Settings  # noqa: E402
+from app.db.session import Database  # noqa: E402
+from app.graph.context import GraphContext  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.repositories.investigations import InvestigationRepository  # noqa: E402
+from tests.graph.graph_factories import (  # noqa: E402
+    RecordingExtractionService,
+    RecordingRedFlagEngine,
+    build_claim,
+    build_entity,
+    build_flag,
+    real_dependencies,
+)
+from tests.persistence_factories import (  # noqa: E402
+    REGULATORY_CONTENT,
+)
 
 
 @pytest.fixture(scope="session")
@@ -53,3 +70,143 @@ def client(test_settings: Settings) -> TestClient:
     app = create_app(test_settings)
     with TestClient(app) as test_client:
         yield test_client
+
+
+# -- persistence fixtures (Phase 9) ---------------------------------------
+#
+# Every database here is a **temporary SQLite file**, not ``:memory:``. An
+# in-memory database lives inside one connection, so a second session — which is
+# exactly what a request-scoped dependency hands out — would find an empty schema,
+# and a round-trip test would pass for the wrong reason. A file also matches what
+# the application does, where the engine pools connections.
+
+
+@pytest.fixture
+def db_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """Settings pointing at a temporary SQLite file, with no credentials.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+        monkeypatch: Pytest monkeypatch, used to clear ambient configuration.
+
+    Returns:
+        Settings that cannot reach the network and cannot touch a real database.
+    """
+    for key in ("GROQ_API_KEY", "SERPAPI_KEY", "DATABASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    return Settings(
+        _env_file=None,
+        environment="test",
+        database_url=f"sqlite:///{(tmp_path / 'persistence.db').as_posix()}",
+        groq_api_key="",
+        serpapi_key="",
+        log_level="WARNING",
+    )
+
+
+@pytest.fixture
+def database(db_settings: Settings) -> Iterator[Database]:
+    """A ``Database`` with the schema created, disposed after the test.
+
+    Args:
+        db_settings: Isolated settings for this test.
+
+    Yields:
+        A ``Database`` whose schema matches ``Base.metadata``.
+    """
+    database = Database(db_settings)
+    database.create_all()
+    try:
+        yield database
+    finally:
+        database.dispose()
+
+
+@pytest.fixture
+def session(database: Database) -> Iterator[Session]:
+    """A session against the temporary database.
+
+    Args:
+        database: The temporary database.
+
+    Yields:
+        An open session, closed after the test.
+    """
+    session = database.session_factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def repo(session: Session) -> InvestigationRepository:
+    """A repository bound to the temporary database.
+
+    Args:
+        session: The session under test.
+
+    Returns:
+        The repository.
+    """
+    return InvestigationRepository(session)
+
+
+@pytest.fixture
+def real_context(db_settings: Settings) -> GraphContext:
+    """A context running the genuine Phase 1-6 services, fully offline.
+
+    Extraction falls back to its deterministic patterns (no LLM key), search is
+    served by a fixture provider, and verification and risk run for real. This is
+    the context the round-trip tests use, so what is asserted to survive storage
+    is what the real pipeline produces.
+
+    Args:
+        db_settings: Isolated settings for this test.
+
+    Returns:
+        A ``GraphContext`` whose runs cannot reach the network.
+    """
+    dependencies, _ = real_dependencies(db_settings)
+    return GraphContext(dependencies=dependencies)
+
+
+@pytest.fixture
+def rich_context(db_settings: Settings) -> GraphContext:
+    """An offline context producing entities, links, evidence and a real score.
+
+    Two gaps in the default context make it inadequate on its own. Its
+    deterministic extraction emits **no entities**, so ``entities`` and
+    ``claim_entity_links`` would be tested only against empty tables. And its
+    claims are guarantees, which Phase 4 correctly reports as
+    ``NOT_A_FACTUAL_CLAIM``, leaving the risk engine nothing to score.
+
+    This context replaces extraction and red-flag detection only. **Verification
+    and evidence stay real**, which is what populates the search recorder and so
+    produces actual evidence items; faking verification would leave the recorder
+    empty and the two largest tables in the schema untested.
+    """
+    from app.schemas.extraction import ClaimEntityLink, ExtractionMode, ExtractionResult
+
+    dependencies, _ = real_dependencies(db_settings)
+    claim = build_claim()
+    entity = build_entity()
+
+    return GraphContext(
+        dependencies=dataclasses.replace(
+            dependencies,
+            extraction_service=RecordingExtractionService(
+                result=ExtractionResult(
+                    claims=(claim,),
+                    entities=(entity,),
+                    relationships=(ClaimEntityLink(claim_id=claim.id, entity_id=entity.id),),
+                    extraction_mode=ExtractionMode.LLM,
+                    prompt_version="extraction-v1",
+                    model="test-model",
+                    source_text=REGULATORY_CONTENT,
+                    normalized_text=REGULATORY_CONTENT,
+                )
+            ),
+            red_flag_engine=RecordingRedFlagEngine(flags=(build_flag(),)),
+        )
+    )

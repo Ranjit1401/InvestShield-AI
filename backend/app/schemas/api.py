@@ -51,8 +51,10 @@ __all__ = [
     "FailureDetail",
     "InvestigationCreateRequest",
     "InvestigationErrorResponse",
+    "InvestigationListResponse",
     "InvestigationResponse",
     "InvestigationStatus",
+    "InvestigationSummaryResponse",
     "Language",
     "LimitationResponse",
     "RecordedErrorDetail",
@@ -245,6 +247,56 @@ class InvestigationResponse(BaseModel):
 
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class InvestigationSummaryResponse(BaseModel):
+    """One entry in the run history.
+
+    A summary rather than an investigation. It answers "what did I run, and did
+    it work?" without loading twelve tables per row, which is what lets the
+    history endpoint stay a cheap query instead of becoming a report.
+
+    The counts are stored alongside the run rather than aggregated on read, so
+    the numbers here are the numbers that were counted when the run happened.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    investigation_id: str = Field(
+        description="The id a client can pass to GET /api/investigations/{id}.",
+    )
+    status: InvestigationStatus = Field(description="Outcome of that run.")
+    input_type: InvestigationInputType = Field(description="Kind of input submitted.")
+    current_stage: str = Field(description="The last stage that ran.")
+    started_at: datetime = Field(description="When the run began.")
+    completed_at: datetime | None = Field(default=None, description="When it finished, if it did.")
+    created_at: datetime = Field(
+        description="When the run was stored. This is what the history is ordered by.",
+    )
+    claim_count: int = Field(default=0, description="Claims extracted.")
+    entity_count: int = Field(default=0, description="Entities extracted.")
+    red_flag_count: int = Field(default=0, description="Red flags detected.")
+    verification_count: int = Field(default=0, description="Claims verification produced a result for.")
+    source_count: int = Field(default=0, description="Distinct documents cited across the run.")
+    evidence_count: int = Field(default=0, description="Evidence items assembled.")
+    factor_count: int = Field(default=0, description="Risk factors recorded.")
+
+
+class InvestigationListResponse(BaseModel):
+    """A page of run history, newest first.
+
+    `total` is the count of *all* stored runs, not of the page, so a client can
+    render "showing 20 of 137" without a second request. It is counted from the
+    same table as the page, so the two can never come from different queries and
+    disagree about how much history exists.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    investigations: list[InvestigationSummaryResponse] = Field(default_factory=list)
+    total: int = Field(description="Total number of stored runs.")
+    limit: int = Field(description="Maximum entries this page could hold.")
+    offset: int = Field(description="Entries skipped before this page.")
 
 
 class RecordedErrorDetail(BaseModel):

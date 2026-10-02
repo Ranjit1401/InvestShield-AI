@@ -11,6 +11,7 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
+from fastapi import Request
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -115,13 +116,30 @@ SessionLocal = sessionmaker(
 )
 
 
-def get_db() -> Generator[Session, None, None]:
+def get_db(request: Request) -> Generator[Session, None, None]:
     """FastAPI dependency yielding a request-scoped session.
+
+    The session factory comes from ``app.state.database`` so the connection is
+    the one this application was actually built with. Falling back to the
+    module-level `SessionLocal` is a defensive path only: it is resolved from
+    whatever `DATABASE_URL` was set when this module was first imported, which is
+    exactly the global the `app.state` injection exists to avoid.
+
+    Committing is the **route's** job, not this function's. A dependency that
+    committed on the way out would make it impossible for a handler to abandon a
+    failed write, and a half-written investigation that reports `COMPLETED` is
+    worse than one that was never written.
+
+    Args:
+        request: Incoming request, used to reach the app instance.
 
     Yields:
         An open :class:`~sqlalchemy.orm.Session`, closed on teardown.
     """
-    session = SessionLocal()
+    database = getattr(request.app.state, "database", None)
+    if database is None:  # pragma: no cover - defensive; factory always sets it
+        database = Database(get_settings())
+    session = database.session_factory()
     try:
         yield session
     except Exception:

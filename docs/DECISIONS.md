@@ -976,3 +976,194 @@ a field that appears at one level and not the other fails the suite rather than
 shipping.
 
 **Date:** 2026-10-02
+
+---
+
+## D-040 — A surrogate key owns identity; the content digest is not unique
+
+**Decision:** Every table is keyed on a surrogate autoincrement `id`. The Phase 7
+`investigation_id` (an `inv_<16 hex>` content digest) is stored in an ordinary
+indexed `public_id` column with no uniqueness constraint, and the same digest is
+also stored in `content_hash`. `GET /api/investigations/{id}` returns the most
+recently stored run under that id.
+
+**Context:** `investigation_id_for` digests the input type and the submitted text,
+so two runs of identical content produce the same id *by construction*. Phase 8
+returned that id in every response and flagged the collision as Phase 9's problem.
+Making it unique would mean the second run of a piece of content could not be
+stored at all, and overwriting the first would erase the only evidence that the
+investigation was ever run twice — which is precisely the information the history
+endpoint exists to provide.
+
+**Alternatives:**
+
+- *Make `public_id` unique and reject the second run.* Rejected: it converts a
+  normal, expected user action (checking the same suspicious text again) into an
+  error, and the user learns nothing from it.
+- *Upsert, overwriting the earlier run.* Rejected: same problem, silent rather than
+  loud. The history would show one row for content that was checked twice, so
+  "was this checked before?" becomes unanswerable in the one case where it matters.
+- *Key on a per-run UUID and change the id the API returns.* Rejected as a
+  breaking change: clients written against Phase 8 already store the digest.
+- *Surrogate `id` primary key, digest preserved and non-unique, newest wins on
+  retrieval.* Chosen.
+
+**Reason:** The digest is genuinely useful — it is what makes two runs comparable
+field by field, and it is what lets a client detect that it has seen this content
+before. It is simply not a key. Keeping the value the client already holds while
+giving the database its own identity satisfies both, and the history endpoint lists
+every run so nothing is hidden by the choice.
+
+**Consequence:** a client cannot ask "give me *that specific* second run" through
+`GET /{id}`. It can see the run in the history. Recorded as a limitation rather
+than solved with a second id space, because a second identifier the client must
+also learn is a worse trade than a listing endpoint.
+
+**Date:** 2026-10-02
+
+---
+
+## D-041 — The repository returns an `InvestigationState`; the adapter shapes both paths
+
+**Decision:** `InvestigationRepository.load()` returns a reconstructed
+`InvestigationState` — the same type `run_investigation` returns — not a bespoke
+persistence result type. Both the `POST` and the `GET` route then hand it to the
+same Phase 8 `serialize_investigation`. There is exactly one code path that shapes
+an investigation for a client.
+
+**Context:** The obvious alternative is a `StoredInvestigation` record with its own
+to-response mapping. It would be a little more direct, and it would *appear* to
+guarantee that `GET /api/investigations/{id}` and `POST /api/investigations`
+agree. That guarantee is exactly the thing that erodes: the two mappers are
+separate code, so a field added to one is not added to the other, and the drift is
+invisible until a client compares a stored investigation against the live one and
+finds a field missing.
+
+**Alternatives:**
+
+- *Return domain models, assembled by the repository.* This is the same choice one
+  layer up: the repository's job ends at producing the Phase 1-6 objects, and the
+  adapter's job begins at producing the HTTP body. Both are reused verbatim.
+- *Return a persistence-specific record with its own adapter.* Rejected: two
+  renderers for one concept.
+- *Store the already-serialised response as JSON.* Rejected: it freezes the
+  response shape at write time, so a schema fix would require re-running every
+  stored investigation to take effect, and the database would hold a second,
+  divergent copy of every judgement in the system.
+
+**Reason:** The guarantee "a retrieved investigation is indistinguishable from the
+live one" is the entire value of the retrieval endpoint, and the cheapest way to
+have it is to have only one way to build a response. The cost is that the
+repository must reconstruct the Phase 1-6 models faithfully, which is real work —
+but it is work whose correctness the round-trip test measures directly
+(`semantic_view(reloaded) == semantic_view(live)`), rather than work whose
+correctness depends on two things agreeing.
+
+**Date:** 2026-10-02
+
+---
+
+## D-042 — Order is stored, never inferred from a value the database already holds
+
+**Decision:** Every collection the state carries as an ordered tuple has an
+explicit `sequence` column. Evidence source order is additionally preserved by
+`evidence_responses.source_refs_json`, an ordered list of `[source_id, result_id]`
+pairs rather than a join.
+
+**Context:** Phase 5's evidence ordering is a deterministic function of the
+evidence's own fields, and Phase 7's state carries tuples throughout. A relational
+store has no way to reproduce that order from the values it holds, and the two
+obvious substitutes are both wrong. Ordering by timestamp fails outright, because
+two stages can emit events in the same millisecond. Ordering by id fails more
+quietly, because the ids are content digests with no relationship to the order
+Phase 5 chose.
+
+`EvidenceResponse.sources` is the sharper case. `distinct_sources` keeps the
+*first* result seen for each document within a claim, while the `sources` table
+holds every retrieval. Deriving the response's list from the table would change
+which `result_id` a document is reported under — and since `ev_` ids hash both
+ids, the stored evidence would then carry an id that no longer matches the
+provenance shown beside it.
+
+**Alternatives:**
+
+- *Rely on `ORDER BY` over an indexed column.* Rejected: the order is not a
+  function of any one column, so any single-column choice is arbitrary.
+- *Recompute Phase 5's ordering on read.* Rejected: that is a second
+  implementation of `order_evidence`, free to disagree with the first, and the
+  disagreement would be invisible.
+- *Store the order.* Chosen.
+
+**Reason:** Order is data here, not presentation. A retrieved investigation that
+lists the same findings in a different sequence than the live one would be correct
+in every field and wrong in the way a reader notices first.
+
+**Date:** 2026-10-02
+
+---
+
+## D-043 — No `users` table and no `reports` table until something needs them
+
+**Decision:** Phase 9 creates neither a `users` table nor a `reports` table, both
+of which the Phase 0 schema sketch described. The Phase 6 assessment data the
+sketch put in `reports` is stored in `risk_assessments` and `risk_factors` instead.
+
+**Context:** The sketch was written before the Phase 1-6 schemas existed, and
+several of its tables describe a product that has not been designed yet. Building
+to it would have meant inventing a second claim, a second entity and a second risk
+assessment, each able to disagree with the model it was derived from.
+
+An empty placeholder table is worse than no table, because it looks decided. A
+`reports` table with the Phase 6 columns on it would also pre-empt Phase 10's real
+question — whether a report is a rendered artefact, a stored snapshot, or both —
+by answering it with a schema.
+
+**Alternatives:**
+
+- *Create `users` with nullable columns "for forward compatibility".* Rejected: no
+  authentication exists, nothing would ever write a row, and a `user_id` column
+  that is always `NULL` invites a query that filters on it and returns everything.
+- *Create `reports` with the Phase 6 columns, 1:1 with an investigation.* Rejected:
+  it is Phase 10's decision, and the trace data Phase 10 will need is already
+  correctly stored in two tables.
+- *Leave both out until they are needed.* Chosen.
+
+**Reason:** A schema is a record of decisions that have been made. An empty table
+records a decision nobody made, and the cost of removing one later is a migration
+against data that does not exist yet — the cheapest migration there is, which is
+precisely why it should be taken now.
+
+**Date:** 2026-10-02
+
+---
+
+## D-044 — The risk caveat is reproduced by the model, not stored in its own column
+
+**Decision:** `risk_assessments` has no `caveat` column. The caveat lives in
+`warnings_json`, and the repository rebuilds `RiskAssessment` through the model,
+which appends `SCORE_NOT_A_PROBABILITY` during validation.
+
+**Context:** The caveat is the one string in the system that stops `risk_score`
+being read as a probability (D-025). It is worth protecting carefully, which makes
+a dedicated column look like the careful choice. It is the opposite: `SCORE_NOT_A_PROBABILITY`
+is a module constant in `app/schemas/risk.py`, owned by the schema. A column would
+be a second copy of that string, free to drift from the one the model emits, and
+the drift would be invisible — the caveat would still *look* present.
+
+Storing the model *decides* to append it, which is stronger than storing it. A
+stored caveat could be wrong; a rebuilt assessment cannot produce a wrong one,
+because it goes through the same validator that produced the original.
+
+**Alternatives:**
+
+- *A `caveat` column, read back verbatim.* Rejected: two copies, one owner.
+- *A boolean `caveat_present` flag.* Rejected: worse — it records that a caveat was
+  mentioned without recording what it says, which is the one thing a report needs.
+- *Rebuild the assessment through the model and let the model re-add the caveat.*
+  Chosen.
+
+**Reason:** The strongest guarantee available is that the invariant is structural
+rather than maintained. There is no code path that can store an assessment without
+its caveat, and no code path that can read one out without it.
+
+**Date:** 2026-10-02

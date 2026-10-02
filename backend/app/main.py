@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.errors import UNPROCESSABLE_CONTENT, ApiError
 from app.api.routes import health_router, investigations_router
@@ -63,6 +64,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "InvestShield starting",
             extra={"environment": resolved.environment, "version": resolved.version},
         )
+        # Schema creation is idempotent (`checkfirst=True` by default) and runs at
+        # startup rather than per request, so a request never pays for DDL and a
+        # fresh deployment is usable without a separate migration step. It is
+        # wrapped because a database that is reachable but not writable must not
+        # stop the read-only endpoints from starting — the health check reports
+        # the failure, and investigation is a degraded service rather than none.
+        try:
+            database.create_all()
+        except SQLAlchemyError:
+            logger.exception("Database schema could not be created; running degraded")
         yield
         database.dispose()
         logger.info("InvestShield shutting down")

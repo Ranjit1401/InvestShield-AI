@@ -36,6 +36,7 @@ from app.schemas.api import FailureDetail, RecordedErrorDetail
 __all__ = [
     "ApiError",
     "GraphContractError",
+    "InvestigationNotFound",
     "SubmissionRejected",
     "UNPROCESSABLE_CONTENT",
     "UnsupportedInputType",
@@ -111,6 +112,28 @@ class UnsupportedInputType(SubmissionRejected):
 
     def __init__(self, code: str, message: str, *, detail: object | None = None) -> None:
         super().__init__(code, message, detail=detail)
+
+
+class InvestigationNotFound(ApiError):
+    """No stored investigation carries the requested id.
+
+    `404`, and the caller's to fix. The id is a content digest the client holds
+    from a previous `POST`, so a miss means either the id was never issued or the
+    run is not in this database — either way nothing about the request was wrong
+    and nothing about our pipeline is at fault.
+
+    Carries no detail. Echoing the requested id back would tell a caller
+    nothing they do not already know, and a future enumeration attempt learns
+    only what a `404` already says.
+    """
+
+    def __init__(self, code: str, message: str, *, detail: object | None = None) -> None:
+        super().__init__(
+            code,
+            message,
+            detail=detail,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
 
 
 class GraphContractError(ApiError):

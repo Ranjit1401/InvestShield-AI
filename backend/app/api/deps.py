@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from functools import lru_cache
+from typing import Annotated
 
-from fastapi import Request
+from fastapi import Depends, Request
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.db.session import Database, get_db
 from app.graph.context import GraphContext, build_default_context
+from app.repositories.investigations import InvestigationRepository
 
 __all__ = [
     "get_database_dep",
     "get_db",
     "get_graph_context_dep",
+    "get_repository_dep",
     "get_settings_dep",
     "get_settings_cached",
 ]
@@ -86,3 +91,30 @@ def get_graph_context_dep(request: Request) -> GraphContext:
         context = build_default_context(get_settings_dep(request))
         request.app.state.graph_context = context
     return context
+
+
+def get_repository_dep(
+    database: Annotated[Database, Depends(get_database_dep)],
+    session: Annotated[Session, Depends(get_db)],
+) -> InvestigationRepository:
+    """Return a repository bound to this request's session.
+
+    The session comes from `get_db`, which is overridden in tests and in any
+    deployment that needs to supply its own session. The `Database` is read from
+    ``app.state`` purely so the dependency graph stays explicit about which
+    application the request belongs to; the session it returns is what actually
+    carries the connection.
+
+    Taking both is deliberate rather than redundant. A route that took only the
+    session would work, but a route that took only the `Database` would have to
+    build a session itself and would then own committing — and a route that owns
+    committing is how a half-written investigation becomes visible.
+
+    Args:
+        database: The `Database` this application was built with.
+        session: The request-scoped session.
+
+    Returns:
+        A repository that writes and reads through `session`.
+    """
+    return InvestigationRepository(session)

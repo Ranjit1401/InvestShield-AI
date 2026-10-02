@@ -140,7 +140,8 @@ disposes it on shutdown.
 
 ## POST /api/investigations
 
-Typed entry point. Dispatches on `input_type`. **Implemented in Phase 8.**
+Typed entry point. Dispatches on `input_type`. **Implemented in Phase 8; stores
+its result as of Phase 9.**
 
 **Request**
 
@@ -164,6 +165,10 @@ so that an unsupported kind is a typed rejection rather than a guess.
 **200 Response** — the complete `InvestigationResponse`, documented under
 [Investigation Response](#investigation-response).
 
+The response is built **before** the store write. A storage failure therefore
+returns an error rather than a `200` whose `investigation_id` names a run the
+database never accepted.
+
 **422** when `text` is empty or over-length, or when `input_type` is `URL`,
 `IMAGE`, `PDF` or unrecognised. The `detail` names the supported kinds.
 
@@ -173,7 +178,7 @@ so that an unsupported kind is a typed rejection rather than a guess.
 
 Shorthand for `input_type = TEXT`, with `input_type` fixed by the route so a
 client cannot accidentally submit a URL and have it analysed as prose.
-**Implemented in Phase 8.**
+**Implemented in Phase 8; stores its result as of Phase 9.**
 
 **Request**
 
@@ -335,10 +340,47 @@ to be unavailable. **Phase 12.**
 
 ---
 
-## GET /api/investigations/{id} — *not implemented*
+---
 
-Retrieval of a stored investigation. **Phase 9**, once persistence exists. The
-`404` and pagination semantics below apply then; today there is nothing to look up.
+## GET /api/investigations/{id}
+
+Retrieval of a stored investigation. **Implemented in Phase 9.**
+
+The response body is `InvestigationResponse` — the same schema, built by the same
+Phase 8 adapter, as `POST /api/investigations`. A retrieved investigation is
+indistinguishable from the live one, and the round-trip test
+(`tests/db/test_round_trip.py`) asserts that equality rather than leaving it to
+review.
+
+**Path parameter:** `id` — the `investigation_id` returned by the POST.
+
+**200 Response:** `InvestigationResponse`.
+
+**404 Response**
+
+```json
+{
+  "error": {
+    "code": "INVESTIGATION_NOT_FOUND",
+    "message": "Investigation not found."
+  }
+}
+```
+
+The envelope carries no detail. A `404` that named the ids it checked would
+confirm the existence of other investigations to anyone able to ask.
+
+### The id is not unique
+
+`investigation_id` is a digest of the submitted content, so re-running identical
+content produces the same id by construction. `id` is therefore not unique, and
+this endpoint returns the **most recently stored** run under it. Every run remains
+visible in `GET /api/investigations`.
+
+The consequence is stated rather than smoothed over: a client cannot fetch *that
+specific second run* by id alone. It can see the run in the history. Adding a
+second identifier for the client to learn would be a worse trade than a listing
+endpoint (D-040).
 
 ### Enumerations
 
@@ -348,75 +390,29 @@ The older `PENDING` | `PROCESSING` values are withdrawn with the `202` design
 (D-036). A request that is still being processed is never visible over HTTP,
 because Phase 8 answers only once the run has finished.
 
-`input_type`: `TEXT` | `URL` | `IMAGE` | `PDF` — all four declared, only `TEXT`
-analysed.
-
-`timeline stage`: `input` | `extraction` | `red_flags` | `verification` |
-`evidence` | `risk` | `completed`
-
-`timeline status`: `STARTED` | `COMPLETED` | `PARTIAL` | `FAILED` | `SKIPPED`
-
-`language`: `en` | `hi` | `mr`
-
-The full field-level payloads for `claims`, `entities`, `red_flags`,
-`verification_results`, `evidence` and `risk_assessment` are documented in their
-own sections below and are passed through from the phases unchanged.
-`claim_type` (14): `GUARANTEE_CLAIM` | `RETURN_PROMISE` | `PROFIT_PROMISE` |
-`PERFORMANCE_CLAIM` | `CREDENTIAL_CLAIM` | `REGULATORY_STATUS` | `COMPANY_CLAIM` |
-`PRODUCT_CLAIM` | `OWNERSHIP_CLAIM` | `AFFILIATION_CLAIM` | `WITHDRAWAL_CLAIM` |
-`PAYMENT_INSTRUCTION` | `INVESTMENT_OPPORTUNITY` | `OTHER`
-`entity_type` (18): `PERSON` | `COMPANY` | `ORGANIZATION` | `REGULATOR` |
-`BROKER` | `INVESTMENT_ADVISER` | `PLATFORM` | `WEBSITE` | `DOMAIN` |
-`PRODUCT` | `FINANCIAL_INSTRUMENT` | `LOCATION` | `SOCIAL_HANDLE` |
-`REGISTRATION_NUMBER` | `BANK_ACCOUNT` | `UPI_ID` | `PHONE_NUMBER` | `EMAIL` |
-`OTHER`
-`extraction_mode`: `LLM` | `FALLBACK` | `PARTIAL`
-`claim_entity_relationship`: `MENTIONS` | `SUBJECT`
-`risk_level`: `LOW` | `MEDIUM` | `HIGH` | `CRITICAL`
-`verification status`: `VERIFIED` | `UNVERIFIED` | `CONTRADICTED` | `INSUFFICIENT_EVIDENCE` | `NOT_APPLICABLE`
-`evidence_type` (Phase 5): `REGULATORY_RECORD` | `GOVERNMENT_RECORD` |
-`EXCHANGE_RECORD` | `OFFICIAL_ENTITY_SOURCE` | `SEARCH_RESULT`
-`relationship` (Phase 5): `SUPPORTS` | `CONTRADICTS` | `IDENTITY_REFERENCE` |
-`CONTEXT` | `MENTIONS`
-`relevance` (Phase 5): `HIGH` | `MEDIUM` | `LOW`
-`excerpt_origin` (Phase 5): `snippet` | `title`
-
-Note: `evidence_type`, `relationship` and `relevance` are three independent
-axes, not one taxonomy. `evidence_type` describes *the kind of record*,
-`relationship` describes *its bearing on the claim*, and `relevance` describes
-*how directly it bears on it*. They are kept separate because a combined
-vocabulary encodes the same fact twice and the two copies eventually disagree
-(D-023).
-
-There is no `source_credibility` enum. The credibility of a publisher is already
-expressed by Phase 3's `source_type` and Phase 4's `source_tier`, both carried
-through unchanged; a third credibility enum would be a second answer to the same
-question (D-012, D-018).
-
-`relevance` is a **label, not a number**. The `0..1` score sketched before Phase 5
-was deliberately not implemented, because any such number becomes an undeclared
-input to the Phase 6 risk score (D-007). Phase 6 consumes `proof_count` and
-`source_count` as counts and shows the items behind them.
-
-Note that `claim.confidence` is **extraction** confidence — how sure the
-extractor is that the text makes this kind of claim. It is not a probability
-that the claim is true, and it is never a fraud score.
-
 ---
 
-## GET /api/investigations — *not implemented*
+## GET /api/investigations
 
-Paginated history. **Phase 9**, once investigations are stored. The parameters and
-response below are the intended contract.
+Paginated run history. **Implemented in Phase 9.**
+
+Ordered by when each run was **stored**, not by when it started, with the
+surrogate key as a tie-break. Two runs of the same content share a public id and
+can start in the same millisecond; without a total order a client paging through
+the history would see a row twice or skip one.
 
 **Query parameters**
 
 | Name | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `limit` | int | 20 | 1..100 |
-| `offset` | int | 0 | |
-| `input_type` | string | — | optional filter |
-| `risk_level` | string | — | optional filter |
+| `offset` | int | 0 | >= 0 |
+
+`input_type` and `risk_level` filters appeared in the Phase 8 draft and are **not
+implemented**. `input_type` needs no join; `risk_level` lives on
+`risk_assessments`, so filtering on it would either join or denormalize it onto
+`investigations`, and neither is worth it until something actually pages by
+level.
 
 **200 Response**
 
@@ -425,21 +421,49 @@ response below are the intended contract.
   "total": 42,
   "limit": 20,
   "offset": 0,
-  "items": [
+  "investigations": [
     {
-      "investigation_id": "3f2b1c9e-...",
+      "investigation_id": "inv_3f2b1c9e0a7d4e11",
       "status": "COMPLETED",
       "input_type": "TEXT",
-      "excerpt": "🚨 Exclusive AI Trading Opportunity 🚨 Our SEBI-approved...",
-      "risk_level": "HIGH",
-      "risk_score": 90,
-      "red_flag_count": 6,
+      "current_stage": "risk",
+      "started_at": "2026-10-01T00:00:00Z",
+      "completed_at": "2026-10-01T00:00:04Z",
+      "created_at": "2026-10-01T00:00:04Z",
       "claim_count": 5,
-      "created_at": "2026-10-01T00:00:00Z"
+      "entity_count": 7,
+      "red_flag_count": 6,
+      "verification_count": 5,
+      "source_count": 12,
+      "evidence_count": 9,
+      "factor_count": 6
     }
   ]
 }
 ```
+
+The envelope key is `investigations`, not the `items` of the Phase 8 draft.
+
+### Counts are stored, not aggregated
+
+The per-kind counts are columns on `investigations`, written at save time. Listing
+a hundred runs therefore costs one indexed query instead of a thousand joins —
+which is what keeps this endpoint a listing rather than a report.
+
+The trade is that a count can be stale if a run is ever modified. Nothing modifies
+a stored run: it is written once and read many times, so the trade costs nothing
+today and would be revisited only by a re-run feature that rewrites history.
+
+### What is deliberately absent
+
+There is no `excerpt`. The Phase 8 draft included one, and truncating the
+submitted text into every history response would copy user content into a listing
+endpoint that a dashboard calls on every page — a wider blast radius for the same
+data the detail endpoint already returns.
+
+`completed_at` is currently `null`. Phase 7 does not populate it; that is a Phase 7
+defect carried into Phase 9, not a persistence failure. It is stored faithfully as
+`null` and returned as `null`.
 
 ---
 
@@ -503,17 +527,22 @@ Guarantees a client may rely on:
 | Endpoint | Phase | Status |
 | --- | --- | --- |
 | `GET /api/health` | 0 | Implemented |
-| `POST /api/investigations` | 8 | Planned |
-| `POST /api/investigations/text` | 8 | Planned |
+| `POST /api/investigations` | 8 (stores in 9) | Implemented |
+| `POST /api/investigations/text` | 8 (stores in 9) | Implemented |
+| `GET /api/investigations/limits` | 8 | Implemented |
+| `GET /api/investigations/{id}` | 9 | Implemented |
+| `GET /api/investigations` | 9 | Implemented |
 | `POST /api/investigations/url` | 8 / 12 | Planned |
 | `POST /api/investigations/upload` | 8 / 13 / 14 | Planned |
-| `GET /api/investigations` | 8 / 9 | Planned |
-| `GET /api/investigations/{id}` | 8 | Planned |
 
-The `risk_*` fields in the two response examples above are Phase 6 contracts and
-are already final: `risk_score` is bounded by `risk_score_ceiling` (100), so a
-response can never show a score above it, and `raw_score` carries the uncapped
-sum when the value was clamped. The surrounding envelope is still Phase 8 work.
+Phase 8 built the two POST endpoints and answered them from memory. Phase 9 added
+the store; both POSTs now persist what they return, and the response shape is
+unchanged, so a client written against Phase 8 keeps working.
+
+The `risk_*` fields in the two response examples below are Phase 6 contracts:
+`risk_score` is bounded by `risk_score_ceiling` (100), so a response can never
+show a score above it, and `raw_score` carries the uncapped sum when the value was
+clamped.
 
 ### Extraction payload (Phase 2; exposed as `claims` and `entities`)
 
@@ -916,8 +945,8 @@ reading `ARCHITECTURE.md` §2.3d and `app/graph/state.py` alongside this section
 | `GET /api/investigations/limits` | implemented |
 | `POST /api/investigations/url` | **not implemented** — `422` (Phase 12) |
 | `POST /api/investigations/upload` | **not implemented** — `422` (Phase 12) |
-| `GET /api/investigations/{id}` | **not implemented** (Phase 9) |
-| `GET /api/investigations` | **not implemented** (Phase 9) |
+| `GET /api/investigations/{id}` | implemented (Phase 9) |
+| `GET /api/investigations` | implemented (Phase 9) |
 
 Fields deliberately **absent** from the Phase 8 response, and where each belongs:
 

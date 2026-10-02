@@ -1072,3 +1072,162 @@ avoid.
   Adding any of them now would create a second, unvalidated restatement of
   judgments the pipeline already made (D-039).
 - **Translation** — `language` is accepted and echoed; no message is translated.
+
+---
+
+## Phase 9 — Database persistence
+
+**Date:** 2026-10-02
+**Phase:** 9 — Database models & repositories
+
+### What was implemented
+
+**Schema — 14 tables, `backend/app/models/investigation.py`.**
+
+`investigations`, `claims`, `entities`, `claim_entity_links`, `red_flags`,
+`verification_results`, `sources`, `evidence_responses`, `evidence`,
+`risk_assessments`, `risk_factors`, `timeline_events`, `investigation_warnings`,
+`investigation_errors`.
+
+`app/models/__init__.py` imports every table, which is what registers them on
+`Base.metadata` and therefore what `Database.create_all()` materialises. A model
+that is never imported is never registered, and a table that is never registered
+is silently missing.
+
+**Portability — `backend/app/db/types.py`.**
+
+`UtcDateTime`, a `TypeDecorator` that writes naive UTC and reads back aware UTC.
+SQLite has no timezone type, so a bare `DateTime` would return naive values there
+and aware ones on PostgreSQL. The asymmetry does not fail on the SQLite path — it
+fails much later, as `can't subtract offset-naive and offset-aware datetimes`, in
+code that only runs on the hosted database. `compare_values` normalises before
+comparing so a `WHERE created_at = :ts` filter matches on both backends.
+
+**Repository — `backend/app/repositories/investigations.py`.**
+
+`save(state)`, `load(public_id)`, `find(public_id)`, `list_page(limit, offset)`,
+`delete(public_id)`, plus `commit()`/`rollback()` so the transaction boundary is
+stated at the call site that owns it.
+
+The load-bearing decision: `load()` returns a reconstructed `InvestigationState`
+rather than a bespoke result type, so the Phase 8 adapter shapes both the live
+and the retrieved investigation. There is exactly one code path that produces a
+response body (D-041).
+
+**Endpoints — `backend/app/api/routes/investigations.py`.**
+
+- `POST /api/investigations/text` and `POST /api/investigations` now store what
+  they return. The response shape is unchanged, so a Phase 8 client keeps working.
+- `GET /api/investigations/{id}` — a stored run, rebuilt and shaped by the same
+  adapter. `404` via a new `InvestigationNotFound`, with no detail in the body.
+- `GET /api/investigations` — run history, newest first, `limit`/`offset` paged,
+  reading only the `investigations` table.
+
+`/investigations/limits` is declared **before** the parameterised route. FastAPI
+matches in declaration order, and the reverse order made a Phase 8 endpoint
+return a `404` about a missing investigation.
+
+**Wiring.**
+
+`get_db(request)` now reads the session factory from `app.state.database` rather
+than the module-level `SessionLocal`, so the module-level engine is off the
+request path entirely. `get_repository_dep` composes the `Database` and the
+request-scoped session. The `lifespan` handler calls `database.create_all()` once,
+wrapped so a database that is reachable but not writable does not stop the
+read-only endpoints from starting.
+
+### Notable corrections to the Phase 0 schema sketch
+
+The sketch predated the Phase 1-6 schemas and described fields the pipeline does
+not have. Rather than building a second version of every model, the schema follows
+the models. The full diff is tabulated in `docs/DATABASE_SCHEMA.md`; the
+substantive ones:
+
+- **`investigation_id` is not unique.** It is a digest of the submitted content,
+  so a unique constraint would make re-running content an error and would
+  destroy the evidence that content was checked twice. `id` is the primary key;
+  the digest is preserved in `public_id` so no Phase 8 client is broken (D-040).
+- **`red_flags` is not unique on `(investigation_id, code)`.** Phase 1 emits one
+  flag per span, each with its own `rf_` id, and Phase 6 cites those ids
+  individually. The key is `(investigation_id, code, span_start, span_end)`.
+- **`sources` is keyed on `(source_id, result_id)`, not `source_id`.** Phase 5
+  derives `ev_` ids from both; keying on the document alone would force one
+  retrieval to borrow another's `result_id`, and evidence citing it would then
+  report provenance that was never fetched.
+- **No `caveat` column on `risk_assessments`.** The caveat is
+  `SCORE_NOT_A_PROBABILITY`, appended to `warnings` by `RiskAssessment` itself.
+  Rebuilding the assessment through the model reproduces it, which is stronger
+  than storing a copy free to drift (D-044).
+- **No `users` and no `reports` tables.** `reports` is Phase 10; an empty
+  placeholder records a decision nobody made (D-043).
+- **Status values are `COMPLETED | PARTIAL | FAILED`**, not the sketch's
+  `PENDING | PROCESSING | COMPLETED | FAILED`. The graph is synchronous, so there
+  is no queued or running state, and `PARTIAL` is what the sketch lacked.
+
+### Bugs found and fixed during the phase
+
+1. **`relationship` shadowed the `relationship()` function.** The evidence table
+   has a column named `relationship`, which in a declarative class body hides the
+   SQLAlchemy function for the rest of the class. Symptom:
+   `TypeError: 'MappedColumn' object is not callable`. Fixed by naming the Python
+   attribute `relationship_` and mapping it to the database column `relationship`,
+   the same pattern already used for `metadata`.
+2. **Duplicate index name.** An explicit `Index("ix_evidence_claim_id", ...)`
+   collided with the `index=True` on `claim_id`. The composite was renamed to
+   `ix_evidence_investigation_claim`, and a redundant
+   `ix_investigations_created_desc` (identical to the `created_at` index) was
+   removed.
+3. **Evidence items had a null `investigation_id`.** An item reaches the
+   `investigations` table through its response, and SQLAlchemy populates a
+   foreign key only from the relationship that references it. The parent is now
+   passed explicitly.
+
+### Test results
+
+```
+cd backend && python -m pytest
+2085 passed, 4 deselected
+```
+
+Baseline before Phase 9 was `1997 passed, 4 deselected`. **88 tests added**, none
+modified or removed.
+
+| File | Tests | Covers |
+| --- | --- | --- |
+| `tests/db/test_round_trip.py` | 17 | State ⇄ rows fidelity, per-collection round trips, the caveat, the risk trace, `red_flag_id_for` recomputability |
+| `tests/db/test_history.py` | 21 | Listing, paging stability, the shared-id case, deletion and cascade, timestamp round trips |
+| `tests/db/test_schema.py` | 29 | Table set, uniqueness rules, cascade, absence of secret-bearing columns, PostgreSQL DDL compilation |
+| `tests/api/test_persistence_endpoints.py` | 21 | Store-on-write, retrieval equality, the `404`, history, and the Phase 8 contract holding |
+
+Two fixture contexts back the round-trip tests. `real_context` runs the genuine
+Phase 1-6 services offline. `rich_context` replaces only extraction and red-flag
+detection, because the deterministic fallback emits **no entities** and its
+guarantee claims are not externally verifiable — a suite built only on the
+default context would have tested `entities` and `claim_entity_links` against
+empty tables and reported full coverage. Verification and evidence stay real in
+both, so the search recorder populates and the evidence node has something real
+to assemble.
+
+### Known limitations carried forward
+
+- **No authentication, therefore no ownership check.** Anyone holding an id can
+  read that investigation. Acceptable only because there is nothing to
+  authenticate against; it needs revisiting before there is.
+- **No migrations.** `create_all()` creates missing tables and will not add a
+  column to an existing one. Fine while the schema is still changing and the
+  database is disposable; Alembic is the right tool the first time a deployed
+  database must be migrated in place.
+- **No live PostgreSQL run.** DDL is verified by compiling every table and index
+  against the PostgreSQL dialect, and `UtcDateTime` handles the offset asymmetry,
+  but nothing has connected to a real PostgreSQL server.
+- **No `DELETE` endpoint**, though the repository supports it.
+- **`limit`/`offset` paging only.** Fine at this scale.
+
+### Carried into Phase 10
+
+`docs/DATABASE_SCHEMA.md` has been rewritten to describe the schema as
+implemented, with the differences from the Phase 0 sketch tabulated rather than
+quietly dropped. The risk trace Phase 10 will need — factor → claim → red flag →
+evidence → source — is stored and round-trips, so a report is a read rather than a
+reconstruction. Whether reports are a stored snapshot, a rendered artefact, or
+both is still an open decision; no `reports` table was created.
