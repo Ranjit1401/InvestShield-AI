@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_settings_dep
+from app.api.deps import get_database_dep, get_settings_dep
 from app.core.config import Settings
+from app.db.session import Database
 from app.services.capabilities import (
+    probe_database,
     probe_embeddings,
     probe_llm,
     probe_ocr,
@@ -51,20 +53,22 @@ class HealthResponse(BaseModel):
 
 
 @router.get("/health", response_model=HealthResponse, summary="Service health")
-def health(settings: Settings = Depends(get_settings_dep)) -> HealthResponse:
+def health(
+    settings: Settings = Depends(get_settings_dep),
+    database: Database = Depends(get_database_dep),
+) -> HealthResponse:
     """Report application health and which optional services are usable.
 
     An unconfigured service is a healthy state: InvestShield degrades coverage
     and states the limitation rather than failing (D-009).
     """
-    from app.db.session import engine
-
-    try:
-        with engine.connect() as connection:
-            connection.exec_driver_sql("SELECT 1")
-        database = DatabaseProbe(connected=True, dialect=engine.dialect.name)
-    except Exception as exc:  # pragma: no cover - environment dependent
-        database = DatabaseProbe(connected=False, dialect=engine.dialect.name, error=type(exc).__name__)
+    connected, detail = probe_database(database.session_factory)
+    dialect = database.engine.dialect.name
+    database_probe = (
+        DatabaseProbe(connected=True, dialect=dialect)
+        if connected
+        else DatabaseProbe(connected=False, dialect=dialect, error=detail)
+    )
 
     services = {
         "llm": ServiceProbe(**probe_llm(settings).to_dict()),
@@ -74,14 +78,14 @@ def health(settings: Settings = Depends(get_settings_dep)) -> HealthResponse:
         "embeddings": ServiceProbe(**probe_embeddings(settings).to_dict()),
     }
 
-    overall = "ok" if database.connected else "degraded"
+    overall = "ok" if database_probe.connected else "degraded"
 
     return HealthResponse(
         status=overall,
         app=settings.app_name,
         version=settings.version,
         environment=settings.environment,
-        database=database,
+        database=database_probe,
         services=services,
         time=datetime.now(timezone.utc),
     )

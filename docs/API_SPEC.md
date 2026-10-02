@@ -11,18 +11,18 @@ document is the contract; the frontend client mirrors it.
 
 ## Status Codes
 
-| Code | Meaning |
-| --- | --- |
-| 200 | Success |
-| 201 | Resource created (investigation started) |
-| 202 | Investigation accepted and processing |
-| 400 | Malformed request |
-| 404 | Investigation not found |
-| 413 | Upload exceeds size limit |
-| 422 | Validation error (invalid URL, empty text, wrong file type) |
-| 429 | Upstream provider rate limit (search/LLM) |
-| 500 | Internal error (must never leak stack traces) |
-| 503 | A required service is unavailable (e.g. OCR for image input) |
+| Code | Meaning | In Phase 8? |
+| --- | --- | --- |
+| 200 | Success — including a **partial** run, which returns `status: PARTIAL` | yes |
+| 201 | Resource created | not used |
+| 202 | Investigation accepted and processing | **withdrawn**, see below |
+| 400 | Malformed request | not used |
+| 404 | Investigation not found | Phase 9 |
+| 413 | Upload exceeds size limit | Phase 12 |
+| 422 | Validation error (empty text, over-length, unanalysed input type) | yes |
+| 429 | Upstream provider rate limit | not used — a rate limit is a degradation, not a client error (D-009) |
+| 500 | A stage broke its documented contract | yes |
+| 503 | A required service is unavailable | not used — same reason as 429 |
 
 Error body shape:
 
@@ -35,6 +35,54 @@ Error body shape:
   }
 }
 ```
+
+`detail` is a structured object, not a string, so a client can branch on it. For
+investigation failures it is a `FailureDetail`:
+
+```json
+{
+  "error": {
+    "code": "INPUT_TYPE_NOT_SUPPORTED",
+    "message": "This version analyses text input only. The submitted input type was recognised but is not analysed, so no investigation was performed.",
+    "detail": {
+      "errors": [
+        { "code": "INPUT_TYPE_NOT_SUPPORTED", "stage": "input", "error_type": null }
+      ],
+      "submitted_input_type": "URL",
+      "supported_input_types": ["TEXT"]
+    }
+  }
+}
+```
+
+Three rules govern every failing endpoint:
+
+- **One shape.** Every failure uses the envelope above, so a client handles one
+  error contract rather than learning a new one per route.
+- **The status says whose fault it is.** `INPUT_EMPTY` and
+  `INPUT_TYPE_NOT_SUPPORTED` are `422` — the caller must fix them. Every other
+  recorded graph error is a stage breaking a contract that documented it never
+  would, and is `500`.
+- **A degraded run is not a failure.** When search, the LLM or extraction is
+  unavailable the request still returns `200` with `status: PARTIAL` and the
+  limitation listed. Failing the request would make the product look broken at the
+  exact moment it is correctly reporting that it checked less than it wanted to
+  (D-009).
+
+`message` and `detail` never contain a provider response, a stack trace or a
+connection string — only the graph's own fixed wording and, where relevant, an
+exception's *class name*.
+
+### The 202 design is withdrawn
+
+Earlier revisions of this document specified `202 Accepted` plus
+`GET /api/investigations/{id}`. That design presupposes persistence, which is
+Phase 9. Phase 8 returns the **complete investigation synchronously with `200`**,
+because by the time the response is written the run has already finished; a `202`
+would be a lie about outstanding work. Returning an `investigation_id` with nothing
+stored behind it would also invite a client to poll an endpoint that does not
+exist. Retrieval is added alongside the POST in Phase 9, which is purely additive
+(D-036).
 
 ---
 
@@ -70,12 +118,29 @@ Notes:
 - `configured: false` is a valid, healthy state — the product degrades rather
   than failing (D-009).
 - `version` and `status` are always present.
+- `status` is `ok` or `degraded`. `degraded` means **the configured database could
+  not be reached**; it says nothing about the optional services, whose unavailability
+  is reported per-service and is never a failure.
+- `database.dialect` is reported even when `connected` is `false`, because the
+  dialect is a fact about configuration and the connection is a fact about the
+  moment. A client that could not tell an unconfigured database from a
+  misconfigured one would have nothing to act on.
+- `database.error` is the **exception class name only**. Driver messages embed the
+  DSN, including credentials, so they are logged and never returned.
+
+**Phase 8 change — the probe follows the app, not the environment.** The route
+used to probe a module-level engine built from `get_settings()` at import time,
+which meant a test passing its own `Settings` still probed the developer's actual
+database, and an unreachable ambient `DATABASE_URL` made a healthy app report
+`degraded`. `create_app` now builds one `Database` from the settings it was given,
+parks it on `app.state.database`, exposes it through `get_database_dep`, and
+disposes it on shutdown.
 
 ---
 
 ## POST /api/investigations
 
-Generic entry point. Dispatches on `input_type`.
+Typed entry point. Dispatches on `input_type`. **Implemented in Phase 8.**
 
 **Request**
 
@@ -83,33 +148,32 @@ Generic entry point. Dispatches on `input_type`.
 {
   "input_type": "TEXT",
   "text": "Our SEBI-approved expert team guarantees 35% monthly returns.",
-  "url": null,
   "language": "en"
 }
 ```
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `input_type` | `TEXT` \| `URL` \| `IMAGE` \| `PDF` | yes | |
-| `text` | string | when `TEXT` | 1..20000 chars |
-| `url` | string | when `URL` | must be `http`/`https` |
-| `language` | `en` \| `hi` \| `mr` | no | report language, default `en` |
+| `input_type` | `TEXT` \| `URL` \| `IMAGE` \| `PDF` | no (default `TEXT`) | all four declared; only `TEXT` is analysed |
+| `text` | string | yes | 1..20000 chars; whitespace-only is refused |
+| `language` | `en` \| `hi` \| `mr` | no | recorded and echoed; **not translated** in Phase 8 |
 
-**202 Response**
+Unknown fields are refused (`422`). `input_type` is explicit rather than inferred
+so that an unsupported kind is a typed rejection rather than a guess.
 
-```json
-{
-  "investigation_id": "3f2b1c9e-...",
-  "status": "COMPLETED",
-  "created_at": "2026-10-01T00:00:00Z"
-}
-```
+**200 Response** — the complete `InvestigationResponse`, documented under
+[Investigation Response](#investigation-response).
+
+**422** when `text` is empty or over-length, or when `input_type` is `URL`,
+`IMAGE`, `PDF` or unrecognised. The `detail` names the supported kinds.
 
 ---
 
 ## POST /api/investigations/text
 
-Shorthand for `input_type = TEXT`.
+Shorthand for `input_type = TEXT`, with `input_type` fixed by the route so a
+client cannot accidentally submit a URL and have it analysed as prose.
+**Implemented in Phase 8.**
 
 **Request**
 
@@ -117,30 +181,138 @@ Shorthand for `input_type = TEXT`.
 { "text": "🚨 Exclusive AI Trading Opportunity 🚨 ...", "language": "en" }
 ```
 
-**202 Response** — identical to `POST /api/investigations`.
+**200 Response** — identical to `POST /api/investigations`.
 
-**422** when `text` is empty or exceeds the length cap.
+**422** when `text` is empty, over-length, or an unknown field is present.
 
 ---
 
-## POST /api/investigations/url
+## GET /api/investigations/limits
 
-Shorthand for `input_type = URL`. The server fetches and analyses the page
-(Phase 12). SSRF guards apply.
+Discovery: what this version accepts. **Implemented in Phase 8.**
 
-**Request**
+Exists so a client can learn the constraint before building a submission rather
+than after being refused. Needs no investigation and never fails.
+
+**200 Response**
 
 ```json
-{ "url": "https://example.com", "language": "en" }
+{
+  "supported_input_types": ["TEXT"],
+  "max_text_length": 20000,
+  "languages": ["en", "hi", "mr"],
+  "translation_enabled": false
+}
 ```
-
-**202 Response** — as above.
-
-**422** for a malformed URL or a non-`http(s)` scheme.
 
 ---
 
-## POST /api/investigations/upload
+## Investigation Response
+
+The shape both `POST` endpoints return. Generated from
+`app/schemas/api.py::InvestigationResponse`; `/docs` is always authoritative.
+
+```json
+{
+  "investigation_id": "inv_3f2b1c9e4a7d8e01",
+  "status": "PARTIAL",
+  "input_type": "TEXT",
+  "language": "en",
+  "current_stage": "risk",
+
+  "claims": [ /* Phase 2 Claim objects, unchanged */ ],
+  "entities": [ /* Phase 2 Entity objects, unchanged */ ],
+  "red_flags": [ /* Phase 1 RedFlag objects, with spans, unchanged */ ],
+  "verification_results": [ /* Phase 4 VerificationResult objects */ ],
+  "evidence": [ /* Phase 5 EvidenceResponse objects */ ],
+  "risk_assessment": { /* Phase 6 RiskAssessment object, verbatim, caveats included */ },
+
+  "timeline": [
+    { "stage": "extraction", "status": "PARTIAL",
+      "message": "Extraction completed without the language model.",
+      "at": "2026-10-01T00:00:00Z" }
+  ],
+  "limitations": ["EXTRACTION_FALLBACK", "SEARCH_UNAVAILABLE"],
+  "warnings": [
+    { "code": "SEARCH_UNAVAILABLE", "stage": "verification",
+      "message": "External search was unavailable, so no external record could be consulted for any claim." }
+  ],
+  "errors": [],
+
+  "started_at": "2026-10-01T00:00:00Z",
+  "completed_at": "2026-10-01T00:00:04Z"
+}
+```
+
+### Fields the API layer owns
+
+Everything else — `claims`, `entities`, `red_flags`, `verification_results`,
+`evidence`, `risk_assessment` — is the **Phase 1-6 domain object itself**, embedded
+unchanged. A projection would create a second definition of "a claim" that could
+drift from Phase 2's, and every such drift would be a silent wrong answer rather
+than a type error (D-038).
+
+| Field | Meaning |
+| --- | --- |
+| `investigation_id` | A digest of the submitted input, so a re-run is comparable. **Not unique per investigation** — Phase 9 gives it a real id |
+| `status` | `COMPLETED` \| `PARTIAL` \| `FAILED`, derived from the stage timeline |
+| `current_stage` | The last stage that ran |
+| `limitations` | Deduplicated warning **codes**, first-seen order. Branch on these |
+| `warnings` | The same limitations, human-readable, with the stage that recorded each |
+| `errors` | Recorded failures. Any entry means `status: FAILED` |
+| `started_at` / `completed_at` | Wall-clock metadata |
+| `language` | Echo of the request. No message is translated |
+
+Absent state keys become empty lists rather than being omitted, so a client can
+read `claims.length` without first checking for the field's existence. The
+distinction that must survive is preserved by `status` and `limitations`: a client
+can always tell a stage that ran and found nothing from a stage that never ran.
+
+### `limitations` is codes, not prose
+
+The earlier draft of this section showed `limitations` as an array of English
+sentences. That is changed. A client must be able to branch on a limitation
+without parsing natural language (D-009), so `limitations` holds the stable codes
+and `warnings` holds the readable form. Both are present because they serve
+different consumers: the codes are for logic, the messages are for display, and
+collapsing them into one list would force every client to re-derive half of it.
+
+Stable codes, from `app/graph/nodes.py`:
+
+`INPUT_TYPE_NOT_ANALYSED`, `EXTRACTION_FALLBACK`, `EXTRACTION_PARTIAL`,
+`NO_CLAIMS_EXTRACTED`, `NO_RED_FLAGS_DETECTED`, `SEARCH_UNAVAILABLE`,
+`PARTIAL_VERIFICATION`, `EVIDENCE_UNAVAILABLE`, `SEARCH_RESULTS_NOT_RECORDED`.
+
+Stable failure codes:
+
+`INPUT_EMPTY`, `INPUT_TYPE_NOT_SUPPORTED`, `EXTRACTION_FAILED`,
+`RED_FLAG_DETECTION_FAILED`, `VERIFICATION_FAILED`, `RISK_ASSESSMENT_FAILED`.
+
+### `status` is derived from the timeline, not the warnings
+
+`COMPLETED` when every stage that ran ran to completion. `PARTIAL` when any stage
+was `PARTIAL` or `SKIPPED`. `FAILED` when the state recorded any error.
+
+Note that `NO_RED_FLAGS_DETECTED` is a **limitation code but not a degraded run** —
+it is recorded whenever content matched none of Phase 1's rules, which is most
+benign content. Treating "warnings exist" as "the run is incomplete" would badge
+every clean investigation as a partial one. The stage statuses already encode the
+right distinction, so the adapter reads those rather than re-deciding (D-037).
+
+---
+
+## POST /api/investigations/url — *not implemented*
+
+Shorthand for `input_type = URL`. The server would fetch and analyse the page.
+SSRF guards apply. **Phase 12.**
+
+Phase 8 refuses `URL` with `422` `INPUT_TYPE_NOT_SUPPORTED` rather than analysing
+the string as prose. The product commits to this endpoint; this version does not
+have the crawler behind it.
+
+---
+
+## POST /api/investigations/upload — *not implemented*
 
 Screenshot or PDF upload.
 
@@ -154,151 +326,41 @@ Screenshot or PDF upload.
 **Limits:** 10 MB max. Allowed: `image/png`, `image/jpeg`, `image/webp`,
 `application/pdf`.
 
-**202 Response** — as above.
-
 **413** when the file exceeds the size limit.
-**415/422** for a disallowed content type.
-**503** `OCR_UNAVAILABLE` when an image is submitted but OCR is not installed.
+**422** for a disallowed content type.
+**503** `OCR_UNAVAILABLE` when an image is submitted but OCR is not installed —
+*unless* Phase 8 is in force, in which case `IMAGE` and `PDF` are refused with
+`422` up front, before any availability check, because there is no ingestion path
+to be unavailable. **Phase 12.**
 
 ---
 
-## GET /api/investigations/{id}
+## GET /api/investigations/{id} — *not implemented*
 
-Full result of one investigation.
-
-**200 Response**
-
-```json
-{
-  "investigation_id": "3f2b1c9e-...",
-  "status": "COMPLETED",
-  "input_type": "TEXT",
-  "input_text": "...",
-  "created_at": "2026-10-01T00:00:00Z",
-  "risk_level": "HIGH",
-  "risk_score": 90,
-  "raw_score": 90,
-  "risk_factors": [
-    {
-      "id": "rsk_1f2e3d4c5b6a",
-      "factor_type": "GUARANTEED_RETURN",
-      "label": "Guaranteed return promise",
-      "weight": 20,
-      "contribution": 20,
-      "absorbed_into": null,
-      "reason": "The message promises a fixed monthly return."
-    }
-  ],
-  "summary": "6 red flags, 5 claims and 4 entities were extracted from the submitted content.",
-  "claims": [
-    {
-      "claim_id": "c1",
-      "claim_text": "The team is SEBI approved",
-      "claim_type": "REGULATORY",
-      "entities": ["Example Team"],
-      "confidence": 0.8,
-      "verification_required": true,
-      "status": "UNVERIFIED",
-      "verification_reason": "No matching registration could be independently verified from the searched authoritative records."
-    }
-  ],
-  "entities": [
-    { "entity_id": "e1", "name": "Example Team", "entity_type": "COMPANY", "registration_number": null, "confidence": 0.6 }
-  ],
-  "red_flags": [
-    {
-      "code": "GUARANTEED_RETURN",
-      "name": "Guaranteed return",
-      "severity": "HIGH",
-      "weight": 20,
-      "description": "The message promises a fixed investment return.",
-      "evidence": "guarantees 35% monthly returns"
-    }
-  ],
-  "verification_results": [
-    {
-      "claim_id": "claim_001",
-      "status": "VERIFIED",
-      "reason_code": "AUTHORITATIVE_SOURCE_CONFIRMS",
-      "reason": "A SEBI public record confirms this claim.",
-      "confidence": 0.85,
-      "source_ids": ["src_2d84c639a686"],
-      "matched_result_ids": ["res_2d84c639a686"],
-      "queries": ["site:sebi.gov.in \"Acme Capital Advisors\""],
-      "warnings": []
-    }
-  ],
-  "evidence": [
-    {
-      "id": "ev_2c1f0a9b3d47",
-      "claim_id": "claim_001",
-      "verification_status": "VERIFIED",
-      "evidence_type": "REGULATORY_RECORD",
-      "relationship": "SUPPORTS",
-      "relevance": "HIGH",
-      "excerpt": "Acme Capital Advisors is registered as an investment adviser.",
-      "excerpt_origin": "snippet",
-      "matched_cue": "registered as",
-      "provider_query": "site:sebi.gov.in \"Acme Capital Advisors\"",
-      "is_proof": true,
-      "url": "https://www.sebi.gov.in/intermediaries/acme",
-      "source": {
-        "source_id": "src_2d84c639a686",
-        "result_id": "res_2d84c639a686",
-        "url": "https://www.sebi.gov.in/intermediaries/acme",
-        "canonical_url": "https://www.sebi.gov.in/intermediaries/acme",
-        "domain": "sebi.gov.in",
-        "title": "Acme Capital Advisors",
-        "source_type": "REGULATOR",
-        "source_tier": "TIER_1_PRIMARY_REGULATOR",
-        "retrieved_at": "2026-10-01T00:00:00Z",
-        "position": 1,
-        "source_priority": 1,
-        "is_authoritative": true
-      }
-    }
-  ],
-  "sources": [
-    {
-      "source_id": "src_2d84c639a686",
-      "result_id": "res_2d84c639a686",
-      "url": "https://www.sebi.gov.in/intermediaries/acme",
-      "domain": "sebi.gov.in",
-      "title": "Acme Capital Advisors",
-      "source_type": "REGULATOR",
-      "source_tier": "TIER_1_PRIMARY_REGULATOR",
-      "retrieved_at": "2026-10-01T00:00:00Z",
-      "position": 1
-    }
-  ],
-  "why_flagged": [
-    { "title": "Guaranteed returns", "explanation": "The message promises a fixed monthly return." }
-  ],
-  "safety_guidance": [
-    "Verify the intermediary's registration independently before transferring funds.",
-    "Do not rely solely on information provided by the investment promoter."
-  ],
-  "limitations": [
-    "External verification could not be completed because the search service is not configured."
-  ],
-  "timeline": [
-    { "step": "input_received",     "label": "Input received",          "status": "COMPLETED", "detail": null, "timestamp": "..." },
-    { "step": "claims_extracted",   "label": "Claims extracted",        "status": "COMPLETED", "detail": "5 claims", "timestamp": "..." },
-    { "step": "red_flags_detected", "label": "Red flags detected",      "status": "COMPLETED", "detail": "6 red flags", "timestamp": "..." },
-    { "step": "sources_searched",   "label": "Authoritative sources searched", "status": "SKIPPED", "detail": "Search service unavailable", "timestamp": "..." },
-    { "step": "evidence_assembled", "label": "Evidence assembled",      "status": "COMPLETED", "detail": "1 evidence item", "timestamp": "..." },
-    { "step": "risk_calculated",    "label": "Risk assessment completed", "status": "COMPLETED", "detail": "HIGH", "timestamp": "..." },
-    { "step": "report_generated",   "label": "Report generated",        "status": "COMPLETED", "detail": null, "timestamp": "..." }
-  ],
-  "language": "en"
-}
-```
-
-**404** when the investigation id is unknown.
+Retrieval of a stored investigation. **Phase 9**, once persistence exists. The
+`404` and pagination semantics below apply then; today there is nothing to look up.
 
 ### Enumerations
 
-`status`: `PENDING` | `PROCESSING` | `COMPLETED` | `FAILED`
+`status`: `COMPLETED` | `PARTIAL` | `FAILED`
+
+The older `PENDING` | `PROCESSING` values are withdrawn with the `202` design
+(D-036). A request that is still being processed is never visible over HTTP,
+because Phase 8 answers only once the run has finished.
+
+`input_type`: `TEXT` | `URL` | `IMAGE` | `PDF` — all four declared, only `TEXT`
+analysed.
+
+`timeline stage`: `input` | `extraction` | `red_flags` | `verification` |
+`evidence` | `risk` | `completed`
+
+`timeline status`: `STARTED` | `COMPLETED` | `PARTIAL` | `FAILED` | `SKIPPED`
+
+`language`: `en` | `hi` | `mr`
+
+The full field-level payloads for `claims`, `entities`, `red_flags`,
+`verification_results`, `evidence` and `risk_assessment` are documented in their
+own sections below and are passed through from the phases unchanged.
 `claim_type` (14): `GUARANTEE_CLAIM` | `RETURN_PROMISE` | `PROFIT_PROMISE` |
 `PERFORMANCE_CLAIM` | `CREDENTIAL_CLAIM` | `REGULATORY_STATUS` | `COMPANY_CLAIM` |
 `PRODUCT_CLAIM` | `OWNERSHIP_CLAIM` | `AFFILIATION_CLAIM` | `WITHDRAWAL_CLAIM` |
@@ -342,9 +404,10 @@ that the claim is true, and it is never a fraud score.
 
 ---
 
-## GET /api/investigations
+## GET /api/investigations — *not implemented*
 
-Paginated history.
+Paginated history. **Phase 9**, once investigations are stored. The parameters and
+response below are the intended contract.
 
 **Query parameters**
 
@@ -380,7 +443,7 @@ Paginated history.
 
 ---
 
-### Search payload (built in Phase 3, not yet exposed over HTTP)
+### Search payload (Phase 3; exposed inside `evidence[].source`, not as a top-level field)
 
 `SearchService.search(query, max_results)` produces this object. Phase 4 consumes
 it internally; it reaches `POST /api/investigations/text` only in Phase 8.
@@ -452,7 +515,7 @@ are already final: `risk_score` is bounded by `risk_score_ceiling` (100), so a
 response can never show a score above it, and `raw_score` carries the uncapped
 sum when the value was clamped. The surrounding envelope is still Phase 8 work.
 
-### Extraction payload (built in Phase 2, not yet exposed over HTTP)
+### Extraction payload (Phase 2; exposed as `claims` and `entities`)
 
 `ExtractionService.extract(raw_text)` produces this object. It becomes part of
 the `POST /api/investigations/text` response in Phase 8; until then it is a
@@ -508,7 +571,7 @@ Guarantees a client may rely on:
 
 ---
 
-### Verification payload (built in Phase 4, not yet exposed over HTTP)
+### Verification payload (Phase 4; exposed as `verification_results`)
 
 `VerificationService.verify_claims(claims, entities)` produces this object. It
 becomes part of the `POST /api/investigations/text` response in Phase 8; until
@@ -591,7 +654,7 @@ about a claim verifies nothing (D-006, D-021).
 
 ---
 
-### Evidence payload (built in Phase 5, not yet exposed over HTTP)
+### Evidence payload (Phase 5; exposed as `evidence`)
 
 `EvidenceService.build_claim()` produces an `EvidenceResponse`. It becomes part of
 the `GET /api/investigations/{id}` response in Phase 8; until then it is a library
@@ -676,7 +739,7 @@ Guarantees a client may rely on:
 - `EvidenceBundleResponse.claims_without_evidence` is tracked explicitly, because
   "we found nothing" must stay visible rather than vanish.
 
-### Risk payload (built in Phase 6, not yet exposed over HTTP)
+### Risk payload (Phase 6; exposed as `risk_assessment`, verbatim)
 
 `RiskService.assess()` produces a `RiskAssessment`. It becomes part of the
 `GET /api/investigations/{id}` response in Phase 8; until then it is a library
@@ -810,9 +873,9 @@ Guarantees a client may rely on:
 
 ---
 
-## Phase 7 Note — No New Endpoints
+## Phase 7 Note — The Graph Is a Library
 
-Phase 7 adds **no HTTP surface**. The graph is a library, callable from Python:
+Phase 7 added **no HTTP surface**. The graph is a library, callable from Python:
 
 ```python
 from app.graph import run_investigation
@@ -824,17 +887,49 @@ state["timeline"]
 ```
 
 It accepts a `GraphContext` so an API process injects real services once while
-tests inject fakes. Phase 8 is where this becomes a route; designing the request
-and response shapes before the persistence and report layers exist would mean
-guessing at them.
+tests inject fakes. `run_investigation` remains the entry point the route calls;
+Phase 8 wraps it rather than rewriting it.
 
-What the graph does define is the **result shape** a future endpoint will return,
-and it is worth reading `ARCHITECTURE.md` §2.3d and `app/graph/state.py` before
-designing that response. In particular:
+What Phase 7 defined is the **result shape** the endpoint returns, and it is worth
+reading `ARCHITECTURE.md` §2.3d and `app/graph/state.py` alongside this section:
 
 - `warnings` and `errors` are structured objects with stable `code` values, so a
-  client can branch on a limitation without parsing English.
+  client can branch on a limitation without parsing English. Phase 8 surfaces
+  those codes verbatim as `limitations`.
 - `timeline` is stage metadata for a future UI, and carries no explanation field.
+  Phase 8 returns it as-is and reads `TimelineStatus` to derive the top-level
+  `status` (D-037).
 - `risk_assessment` is the Phase 6 object, including its standing caveat. It is a
-  heuristic indicator count, never a probability (D-025), and any endpoint
-  exposing it must carry that caveat through unchanged.
+  heuristic indicator count, never a probability (D-025), and the endpoint
+  forwards it unchanged — a test asserts the response's risk keys are exactly the
+  assessment's own.
+
+---
+
+## Phase 8 — What Is Actually Live
+
+| Endpoint | Status |
+| --- | --- |
+| `GET /api/health` | implemented (Phase 0, database probe fixed in Phase 8) |
+| `POST /api/investigations` | implemented, `TEXT` only |
+| `POST /api/investigations/text` | implemented |
+| `GET /api/investigations/limits` | implemented |
+| `POST /api/investigations/url` | **not implemented** — `422` (Phase 12) |
+| `POST /api/investigations/upload` | **not implemented** — `422` (Phase 12) |
+| `GET /api/investigations/{id}` | **not implemented** (Phase 9) |
+| `GET /api/investigations` | **not implemented** (Phase 9) |
+
+Fields deliberately **absent** from the Phase 8 response, and where each belongs:
+
+| Field | Belongs to | Why not now |
+| --- | --- | --- |
+| `summary` | Phase 10 | A restatement the pipeline never makes, and the easiest place for a verdict to creep in (D-039) |
+| `why_flagged` | Phase 10 | Would duplicate `RedFlag.description` with looser wording |
+| `safety_guidance` | Phase 10 | Advice belongs to one place, with the surrounding non-advice disclaimer |
+| `sources` (flattened) | Phase 5 / Phase 10 | Already reachable through `evidence[].source`; a second flat copy would drift |
+| `risk_level` / `risk_score` (top level) | Phase 10 | Available inside `risk_assessment`; lifting it invites treating it as the headline verdict (D-025) |
+
+OpenAPI is generated from the code and served at `/openapi.json`; `/docs` and
+`/redoc` are the rendered contract. When this document and the generated schema
+disagree, the schema is correct — it is generated from the same models the
+handlers validate against.

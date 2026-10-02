@@ -7,9 +7,16 @@ from functools import lru_cache
 from fastapi import Request
 
 from app.core.config import Settings, get_settings
-from app.db.session import get_db
+from app.db.session import Database, get_db
+from app.graph.context import GraphContext, build_default_context
 
-__all__ = ["get_db", "get_settings_dep", "get_settings_cached"]
+__all__ = [
+    "get_database_dep",
+    "get_db",
+    "get_graph_context_dep",
+    "get_settings_dep",
+    "get_settings_cached",
+]
 
 
 @lru_cache(maxsize=1)
@@ -32,3 +39,50 @@ def get_settings_dep(request: Request) -> Settings:
         The :class:`~app.core.config.Settings` for this application.
     """
     return getattr(request.app.state, "settings", None) or get_settings_cached()
+
+
+def get_database_dep(request: Request) -> Database:
+    """FastAPI dependency exposing the database bound to this app's settings.
+
+    The application factory builds one :class:`~app.db.session.Database` from
+    the settings it was given and stores it on ``app.state.database``. Reading it
+    back here keeps route handlers off the import-time global engine in
+    ``app.db.session``, which is resolved from whatever ``DATABASE_URL`` happened
+    to be set when that module was first imported.
+
+    Args:
+        request: Incoming request, used to reach the app instance.
+
+    Returns:
+        The :class:`~app.db.session.Database` owned by this application.
+    """
+    database = getattr(request.app.state, "database", None)
+    if database is None:  # pragma: no cover - defensive; factory always sets it
+        database = Database(get_settings_dep(request))
+        request.app.state.database = database
+    return database
+
+
+def get_graph_context_dep(request: Request) -> GraphContext:
+    """FastAPI dependency exposing the graph context for this app.
+
+    The application factory builds the production context once and parks it on
+    ``app.state.graph_context``. Building it lazily here instead would mean every
+    request constructed a fresh `ExtractionService`, `SearchService` and
+    `RiskService` — six objects and a new connection pool per request.
+
+    Tests override this dependency with one wired to fakes, which is what keeps
+    the API suite offline: the route has no idea whether it is talking to the
+    real pipeline.
+
+    Args:
+        request: Incoming request, used to reach the app instance.
+
+    Returns:
+        The :class:`~app.graph.context.GraphContext` for this application.
+    """
+    context = getattr(request.app.state, "graph_context", None)
+    if context is None:  # pragma: no cover - defensive; factory always sets it
+        context = build_default_context(get_settings_dep(request))
+        request.app.state.graph_context = context
+    return context

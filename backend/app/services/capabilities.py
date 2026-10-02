@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.config import Settings, get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 #: Windows install locations checked when `TESSERACT_CMD` is not set and the
 #: binary is not on ``PATH``.
@@ -280,7 +283,9 @@ def probe_database(session_factory: object | None = None) -> tuple[bool, str | N
             omitted the application-wide factory is used.
 
     Returns:
-        ``(connected, dialect_or_error)``.
+        ``(connected, dialect_or_error)``. On failure the second element is
+        the exception *type* only; driver messages routinely embed the full
+        DSN, including credentials, so they are never returned or surfaced.
     """
     from sqlalchemy import text
 
@@ -296,7 +301,8 @@ def probe_database(session_factory: object | None = None) -> tuple[bool, str | N
         finally:
             session.close()
     except Exception as exc:  # pragma: no cover - environment dependent
-        return False, f"{type(exc).__name__}: {exc}"
+        logger.warning("Database probe failed", extra={"error_type": type(exc).__name__})
+        return False, type(exc).__name__
 
 
 __all__ = [

@@ -50,9 +50,38 @@ CLAIM  →  EVIDENCE  →  SOURCE
 
 ## Status
 
-Phase 0 (project foundation) is complete. The backend foundation, the
-`GET /api/health` endpoint, the database layer, the persistent documentation
-set, and the initial test suite are in place.
+**Phases 0–8 are complete.** The full investigation pipeline runs and is exposed
+over HTTP:
+
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 0–2 | Foundation, red flags, claim/entity extraction | complete |
+| 3–5 | Search infrastructure, verification, evidence | complete (search only) |
+| 6 | Risk engine | complete |
+| 7 | LangGraph orchestration | complete |
+| 8 | FastAPI investigation API | complete |
+| 9+ | Persistence, report layer, frontend | not started |
+
+Live endpoints:
+
+```
+GET  /api/health
+GET  /api/investigations/limits
+POST /api/investigations
+POST /api/investigations/text
+```
+
+`POST /api/investigations/text` returns the complete investigation synchronously —
+claims, entities, red flags, verification results, evidence with sources, the risk
+assessment, a stage timeline, and a `limitations` array of machine-readable codes.
+
+A **partial** run is a `200`, not an error. If search or the LLM is unavailable the
+response carries `status: PARTIAL` and names exactly which check did not happen.
+Only a malformed submission or a broken internal contract produces a `4xx`/`5xx`.
+
+Only `TEXT` input is analysed. `URL`, image and PDF endpoints are not implemented
+yet — those input types are recognised and refused with a `422` that lists what
+this version does analyse.
 
 See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for the full
 roadmap and [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for exactly where
@@ -66,7 +95,7 @@ work stopped.
 investshield-ai/
 ├── backend/            # FastAPI service (Python 3.14)
 │   ├── app/
-│   │   ├── api/        # HTTP routes only — no business logic
+│   │   ├── api/        # HTTP routes + request/response adapters + error mapping
 │   │   ├── core/       # config, logging
 │   │   ├── db/         # SQLAlchemy engine/session/base
 │   │   ├── models/     # ORM models
@@ -142,12 +171,24 @@ python -m uvicorn app.main:app --reload
 - Interactive docs: <http://localhost:8000/docs>
 - Health: <http://localhost:8000/api/health>
 
+Try an investigation:
+
+```powershell
+curl.exe -X POST http://localhost:8000/api/investigations/text `
+  -H "Content-Type: application/json" `
+  -d '{\"text\": \"Guaranteed 30% monthly returns with no risk. Pay the 50000 INR activation fee today only.\"}'
+```
+
 ### 4. Run the tests
 
 ```powershell
 cd backend
 python -m pytest
 ```
+
+Expected: `1997 passed, 4 deselected`. The suite is fully offline — it clears the
+API keys and the `DATABASE_URL` environment variable, so it never reaches a
+network service even when a real `.env` is present.
 
 ### Optional: run the whole stack with Docker
 

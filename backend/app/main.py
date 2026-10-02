@@ -1,3 +1,4 @@
+
 """InvestShield AI — FastAPI application factory.
 
 Run locally with:
@@ -18,9 +19,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import health_router
+from app.api.errors import UNPROCESSABLE_CONTENT, ApiError
+from app.api.routes import health_router, investigations_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.db.session import Database
+from app.graph.context import build_default_context
 
 logger = get_logger(__name__)
 
@@ -50,6 +54,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
     configure_logging(resolved.log_level)
 
+    database = Database(resolved)
+    graph_context = build_default_context(resolved)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info(
@@ -57,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             extra={"environment": resolved.environment, "version": resolved.version},
         )
         yield
+        database.dispose()
         logger.info("InvestShield shutting down")
 
     app = FastAPI(
@@ -69,6 +77,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = resolved
+    app.state.database = database
+    app.state.graph_context = graph_context
 
     app.add_middleware(
         CORSMiddleware,
@@ -79,6 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.include_router(health_router, prefix=resolved.api_prefix)
+    app.include_router(investigations_router, prefix=resolved.api_prefix)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:
@@ -104,7 +115,7 @@ def _register_error_handlers(app: FastAPI) -> None:
     async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
         logger.info("Request validation failed", extra={"errors": exc.errors()})
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=UNPROCESSABLE_CONTENT,
             content={
                 "error": {
                     "code": "VALIDATION_ERROR",
@@ -112,6 +123,17 @@ def _register_error_handlers(app: FastAPI) -> None:
                     "detail": exc.errors(),
                 }
             },
+        )
+
+    @app.exception_handler(ApiError)
+    async def _api_error(_request: Request, exc: ApiError) -> JSONResponse:
+        logger.info(
+            "API request failed",
+            extra={"code": exc.code, "status_code": exc.status_code},
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message, "detail": exc.detail}},
         )
 
     @app.exception_handler(Exception)

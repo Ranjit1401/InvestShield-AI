@@ -743,3 +743,51 @@ rule on top: **a recorded error ends the run, a recorded limitation does not.**
 The last row is the one that matters most. A run that stopped must never look
 like a run that finished and found little, so a stopped run reports no score at
 all.
+
+---
+
+## 6. How the Stages Reach the Client (Phase 8, complete)
+
+The graph produces a `InvestigationState`; the API turns it into a response. The
+layering means **nothing above stage 9 is evaluated over HTTP** — there is no
+explainability prose, no report and no translation yet, and the response is
+evidence and indicators only.
+
+```
+run_investigation()  →  InvestigationState  →  serialize_investigation()  →  200
+                              │
+                              └─ recorded errors → 422 or 500
+```
+
+| Stage output | Reaches the client as |
+| --- | --- |
+| 0–3 claims, entities | `claims`, `entities` |
+| 4 red flags | `red_flags`, with their spans |
+| 5.5–6 verification | `verification_results` |
+| 7–8 evidence | `evidence`, each item carrying its source |
+| 9 risk | `risk_assessment`, the Phase 6 object verbatim, caveat included |
+| every stage | `timeline` — what ran, not what it concluded |
+| degradation | `limitations` (codes) and `warnings` (readable) |
+| 10–12 | *not built* — Phase 10, 15, 16 |
+
+### Status codes, by whose fault
+
+| Recorded failure | HTTP | What the caller learns |
+| --- | --- | --- |
+| `INPUT_EMPTY` | `422` | Nothing was submitted |
+| `INPUT_TYPE_NOT_SUPPORTED` | `422` | This version analyses `TEXT` only; `detail` lists what it does analyse |
+| Any `*_FAILED` stage code | `500` | Our defect, not yours. The message names the stage, never the content |
+| *No error recorded* | `200` | Including `status: PARTIAL`, when a stage was skipped or incomplete |
+
+A degraded run is a **success**. Search being unavailable, extraction falling back
+to patterns, evidence not assembling for one claim — each returns `200` with the
+limitation listed, because none of them says anything about the request (D-009).
+
+### One thing the response does not do
+
+It does not decide whether the run was good enough to report as clean. That is
+read off the stage timeline, and `NO_RED_FLAGS_DETECTED` sits in `limitations`
+without making the status `PARTIAL` — finding no patterns is a result, not a
+failure to look (D-037). The full reasoning is in `API_SPEC.md` and
+`ARCHITECTURE.md` §2.3e.
+all.

@@ -313,3 +313,48 @@ When Phase 9 adds persistence, the graph will need to be given a real
 investigation id at the point the run starts, and `investigation_id_for` becomes a
 content fingerprint used for grouping or re-run detection rather than the primary
 key. That change belongs to Phase 9, not here.
+
+---
+
+## Phase 8 Note — No Schema Change, but a Lifecycle to Build On
+
+Phase 8 introduces **no tables, columns, indexes or migrations**, exactly as Phase
+7 did not. It is an HTTP layer over a graph that persists nothing.
+
+What Phase 8 *did* change is the **database lifecycle**, and this is the seam
+Phase 9 plugs into:
+
+- `create_app(settings)` now constructs one `Database` from the settings it was
+  given and parks it on `app.state.database`.
+- `get_database_dep(request)` reads it back. The health endpoint probes that
+  instance rather than the module-level `engine` in `app/db/session.py`.
+- The `lifespan` handler disposes the engine on shutdown, so no connection pool
+  outlives the app.
+
+That last point was a fix in its own right. Before it, `create_app` built a
+`Database` per call and nothing released it; a test suite creating one app per
+fixture leaked a pool each time.
+
+The module-level `engine` and `SessionLocal` in `app/db/session.py` remain for
+`get_db`, which Phase 9's repositories will use. **Phase 9 should decide whether
+they survive at all** — they are resolved from `get_settings()` at import time,
+which is precisely the ambiguity Phase 8 removed from the request path. Two engines
+pointing at two different databases is a failure mode worth deleting rather than
+inheriting.
+
+### What Phase 8 puts on the wire, and Phase 9 will need to store
+
+The API returns the investigation synchronously (D-036), so nothing is stored and
+nothing is retrieved. When persistence lands:
+
+- `GET /api/investigations/{id}` and `GET /api/investigations` become
+  implementable. Both are additive; `POST` does not change.
+- `investigation_id` is currently the Phase 7 content fingerprint, so two runs of
+  identical content share it. It is returned in every response and clients may
+  already be storing it — **Phase 9 must decide whether to preserve the value and
+  add a separate unique key, or change it and treat it as a breaking change.**
+  The safer option is the former: add `id` as the primary key and keep
+  `investigation_id_for` as a `content_hash` column for re-run detection.
+- `limitations` is a flat code array with no per-claim attribution, so a
+  limitation currently cannot be joined back to the claim it affected. If Phase 10
+  needs per-claim reporting, that needs a junction table rather than a column.

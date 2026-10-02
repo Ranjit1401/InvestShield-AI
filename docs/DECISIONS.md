@@ -841,3 +841,138 @@ that would require — fails there rather than producing an empty investigation 
 reads like a clean one.
 
 **Date:** 2026-10-02
+---
+
+## D-036 — Phase 8 returns the whole investigation synchronously; no job handle
+
+**Decision:** `POST /api/investigations/text` and `POST /api/investigations` return
+the complete `InvestigationResponse` with `200`. There is no `202`, no job handle,
+and no `GET /api/investigations/{id}` in Phase 8.
+
+**Context:** The original API spec sketched an asynchronous design: `202` with
+`{investigation_id, status, created_at}`, then a `GET` to collect the result. That
+design presupposes persistence, which is Phase 9. Implementing the `202` half
+without the `GET` half would hand a client an id with nothing behind it and invite
+a polling loop that can never succeed.
+
+**Alternatives:**
+
+- *Implement the `202` now, add the `GET` in Phase 9.* Rejected: it makes the
+  interim API strictly less usable than the synchronous one, and a client built
+  against it would have to be rewritten rather than extended.
+- *Queue the work and return nothing.* Rejected: there is no worker yet, and
+  inventing one here would scope-creep into Phase 11.
+- *Return the state synchronously and add the `GET` alongside it later.* Chosen —
+  adding retrieval is purely additive. A client that persists nothing still works
+  unchanged when Phase 9 lands.
+
+**Reason:** The response is already complete when the `200` is written, so calling
+it a `202` would be a lie about work that has already finished. Keeping the
+endpoint synchronous also keeps the honesty property testable in one place: a
+degraded run is a `200` carrying `status: PARTIAL`, not a status code a client has
+to decode.
+
+**Date:** 2026-10-02
+
+---
+
+## D-037 — Run status is derived from the stage timeline, never from the warning list
+
+**Decision:** `investigation_status()` returns `FAILED` if the state recorded any
+`GraphError`, `PARTIAL` if any `TimelineEvent` has status `PARTIAL` or `SKIPPED`,
+and `COMPLETED` otherwise. The accumulated `GraphWarning` list does not
+participate.
+
+**Context:** `NO_RED_FLAGS_DETECTED` is recorded whenever content matched no Phase 1
+rule — which is most benign content. Deriving status from "are there warnings?"
+would report every clean investigation as a degraded run, and a UI would then show
+a limitation badge on an investigation that had checked everything it set out to
+check. The inverse error is worse in a different way: a client that saw only
+`COMPLETED` and an empty `limitations` array could not tell a complete run from a
+run that skipped verification, which is the confusion D-006 exists to prevent.
+
+**Alternatives:**
+
+- *Status is `PARTIAL` whenever any warning exists.* Rejected: it conflates "we
+  looked and found nothing" with "we could not look".
+- *Filter the warnings to a hand-picked subset of codes.* Rejected: the API layer
+  would be re-deciding what the graph already classified. Any future warning code
+  would need a second edit here or it would be silently misreported.
+- *Ask the graph to emit a status field.* Deferred: it would need a Phase 7 change,
+  and the timeline already carries exactly the information required.
+
+**Reason:** The graph already made the classification when it wrote each stage's
+`TimelineStatus` — that is what the status was for (D-032's `PARTIAL` vs
+`COMPLETED` split). The adapter reads it rather than re-deriving it, which keeps
+every judgment about what counts as degraded inside the graph. `limitations` still
+carries the full deduplicated code set, so a client that *wants* to badge a clean
+result can read `NO_RED_FLAGS_DETECTED` there; the choice of what to surface is the
+client's, and this layer does not make it silently.
+
+**Date:** 2026-10-02
+
+---
+
+## D-038 — The API embeds domain models rather than re-projecting them
+
+**Decision:** `InvestigationResponse` embeds `Claim`, `Entity`, `RedFlag`,
+`VerificationResult`, `EvidenceResponse` and `RiskAssessment` directly. The API
+layer adds only the fields with no domain equivalent: `status`, `limitations`,
+`warnings`, `errors`, `current_stage`, `language` and the timestamps.
+
+**Context:** A projection would let the API contract evolve independently of the
+domain — which is the usual argument for it. The cost is a second definition of
+"a claim" that can drift from Phase 2's, and every such drift is a silent wrong
+answer rather than a type error, because both shapes would validate.
+
+**Alternatives:**
+
+- *Project every object into a flat response DTO.* Rejected: Phase 2 and Phase 4
+  already own their field semantics and their validation. A projection would restate
+  them, and a field added for a real reason would have to be added twice.
+- *Return the raw `InvestigationState`.* Rejected on stability rather than taste: it
+  exposes `extraction`, the internal search bookkeeping and other fields a client
+  has no use for, and any change to Phase 2's model would become a breaking API
+  change.
+- *Embed the domain models, expose only what has no domain equivalent.* Chosen.
+
+**Reason:** The split follows the existing evidence: Phase 10's report will need the
+full `Claim` and `RiskAssessment` detail, so anything thinner would be discarded and
+re-fetched in the same release that introduces it. `RiskAssessment` in particular is
+forwarded untouched, caveat included — a heuristic indicator count must not acquire
+a second, looser wording on its way out to a client (D-025).
+
+**Date:** 2026-10-02
+
+---
+
+## D-039 — The API layer interprets; it never computes a score, threshold or verdict
+
+**Decision:** Every judgment in the investigation — extraction quality, red-flag
+presence, verification status, evidence provenance, risk score and level — is
+passed through from the phase that owns it. The API layer derives exactly two
+things: the top-level `status` (D-037) and the deduplicated `limitations` codes.
+Neither is a finding about the content.
+
+**Context:** The route layer sits directly above services that hold every rule in
+the system, which makes it the most convenient place for a rule to creep in and the
+least visible. A "helpful" `high_risk` boolean, a `summary` field or a
+`why_flagged` string would each pass every existing test while quietly becoming a
+verdict the product's vocabulary bans.
+
+**Alternatives:**
+
+- *Add a report-oriented convenience field and mark it as presentation.* Rejected:
+  the field outlives the comment, and a client that renders it has no way to know it
+  was never validated against the pipeline.
+- *Let the API own a "not financial advice" banner.* Rejected: that is Phase 10's
+  job, and duplicating it here would create two places to keep in step.
+
+**Reason:** The ban is enforced, not merely intended. `tests/graph/test_graph_safety.py`
+and `tests/test_risk_safety.py` still assert the vocabulary, and `tests/api/` adds
+the same tripwire at the response boundary — the keys of a real
+`InvestigationResponse` are checked against the Phase 6 assessment's own fields, so
+a field that appears at one level and not the other fails the suite rather than
+shipping.
+
+**Date:** 2026-10-02

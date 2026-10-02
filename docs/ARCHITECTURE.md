@@ -20,12 +20,15 @@ investshield-ai/
 ├── backend/                  # FastAPI service (authoritative backend)
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── deps.py
-│   │   │   └── routes/       # HTTP endpoints only
+│   │   │   ├── deps.py         # settings, Database, GraphContext dependencies
+│   │   │   ├── adapters.py     # InvestigationState -> API response
+│   │   │   ├── errors.py       # typed failures -> 422 / 500
+│   │   │   └── routes/         # HTTP endpoints only
 │   │   ├── core/             # config, logging, security helpers
 │   │   ├── models/           # SQLAlchemy ORM models
 │   │   ├── schemas/          # Pydantic contracts (common, red_flags, claims,
-│   │   │                     #   entities, extraction, search, verification)
+│   │   │                     #   entities, extraction, search, verification,
+│   │   │                     #   evidence, risk, api)
 │   │   ├── prompts/          # versioned LLM prompts
 │   │   ├── scripts/          # runnable developer scripts (manual smoke tests)
 │   │   ├── services/         # external + domain services
@@ -60,12 +63,56 @@ FastAPI route handlers must not contain business logic.
 
 ## 2. Backend Architecture
 
-### 2.1 API layer (`app/api/`)
+### 2.1 API layer (`app/api/`, Phase 8 complete)
 
 - Thin routers, one per resource (`health`, `investigations`).
-- Dependency injection via `app/api/deps.py` (DB session, settings, services).
+- Dependency injection via `app/api/deps.py`: `get_settings_dep`,
+  `get_database_dep`, `get_graph_context_dep`, `get_db`.
+- Handlers do four things and nothing else: validate, call `run_investigation`,
+  map recorded graph errors, serialize. No threshold, score or verdict.
 - Errors converted to structured JSON responses by global exception handlers.
-- Never returns secrets; never leaks internal stack traces.
+
+```
+app/api/
+├── deps.py          settings, Database and GraphContext dependencies
+├── adapters.py      InvestigationState -> InvestigationResponse
+├── errors.py        ApiError taxonomy; 422 vs 500 mapping
+└── routes/
+    ├── health.py            GET  /api/health
+    └── investigations.py    POST /api/investigations
+                             POST /api/investigations/text
+                             GET  /api/investigations/limits
+```
+
+**Everything the app is built from lives on `app.state`.** `create_app` builds one
+`Database` and one `GraphContext` from the settings it was given, parks both on
+`app.state`, and disposes the database in the `lifespan` handler. The dependencies
+read them back. This is why the health endpoint describes the app under test
+rather than whatever `DATABASE_URL` happened to be set to when
+`app/db/session.py` was first imported — the bug that held the suite red until
+Phase 8. Building the graph context per request instead would construct six
+services and a connection pool on every call.
+
+**The adapter interprets; it never computes.** `serialize_investigation` derives
+exactly two things — the top-level `status` and the deduplicated `limitations`
+codes. Every judgment belongs to the phase that made it (D-039). Domain objects
+are embedded rather than re-projected, so there is one definition of "a claim"
+rather than two that can drift (D-038).
+
+| Concern | Where |
+| --- | --- |
+| Request/response contracts | `app/schemas/api.py`, `extra="forbid"` throughout |
+| State to response | `app/api/adapters.py` |
+| Run status | `investigation_status()`, from `TimelineStatus` (D-037) |
+| Limitation codes | `dedupe_codes()`, first-seen order |
+| Failure taxonomy | `app/api/errors.py`; `ApiError` handler in `app/main.py` |
+| Offline testing | `app.dependency_overrides[get_graph_context_dep]` |
+
+**A degraded run is a `200`.** When search, the LLM or extraction is unavailable,
+the request succeeds and returns `status: PARTIAL` with the limitation listed.
+The status code is chosen by whose fault the failure is: the caller's mistake is
+`422`, our contract violation is `500`, and an external provider being down is
+neither — it is a `200` (D-009).
 
 ### 2.2 Service layer (`app/services/`)
 
@@ -91,7 +138,20 @@ Single-responsibility services, each independently constructible and testable:
 | `RiskService` | Deterministic, explainable, de-duplicated risk assessment | none (inherits Phase 1/4 codes) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
-Bold names are implemented; the rest arrive in later phases.
+**Implemented:** `LLMService`, `SearchService`, `SearchProvider`, `RedFlagEngine`,
+`normalize_text`, `ClaimExtractor`, `EntityExtractor`, `ExtractionService`,
+`VerificationService`, `EvidenceService`, `RiskService`.
+
+**Deferred:** `EmbeddingService`, `VectorStore`, `OCRService` and `PDFService`
+belong to image and PDF ingestion (Phase 12); embeddings are off by default and
+Phase 5 falls back to lexical similarity.
+
+**Superseded:** `InvestigationService` is the façade originally sketched to
+orchestrate the pipeline. Phases 2-6 exist and Phases 4 and 5 do not line up
+cleanly behind one interface, so **Phase 7's `app/graph/` owns orchestration
+instead** and this service was never built. The same seam problem — Phase 4
+discarding the search responses Phase 5 needs — is what `RecordingSearchService`
+exists to bridge. Do not build this façade.
 
 ### 2.3 Search infrastructure (Phase 3, complete)
 
@@ -723,22 +783,48 @@ investigations ──┬── claims ──── evidence ──── sources
 
 ## 10. Error Handling Strategy
 
-Every external dependency is wrapped. Failures are recorded as typed
-`ServiceError` objects and surfaced in the report's Limitations section rather
-than crashing:
+Every external dependency is wrapped. Failures are recorded as typed codes and
+surfaced as Limitations rather than crashing:
 
 ```
-Groq unavailable     → LLM_SERVICE_ERROR
-SerpAPI unavailable  → SEARCH_SERVICE_ERROR
-OCR unavailable      → OCR_UNAVAILABLE
-PDF extraction fails → PDF_EXTRACTION_FAILED
-Invalid URL          → 422 with a clear message
-Malformed input      → 422, investigation never created
+Groq unavailable     → LLM_SERVICE_ERROR          → EXTRACTION_FALLBACK limitation, 200
+SerpAPI unavailable  → SEARCH_SERVICE_ERROR       → SEARCH_UNAVAILABLE limitation, 200
+OCR unavailable      → OCR_UNAVAILABLE            → 503 (Phase 12; 422 in Phase 8)
+PDF extraction fails → PDF_EXTRACTION_FAILED      → 503 (Phase 12; 422 in Phase 8)
+Empty text           → INPUT_EMPTY                → 422
+Unanalysed input type→ INPUT_TYPE_NOT_SUPPORTED   → 422
+Stage contract broken→ *_FAILED                   → 500
 ```
 
-An investigation always produces a report, even if every external service is
-down — in that case the report explicitly states that external verification
-could not be completed.
+An investigation always produces a result, even if every external service is down
+— in that case `status` is `PARTIAL` and the body says exactly which check did
+not happen.
+
+**Phase 8 made the HTTP mapping explicit.** The status code is chosen by whose
+fault the failure is, not by how serious it feels:
+
+- **The caller's mistake** is `422`. Empty text, an over-length body, an unknown
+  field, or an input type this version does not analyse.
+- **Our contract violation** is `500`. Phase 2 documents that `extract` never
+  raises and Phase 4 that a provider failure never propagates, so an escaping
+  exception means the service beneath it is wrong. Anything softer would dress a
+  defect up as a normal outcome.
+- **An external provider being down** is neither — the request succeeds with `200`
+  and `status: PARTIAL`. A SerpAPI outage says nothing about whether the request
+  was good, and failing it would make the product look broken at the exact moment
+  it is correctly reporting that it checked less than it wanted to (D-009).
+
+Every failing endpoint returns the same envelope —
+`{"error": {"code", "message", "detail"}}` — with `detail` a structured object so
+a client can branch on it. `message` and `detail` carry the graph's own fixed
+wording and, where relevant, an exception's **class name**. Provider messages,
+stack traces and connection strings never leave the log; `probe_database` was
+returning `str(exc)` until Phase 8, and most drivers put the DSN — credentials
+included — in exactly that string.
+
+Unknown error codes default to `500` rather than to a client fault. A code nobody
+recognises is more likely a defect below the API layer than a bad request, and
+defaulting the other way would let a bug present as the caller's mistake.
 
 ---
 
@@ -753,6 +839,14 @@ could not be completed.
   an eval, or a templating engine.
 - We never download or execute APKs or arbitrary binaries — `.apk` content is
   only ever *described* as a red flag.
+
+**Phase 8 note.** The API response is built from objects the pipeline already
+produced, so no new surface was opened — but two boundaries got tightened. The
+database probe no longer returns an exception message, only its type, because
+SQLAlchemy and most drivers embed the DSN in it. And `GraphWarning.error_type`
+is dropped from the response body while `GraphError.error_type` is kept: an error
+diagnoses a defect for an operator, whereas a warning is something a user may
+read and its diagnostic field is not for them.
 
 ### 2.3d Orchestration layer (Phase 7, complete)
 
@@ -877,3 +971,79 @@ Each stage appends `TimelineEvent(stage, status, message, at)`, where status is
 this" indistinguishable from "we checked and found nothing", which is the exact
 confusion D-006 exists to prevent. This is metadata for a Phase 11/16 UI; there is
 no field for an explanation, so no stage narrative can be smuggled in.
+
+---
+
+### 2.3e API layer (Phase 8, complete)
+
+Wraps `run_investigation` over HTTP. It adds no pipeline behaviour and rewrites
+nothing; the graph remains the library entry point that scripts and tests also
+call.
+
+#### The request path
+
+```
+1. Pydantic validates the body          extra="forbid"; unknown fields are 422
+2. run_investigation(text, input_type)   the real graph, the real services
+3. raise_for_graph_errors(state.errors)  only when something FAILED
+4. serialize_investigation(state)        absent keys become empty lists
+```
+
+Step 3 is where the status-code policy lives. It runs only when the state carries
+an error; a state with warnings and no errors is a successful, possibly partial,
+investigation and goes straight to step 4.
+
+#### What the API layer owns, and what it does not
+
+| Owns | Does not own |
+| --- | --- |
+| The request and response contracts | Any threshold, weight, score or verdict |
+| The top-level `status` | Which limitations "matter" — the graph decided that when it wrote a stage status |
+| The `limitations` code array | Filtering the warning set |
+| Mapping a recorded failure to an HTTP status | Judging the content |
+
+#### Status mapping
+
+| Recorded graph error | HTTP | Why |
+| --- | --- | --- |
+| `INPUT_EMPTY` | `422` | The caller sent nothing to investigate |
+| `INPUT_TYPE_NOT_SUPPORTED` | `422` | The caller declared a kind this version does not analyse |
+| `EXTRACTION_FAILED` | `500` | Phase 2 documents that `extract` never raises; if it did, the contract is broken |
+| `RED_FLAG_DETECTION_FAILED` | `500` | A quiet failure here would score content as though nothing were wrong with it |
+| `VERIFICATION_FAILED` | `500` | Reporting unchecked claims as checked is the failure this product exists to avoid |
+| `RISK_ASSESSMENT_FAILED` | `500` | No score means no assessment, and nothing downstream may imply one |
+| *(none recorded)* | `200` | Including a partial run — an external provider being down is not a failed request |
+
+An unknown code defaults to `500`, not to the caller's fault. A code nobody
+recognises is more likely to be a defect below this layer than a bad request, and
+defaulting the other way would let a bug present as the caller's mistake.
+
+#### `limitations`
+
+The deduplicated `GraphWarning.code` values, first-seen order. Alongside them,
+`warnings` carries the same entries with their human-readable message and stage.
+Both exist because they serve different consumers: codes are for branching,
+messages are for display, and a client must never have to parse English to find
+out what a run could not do (D-009).
+
+`NO_RED_FLAGS_DETECTED` appears in `limitations` but does **not** make the status
+`PARTIAL`. It is recorded whenever content matched none of Phase 1's rules, which
+is most benign content; treating it as a degradation would badge every clean
+investigation as a partial one. `status` is read from the timeline, where the
+graph already made that distinction (D-037).
+
+#### Synchronous by design
+
+There is no `202`, no job handle and no `GET /api/investigations/{id}` in Phase 8.
+The run finishes before the response is written, so a `202` would be a lie about
+outstanding work, and an `investigation_id` with nothing stored behind it would
+invite a client to poll an endpoint that does not exist. Retrieval is added
+alongside the POST in Phase 9, which is purely additive — a client that persists
+nothing keeps working (D-036).
+
+#### What reaches the wire
+
+Only exception **class names**. `GraphError.error_type` is forwarded because it
+diagnoses a defect; `GraphWarning.error_type` is dropped, because a warning is
+something a user may read and its diagnostic field is not for them. Provider
+messages, stack traces and connection strings never leave the log.

@@ -952,3 +952,123 @@ route resolves its database — and it reproduces identically with the Phase 7 t
 excluded, so it is not caused by this phase. Recorded here rather than patched,
 because the correct fix belongs with the API layer and changing it from here
 would scope-creep into a completed phase. See `CURRENT_STATE.md`.
+
+---
+
+## Phase 8 — API layer (FastAPI endpoints)
+
+**Commit:** `feat: implement investigation API layer`
+**Tests:** 112 added, and the one pre-existing failure fixed. Suite is fully green.
+
+### What was added
+
+`app/schemas/api.py` holds every shape a client sees: two request models, the
+investigation response, the timeline/limitation/error projections, and the error
+envelope with its structured `detail`. All of them are `extra="forbid"`, so a
+typo'd request field and a drifted response field both fail the suite instead of
+passing silently.
+
+`app/api/adapters.py` turns a final `InvestigationState` into an
+`InvestigationResponse`. It is the only place that decides the top-level `status`,
+and it decides it by reading the stage timeline — not the warning list.
+`NO_RED_FLAGS_DETECTED` is recorded on any clean content, so treating "warnings
+exist" as "the run is degraded" would badge every benign investigation as
+incomplete (D-037).
+
+`app/api/errors.py` is the error taxonomy. Every failure renders as
+`{"error": {"code", "message", "detail"}}`; what differs is the status code, chosen
+by *whose fault the failure is*. `INPUT_EMPTY` and `INPUT_TYPE_NOT_SUPPORTED` are
+`422` — the caller must fix them. Everything else in `ERROR_CODES` is a stage
+breaking a documented contract and is `500`, because the only honest description
+of that is a defect.
+
+`app/api/routes/investigations.py` exposes `POST /api/investigations/text`,
+`POST /api/investigations` and `GET /api/investigations/limits`. Handlers are thin:
+validate, call `run_investigation`, map recorded errors, serialize.
+
+`tests/api/` adds five modules: the endpoint contract, the adapter, the error
+mapping, the schemas, and a regression module for the health fix below.
+
+### The `/api/health` database bug, fixed
+
+The one outstanding suite failure. `app/api/routes/health.py` probed the
+**module-level** `engine` in `app/db/session.py`, built from `get_settings()` at
+import time, rather than from the settings injected into `create_app`. Two
+consequences, both real rather than theoretical:
+
+- A test passing its own `Settings` still probed the developer's actual database.
+  The suite was reporting on the machine it ran on, not the app under test.
+- With a repository-root `.env` pointing `DATABASE_URL` at an unreachable
+  PostgreSQL, health reported `degraded` for an app whose configured SQLite
+  database was perfectly fine. A wrong answer, not a missing one.
+
+The fix builds one `Database` from the settings the factory was given, parks it on
+`app.state.database`, exposes it through `get_database_dep`, and disposes it in the
+`lifespan` handler so no connection pool outlives the app. `tests/api/test_health_boundary.py`
+points `DATABASE_URL` at a deliberately unreachable Postgres and asserts the
+endpoint still reports the app's own SQLite — the original failure, reproduced
+deterministically.
+
+### The credential leak in `probe_database`
+
+`probe_database` returned `f"{type(exc).__name__}: {exc}"`. SQLAlchemy and most
+drivers put the DSN — including credentials — in the exception text, so any caller
+surfacing that string surfaced a password. It now returns the exception *type*
+only and logs the full cause. `tests/api/test_health_boundary.py` builds a session
+factory whose error message is a DSN with a password in it, and asserts that
+neither the password nor the DSN appears in the probe result.
+
+### Decisions recorded
+
+- **D-036** — the run returns synchronously and whole. The spec's `202` plus
+  `GET /{id}` design presupposes persistence, which is Phase 9; implementing the
+  first half alone would hand a client an id with nothing behind it. Adding
+  retrieval later is purely additive.
+- **D-037** — run status comes from the stage timeline, never the warning list.
+- **D-038** — domain models are embedded in the response, not re-projected. A
+  second definition of "a claim" in the API would drift from Phase 2's, and every
+  drift would be a silent wrong answer rather than a type error.
+- **D-039** — the API layer interprets and never computes. `RiskAssessment` is
+  forwarded verbatim, caveat included.
+
+### Bugs found and fixed
+
+1. **`probe_database` leaked connection details.** See above.
+2. **Starlette deprecation warnings across the suite.** `HTTP_422_UNPROCESSABLE_ENTITY`
+   is deprecated in favour of `HTTP_422_UNPROCESSABLE_CONTENT`. Resolved once in
+   `app/api/errors.py` and exported as `UNPROCESSABLE_CONTENT`, so `app/main.py`
+   and the new modules agree on one constant. The suite is now warning-free.
+3. **`create_app` leaked a `Database` per app.** The factory built one per call and
+   nothing disposed it. Now stored on `app.state` and disposed in `lifespan`.
+
+### Tests
+
+```
+1997 passed, 4 deselected
+```
+
+`tests/api/` (114 tests): 39 endpoint contract, 22 adapter, 23 schemas, 21 error
+mapping, 9 health-boundary regression. Baseline before Phase 8 was
+`1882 passed, 1 failed`.
+
+Every test runs offline. `tests/api/conftest.py` passes `_env_file=None`, clears
+`GROQ_API_KEY`/`SERPAPI_KEY`/`DATABASE_URL` from the environment, points SQLite at
+a per-test tmp file, and overrides `get_graph_context_dep` with the genuine Phase
+1-6 services plus a fixture search provider. The end-to-end tests therefore assert
+what the real pipeline produces, not what a stub was told to return.
+
+The degradation test is the one that matters most: it installs a provider that
+reports itself unavailable and **raises if ever queried**, then asserts `200`,
+`status: PARTIAL`, and `SEARCH_UNAVAILABLE` in `limitations`. A product that fails
+the request when search is down is exactly the behaviour this project exists to
+avoid.
+
+### Not implemented, deliberately
+
+- **Persistence and `GET /api/investigations/{id}`** — Phase 9 (D-036).
+- **URL, image and PDF ingestion** — recognised and refused with `422`; the error
+  detail names the kinds that do work.
+- **Report generation, `summary`, `why_flagged`, `safety_guidance`** — Phase 10.
+  Adding any of them now would create a second, unvalidated restatement of
+  judgments the pipeline already made (D-039).
+- **Translation** — `language` is accepted and echoed; no message is translated.

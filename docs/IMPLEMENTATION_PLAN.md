@@ -225,25 +225,31 @@ Beyond the checklist, three things the plan did not anticipate:
   warning, across the whole output space, with denials permitted so the
   disclaimers survive (D-029).
 
-## Phase 7 — LangGraph Orchestration `[ ]`
+## Phase 7 — LangGraph Orchestration `[x]`
 
-- [ ] `InvestigationState` typed state
-- [ ] Nodes: input_processor → extraction → planner → (red_flag ∥ entity_verify) → claim_verify → evidence → risk → report
-- [ ] Timeline step records emitted for the UI
-- [ ] `InvestigationService` façade
-- [ ] Tests
+- [x] `InvestigationState` typed state
+- [x] Nodes: input → extraction → red_flags → verification → evidence → risk
+- [x] Timeline step records emitted for the UI
+- [~] `InvestigationService` façade — **not built**; `app/graph/` owns
+  orchestration instead. See `ARCHITECTURE.md` §2.2.
+- [x] Tests (291)
 
-## Phase 8 — FastAPI Investigation APIs `[ ]`
+## Phase 8 — FastAPI Investigation APIs `[x]`
 
-- [ ] `POST /api/investigations`
-- [ ] `POST /api/investigations/text`
-- [ ] `POST /api/investigations/url`
-- [ ] `POST /api/investigations/upload`
-- [ ] `GET /api/investigations`
-- [ ] `GET /api/investigations/{id}`
-- [ ] API schemas kept separate from DB models
-- [ ] Structured error responses
-- [ ] Tests
+- [x] `POST /api/investigations` — typed entry point, `TEXT` only
+- [x] `POST /api/investigations/text`
+- [x] `GET /api/investigations/limits`
+- [x] `GET /api/health` — database probe now follows the app's own settings
+- [~] `POST /api/investigations/url` — **deferred to Phase 12**; `URL` is
+  recognised and refused with `422`
+- [~] `POST /api/investigations/upload` — **deferred to Phase 12**; `IMAGE` and
+  `PDF` are recognised and refused with `422`
+- [~] `GET /api/investigations` — **deferred to Phase 9**; needs persistence
+- [~] `GET /api/investigations/{id}` — **deferred to Phase 9**; needs persistence
+- [x] API schemas kept separate from DB models (`app/schemas/api.py`)
+- [x] Structured error responses — one envelope, 422 for caller faults, 500 for
+  contract violations, 200 + `PARTIAL` for degradation
+- [x] Tests (114)
 
 ## Phase 9 — Database Persistence `[ ]`
 
@@ -364,3 +370,53 @@ backend/app/scripts/manual_graph.py
 no report (Phase 10), no OCR/PDF/image ingestion, no parallel execution. Only
 `TEXT` input is analysed; the other three declared types are refused with a typed
 reason (D-035).
+
+---
+
+## Phase 8 — FastAPI Investigation APIs — COMPLETE
+
+**Goal:** expose the graph over HTTP, and fix the health endpoint's database
+boundary so the suite could go fully green.
+
+**Status:** complete. 114 tests added, one pre-existing failure fixed. Suite:
+`1997 passed, 4 deselected`.
+
+**What was built**
+
+```
+backend/app/schemas/api.py              request/response contracts, extra="forbid"
+backend/app/api/adapters.py             InvestigationState -> InvestigationResponse
+backend/app/api/errors.py               typed failures -> 422 / 500
+backend/app/api/routes/investigations.py  POST /investigations, /investigations/text,
+                                          GET /investigations/limits
+backend/tests/api/                      114 tests across five modules
+```
+
+`app/api/routes/health.py`, `app/api/deps.py`, `app/main.py` and
+`app/services/capabilities.py` were also touched — see below.
+
+**Decisions recorded:** D-036 … D-039.
+
+**The three findings worth carrying forward**
+
+1. *The health endpoint reported on the machine, not the app.* It probed the
+   module-level engine in `app/db/session.py`, built from `get_settings()` at
+   import time. A test passing its own `Settings` still probed the developer's
+   real database, and an unreachable ambient `DATABASE_URL` made a healthy app
+   report `degraded`. `create_app` now builds one `Database` and one
+   `GraphContext` from its own settings and parks both on `app.state`; the
+   dependencies read them back and `lifespan` disposes the engine.
+2. *`probe_database` leaked connection details.* It returned `f"{type(exc).__name__}:
+   {exc}"`, and SQLAlchemy plus most drivers put the DSN — credentials included —
+   in exactly that string. It now returns the exception type only.
+3. *"Any warning means a degraded run" would have been wrong.*
+   `NO_RED_FLAGS_DETECTED` is recorded on any clean content, so a status derived
+   from the warning list would badge most benign investigations as partial. The
+   status is read from the stage timeline, where the graph had already made the
+   distinction (D-037).
+
+**Not done, deliberately:** no persistence and no `GET /api/investigations/{id}`
+(Phase 9); no URL, image or PDF endpoints (Phase 12) — those kinds are refused
+with `422` naming what does work; no `summary`, `why_flagged` or
+`safety_guidance` (Phase 10), because each would be a second, unvalidated
+restatement of a judgment the pipeline already made (D-039); no translation.
