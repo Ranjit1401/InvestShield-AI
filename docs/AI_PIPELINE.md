@@ -442,33 +442,118 @@ only and never establish verification.
 
 ### Stage 9 — Risk Calculation
 
-**Owner:** `RiskEngine`
+**Owner:** `RiskService` — **Phase 6, complete**
 
 ```
-score = Σ weights of distinct detected indicators
-level = LOW | MEDIUM | HIGH | CRITICAL
+raw_score  = Σ factor.contribution          (each contribution ≤ its weight)
+risk_score = min(raw_score, ceiling)        (a ceiling, never a rescale)
+risk_level = LOW | MEDIUM | HIGH | CRITICAL
 ```
 
-Each contribution is preserved as a `RiskFactor` with a human-readable reason.
-The report must state *"HIGH RISK — based on N detected indicators"*, never
-*"87% probability of scam"*.
+**Inputs:** Phase 1 `RedFlag`s, Phase 2 `Claim`s, Phase 4 `VerificationResult`s,
+Phase 5 `EvidenceResponse`s. **No network call, no provider, no model.** Pure
+arithmetic over objects earlier stages produced.
+
+Bands, inclusive at the top of each range, all configurable:
+
+| Band | Score range | Setting |
+| --- | --- | --- |
+| `LOW` | 0–20 | `risk_band_medium_max = 20` |
+| `MEDIUM` | 21–50 | `risk_band_high_max = 50` |
+| `HIGH` | 51–90 | `risk_band_critical_max = 90` |
+| `CRITICAL` | 91–100 | `risk_score_ceiling = 100` |
+
+Factor sources and their weights:
+
+| Origin | Factor | Weight | Note |
+| --- | --- | --- | --- |
+| Phase 1 | any `RedFlagCode` | Phase 1's `risk_weight_*` | read through `RULES_BY_CODE`, one table only |
+| Phase 4 | `CONTRADICTED_CLAIM` | 25 | the strongest external finding |
+| Phase 4 | `UNVERIFIED_CLAIM` | 8 | **only** for completed-search reason codes |
+| Phase 4 | `INSUFFICIENT_EVIDENCE` | 0 | uncertainty, not a finding |
+| Phase 4 | `VERIFIED`, `NOT_APPLICABLE` | — | produce **no factor at all** |
+| Phase 5 | any evidence field | 0 | evidence attaches ids; it never scores |
+
+**De-duplication.** One behaviour noticed by several stages scores once. Claims
+link to red-flag factors by span overlap in the submitted text, or by a narrow
+`CLAIM_TYPE_RED_FLAG_CODES` map for cases where Phase 1 and Phase 2 segmented the
+same words differently. A verification factor describing a signal a scoring
+red-flag factor already counted is kept at `contribution = 0` with
+`absorbed_into` pointing at the factor that counted it, and the primary gains the
+claim's verification status as context (D-026).
+
+**Enforced invariants, all in `RiskAssessment` validation:**
+
+- `contribution <= weight` — a factor cannot score twice, or score more than
+  declared.
+- An absorbed factor contributes exactly `0` and cannot absorb into itself.
+- `raw_score` equals the sum of contributions; `risk_score` is that sum capped.
+- A zero-factor assessment scores `0`; a score above `0` requires a factor that
+  contributed.
+- Bands are strictly increasing and the top band sits below the ceiling.
+
+**Two things the score is not.** It is not a probability — of fraud, of loss, or
+of the investment failing — and it is not a recommendation. `RiskAssessment`
+appends `SCORE_NOT_A_PROBABILITY` during validation, so no report can present a
+number without that caveat attached to the data (D-025). Absence of evidence never
+raises it: `INSUFFICIENT_EVIDENCE` weighs `0`, and an `UNVERIFIED` result whose
+reason says the search never ran produces no factor at all (D-027).
+
+**Ratios reported alongside the score**, both transparency measures and neither a
+confidence:
+
+- `evidence_coverage` — share of assessed risk-relevant claims with a proof-grade
+  document assembled.
+- `analysis_completeness` — share of the three per-claim analyses (extract,
+  verify, assemble evidence) actually performed. A run that could not reach the
+  internet scores *low* here and no higher on risk.
 
 ### Stage 10 — Explainability
 
-**Owner:** `ReportAgent` + `RiskEngine`
+**Owner:** `ReportAgent` + `RiskService`
 
-Produces the mandatory "Why was this flagged?" section in plain language:
+Every `RiskFactor` carries `label`, `description`, `reason`, `source`, the
+`weight` and the `contribution` it actually made, and the `claim_ids`,
+`red_flag_ids`, `evidence_ids`, `source_ids` and `verification_statuses` behind
+it. The report's mandatory "Why was this flagged?" section is a rendering of
+that breakdown, so it can be produced from the assessment alone:
 
 ```
-1. Guaranteed returns
-   The message promises a fixed monthly return.
+1. Guaranteed Return                          +20
+   The content uses guaranteed-return language.
+   red flag rf_1a2b3c4d5e6f
 
-2. Urgency
-   The user is asked to invest immediately.
+2. Regulatory Claim Requiring Verification     +25
+   A regulator's name is directly attached to an approval or registration claim.
+   red flag rf_9f8e7d6c5b4a  ·  claim_001
+   context: UNVERIFIED
+   evidence: ev_000000000001 (sebi.gov.in)
 
-3. Regulatory claim
-   The claimed regulatory status could not be independently verified.
+3. Material Claim Not Confirmed               +0  (absorbed into rsk_…)
+   Phase 4 searched for this claim and no authoritative source establishes it.
 ```
+
+The third entry is the de-duplicated view of the second: kept so the reader sees
+the claim was unconfirmed, contributing nothing so it is not counted twice.
+
+**De-duplicated factors must be shown, not hidden.** Dropping them would conceal
+that a claim was contradicted. The report must also state the count — *"HIGH risk
+level — based on 5 contributing factors out of 6 detected"*.
+
+Wording rules for the report layer, enforced by `test_risk_safety.py` and not by
+review:
+
+- No verdict or accusation words: `scam`, `fraud`, `fraudulent`, `criminal`,
+  `illegal`.
+- No absolution words: `safe`, `legitimate`, `genuine`, `trustworthy`. A `LOW`
+  level is *"no documented risk indicators were found"*, never *"safe"*.
+- No advice: `buy`, `sell`, `invest`, `recommend`.
+- No probabilities, in any field.
+
+The ban is **negation-aware**, because the product's own wording depends on being
+able to say *"this is not a probability of fraud"* and *"this is not a finding
+that the person is fraudulent"*. A banned word governed by a negation is a
+denial and is permitted; a bare assertion is a failure (D-029).
 
 ### Stage 11 — Report Generation
 
@@ -602,6 +687,15 @@ contribution itemised.
 | A result was supplied that Stage 6 never saw | 7 | Dropped, with a warning stating how many were excluded |
 | A result carries neither snippet nor title | 7 | That result cannot be quoted and raises rather than producing an empty excerpt |
 | Status is `VERIFIED`/`CONTRADICTED` but nothing is showable | 7 | Status kept as Stage 6 decided it; a warning states the record could not be displayed |
+| Search was never available, so a claim is unverified | 9 | **No `UNVERIFIED_CLAIM` factor and no contribution.** `SEARCH_UNAVAILABLE` and friends fail the completed-search gate; the gap is reported and `analysis_completeness` falls (D-027) |
+| Authoritative registers were reached and held no entry | 9 | Still no contribution, but a distinct warning: an observation about the public record, not a gap in the analysis |
+| A claim's family bears on investment risk | 9 | Its status may produce a factor |
+| A claim is a non-material family (`COMPANY_CLAIM`, `PRODUCT_CLAIM`, `OTHER`) | 9 | **No factor at any status.** An unverifiable statement about opening hours is not a risk indicator |
+| A claim is `VERIFIED` | 9 | No factor, and no risk *reduction* — nothing nets off (D-020) |
+| The same signal is seen by several stages | 9 | Scored **once**. The extra view is kept at `contribution = 0` with `absorbed_into` set, and the warning *"Some signals were detected by more than one stage…"* is emitted |
+| A red flag's weight is configured to `0` | 9 | It does not absorb the claim's factor — a primary that scored nothing must not silence a real finding |
+| Total contribution exceeds the ceiling | 9 | `risk_score` is clamped, `raw_score` retained so the report can show the clamp; never rescaled |
+| No indicators found at all | 9 | `0`, `LOW`, no factors — reported as *"no documented risk indicators were found"*, never as *"safe"* (D-025) |
 | Tesseract missing | 1 | `OCR_UNAVAILABLE`, image investigation rejected with a clear message |
 | PDF text extraction fails | 1 | `PDF_EXTRACTION_FAILED`, empty-text investigation with limitation |
 | Invalid URL | 0 | 422 validation error, no investigation created |

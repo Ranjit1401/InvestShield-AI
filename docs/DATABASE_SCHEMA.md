@@ -60,7 +60,7 @@ Retained for forward compatibility with future auth. No rows are created in the 
 | `language` | String(8) | not null, default `en` | report language |
 | `status` | String(16) | not null, indexed | `PENDING` \| `PROCESSING` \| `COMPLETED` \| `FAILED` |
 | `risk_level` | String(16) | nullable, indexed | `LOW` \| `MEDIUM` \| `HIGH` \| `CRITICAL` |
-| `risk_score` | Integer | nullable | sum of indicator weights |
+| `risk_score` | Integer | nullable | Phase 6 bounded indicator sum, capped at `risk_score_ceiling`; never a probability |
 | `red_flag_count` | Integer | not null, default 0 | denormalised for list queries |
 | `claim_count` | Integer | not null, default 0 | denormalised for list queries |
 | `entity_count` | Integer | not null, default 0 | denormalised for list queries |
@@ -208,8 +208,11 @@ Notes carried forward:
   `relevance Float 0..1`. That was dropped in Phase 5 deliberately: a numeric
   relevance becomes an undeclared input to the Phase 6 risk score, and D-007
   requires transparent, declared weighting rather than a number that silently
-  multiplies something. Phase 6 consumes `proof_count` and `source_count` as
-  counts and shows the rows behind them.
+  multiplies something. **Phase 6 honours this**: it reads evidence rows only to
+  attach their `ev_`/`src_` ids to the factors bearing on the same claim, and
+  sums no evidence column into the score. It reports `evidence_coverage` as a
+  *count* of claims with at least one proof-grade document, which is a
+  transparency measure and not a weighted input.
 - **`evidence_type`, `relationship` and `relevance` are three separate columns.**
   Collapsing them into one taxonomy encodes the same fact twice, and two copies
   eventually disagree (D-023).
@@ -235,9 +238,14 @@ Phase 4 `VerificationResult` never recorded.
 | --- | --- | --- | --- |
 | `id` | Integer | PK, autoincrement | |
 | `investigation_id` | Integer | FK → `investigations.id`, not null, unique | 1:1 with investigation |
-| `risk_level` | String(16) | not null, indexed | |
-| `risk_score` | Integer | not null | |
-| `risk_factors` | JSON | nullable | list of `{code, label, weight, reason}` |
+| `risk_level` | String(16) | not null, indexed | `LOW` \| `MEDIUM` \| `HIGH` \| `CRITICAL` |
+| `risk_score` | Integer | not null | bounded by `risk_score_ceiling`; never a probability |
+| `raw_score` | Integer | not null | uncapped sum, retained so a clamped score can be shown as clamped |
+| `risk_factors` | JSON | nullable | Phase 6 `RiskFactor[]`, serialized as-is: `{id, origin, factor_type, label, description, reason, source, severity, weight, contribution, absorbed_into, claim_ids, red_flag_ids, evidence_ids, source_ids, verification_statuses, is_uncertainty}` |
+| `weights_snapshot` | JSON | nullable | the `RiskWeights` in force, so a stored report stays auditable after the configuration moves (D-007, D-028) |
+| `thresholds_snapshot` | JSON | nullable | the `RiskThresholds` in force: `{medium_max, high_max, critical_max, ceiling}` |
+| `evidence_coverage` | Float | nullable | `0..1` transparency measure, **not** a confidence or accuracy score |
+| `analysis_completeness` | Float | nullable | `0..1` measure of the per-claim analyses actually performed |
 | `summary` | Text | nullable | investigation summary |
 | `red_flags` | JSON | nullable | detected indicators snapshot |
 | `why_flagged` | JSON | nullable | list of `{title, explanation}` |
@@ -245,6 +253,27 @@ Phase 4 `VerificationResult` never recorded.
 | `limitations` | JSON | nullable | list[str] |
 | `language` | String(8) | not null, default `en` | |
 | `created_at` | DateTime | not null, default utcnow | |
+
+Notes carried forward from Phase 6:
+
+- **`risk_factors` stores the whole `RiskFactor`, not a trimmed
+  `{code, label, weight, reason}`.** The trace is the product: a reader must be
+  able to walk from any factor to the red flag, the claim and the document behind
+  it, and a de-duplicated factor must be storable with its `absorbed_into`
+  pointer intact so the breakdown still explains itself (D-026).
+- **De-duplicated factors are persisted, not filtered out.** They contribute `0`
+  and name the factor that counted them. Dropping them at write time would
+  conceal that a claim was contradicted.
+- **`weights_snapshot` and `thresholds_snapshot` exist because the configuration
+  is expected to change.** A report that recorded only a score would be
+  uninterpretable once the weights moved; a report that recorded the weights
+  that produced it is not (D-007).
+- **`risk_score` and `raw_score` are both stored.** When a document trips enough
+  indicators to exceed the ceiling, the two differ, and showing only the capped
+  value would hide that the cap was applied.
+- **Neither ratio is a confidence.** `evidence_coverage` and
+  `analysis_completeness` describe how much of the investigation had real
+  material behind it, not how likely anything is (D-025).
 
 ---
 

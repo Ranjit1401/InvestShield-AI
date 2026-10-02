@@ -88,7 +88,7 @@ Single-responsibility services, each independently constructible and testable:
 | `SearchProvider` | Transport contract for web search | `SEARCH_*` codes |
 | `VerificationService` | Verifies claims against authoritative sources | `INSUFFICIENT_EVIDENCE` / `SEARCH_UNAVAILABLE` |
 | `EvidenceService` | Assembles traceable, verbatim-sourced evidence bundles | none (inherits Phase 3/4 codes) |
-| `RiskEngine` | Weighted risk accumulation | none (pure) |
+| `RiskService` | Deterministic, explainable, de-duplicated risk assessment | none (inherits Phase 1/4 codes) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
 Bold names are implemented; the rest arrive in later phases.
@@ -272,6 +272,82 @@ Contracts:
   found nothing (D-006).
 - **A status is copied, not recomputed.** Where the status and the showable
   evidence diverge, the bundle keeps Phase 4's verdict and warns about the gap.
+
+### 2.3c Risk layer (Phase 6, complete)
+
+```
+RedFlag (Phase 1) ────┐
+Claim (Phase 2) ──────┤
+VerificationResult ───┼─► RiskService.assess()
+EvidenceResponse ─────┘        │
+                              ▼
+                       RiskAssessment
+                       (score + level + factors + ratios + warnings)
+```
+
+```
+app/schemas/risk.py                          RiskLevel, VerificationFactorType,
+                                            RiskFactorOrigin, RiskFactor, RiskWeights,
+                                            RiskThresholds, RiskAssessment,
+                                            RISK_RELEVANT_CLAIM_TYPES,
+                                            SCORE_NOT_A_PROBABILITY
+app/services/risk/risk_scoring.py            weights_from_settings(),
+                                            thresholds_from_settings(), band_for(),
+                                            score_from_contributions(),
+                                            apply_ceiling(), level_for_score()
+app/services/risk/risk_factors.py            factors_from_red_flags(),
+                                            factors_from_verification(),
+                                            factor_type_for(), severity_for_factor(),
+                                            red_flag_id_for(), risk_factor_id_for()
+app/services/risk/risk_aggregation.py        collapse_duplicate_red_flags(),
+                                            collapse_duplicate_results(),
+                                            attach_claims(), attach_evidence(),
+                                            absorb_duplicate_signals(),
+                                            attach_absorption_context()
+app/services/risk/risk_service.py            RiskService, build_risk_service()
+```
+
+Contracts:
+
+- **No network, no provider, no LLM, no clock-dependent branch.** Phase 6 is pure
+  arithmetic over objects earlier phases produced. `assessed_at` is the only
+  wall-clock value and is excluded from every id.
+- **One weight table.** Red-flag weights resolve through Phase 1's
+  `RULES_BY_CODE` and each rule's `weight_attr`, using the same fallback as
+  `RedFlagEngine.weight_for`. `RiskWeights.red_flag_weights` is keyed by the
+  `RedFlagCode` enum. Phase 6 adds four settings and reads the existing fifteen
+  (D-028).
+- **One signal scores once.** A behaviour noticed by four stages is one factor.
+  A verification factor describing a signal a scoring red-flag factor already
+  counted is kept at `contribution = 0` with an `absorbed_into` pointer, and the
+  primary gains the claim's verification status (D-026).
+- **`contribution <= weight` is validated.** A factor can never contribute more
+  than its declared weight, and never more than once. This makes "do not double
+  count" arithmetic rather than aspirational.
+- **Absorption needs a scoring primary.** A zero-weight red flag must not silence
+  the claim's own finding, and a factor that already weighs nothing is not
+  absorbed.
+- **Absence of evidence never scores.** `INSUFFICIENT_EVIDENCE` weights `0`;
+  `VERIFIED` and `NOT_APPLICABLE` produce no factor. An `UNVERIFIED` result
+  scores only for completed-search reason codes, so `SEARCH_UNAVAILABLE` can
+  never become an `UNVERIFIED_CLAIM` (D-027).
+- **Nothing nets off.** No factor can contribute a negative amount and no member
+  of `VerificationFactorType` encodes a risk reduction, so a `VERIFIED` claim
+  can never lower a score (D-020).
+- **Evidence never contributes.** It attaches `ev_`/`src_` ids to whichever
+  factors bear on its claim. The same document reachable from ten queries cannot
+  move the score (D-007).
+- **The caveat is a schema invariant.** `RiskAssessment` appends
+  `SCORE_NOT_A_PROBABILITY` during validation, so no caller can omit it. The
+  score is a bounded heuristic indicator sum, never a probability, and the bands
+  are product heuristics (D-025).
+- **The cap is a ceiling, not a rescaling.** Two documents far past `ceiling`
+  score identically, which is what makes one score comparable with another.
+- **Derived, never minted.** `rf_` and `rsk_` ids are `sha256` digests over the
+  factor's origin, type and cited ids — no counter, no clock — so a re-run is
+  comparable to a stored report and `absorbed_into` points at something durable.
+- **Wording is templated.** Every user-readable string is a fixed template, never
+  generated, and is checked by a negation-aware vocabulary ban (D-029).
 
 ### 2.4 Extraction pipeline (Phase 2, complete)
 
@@ -526,32 +602,94 @@ Notes carried forward:
   zero results and `NOT_APPLICABLE` all produce no items plus a factual warning.
 - **Relevance is a label, not a number.** The `0..1` score sketched before Phase 5
   is deliberately not implemented: it would become an undeclared risk input
-  (D-007). Phase 6 consumes `proof_count` and `source_count` as *counts* and shows
-  the items behind them.
+  (D-007). Phase 6 honours this — it reads the evidence items only to attach
+  their `ev_`/`src_` ids to the factors bearing on the same claim, and sums no
+  evidence field into the score at all. It reports `evidence_coverage` as a count
+  of claims with at least one proof-grade document, which is a transparency
+  measure and not a weighted input.
 
 ---
 
 ## 7. Risk Engine
 
+Implemented in Phase 6. The model below is the one that shipped; the shape
+sketched here in the pre-Phase-6 draft is unchanged in intent and now enforced by
+schema validation.
+
 ```
-score = Σ (weight of each distinct detected indicator)
-level = band(score)  →  LOW | MEDIUM | HIGH | CRITICAL
+raw_score = Σ factor.contribution          (each contribution ≤ its weight)
+risk_score = min(raw_score, ceiling)       (a ceiling, never a rescale)
+risk_level = band(risk_score)              → LOW | MEDIUM | HIGH | CRITICAL
 ```
 
-Default heuristic weights (configurable):
+Bands, inclusive at the top of each range, from `Settings`:
 
-| Indicator | Weight |
-| --- | --- |
-| Guaranteed return | +20 |
-| Urgency / pressure | +15 |
-| Fake regulatory claim | +25 |
-| Unverified entity | +20 |
-| Suspicious payment | +15 |
-| Suspicious URL | +10 |
+| Band | Score range | Setting |
+| --- | --- | --- |
+| `LOW` | 0–20 | `risk_band_medium_max = 20` |
+| `MEDIUM` | 21–50 | `risk_band_high_max = 50` |
+| `HIGH` | 51–90 | `risk_band_critical_max = 90` |
+| `CRITICAL` | 91–100 | `risk_score_ceiling = 100` |
 
-Each contribution is returned as a `RiskFactor(code, label, weight, reason)` so
-the report can show exactly why the level was chosen. Weights are heuristics and
-are labelled as such — never as probabilities.
+`RiskThresholds` rejects a configuration whose bands are not strictly increasing
+or whose top band reaches the ceiling, so a score can never belong to two levels.
+
+Red-flag weights are Phase 1's existing `risk_weight_*` settings, read through the
+same rule table:
+
+| Indicator | Weight | Indicator | Weight |
+| --- | --- | --- | --- |
+| Guaranteed return | +20 | Guaranteed return, unrealistic figure | +20 |
+| Urgency / pressure | +15 | Fake regulatory claim | +25 |
+| Unverified adviser | +20 | Impersonation | +25 |
+| Suspicious payment | +15 | Withdrawal fee | +20 |
+| Activation fee | +15 | APK download | +15 |
+| Borrow to invest | +15 | Telegram group | +10 |
+| WhatsApp group | +10 | Suspicious URL | +10 |
+| Fake profit screenshot | +10 | | |
+
+Phase 6 adds four verification weights:
+
+| Verification factor | Weight | Setting |
+| --- | --- | --- |
+| `CONTRADICTED_CLAIM` | +25 | `risk_weight_contradicted_claim` |
+| `UNVERIFIED_CLAIM` | +8 | `risk_weight_unverified_claim` |
+| `INSUFFICIENT_EVIDENCE` | +0 | `risk_weight_insufficient_evidence` |
+
+`RiskWeights` and `RiskThresholds` are snapshotted onto every assessment, so a
+stored report shows the configuration that produced its own level rather than
+today's (D-007, D-028).
+
+Every factor is returned as a `RiskFactor` carrying `id`, `origin`, `factor_type`,
+`label`, `description`, `reason`, `source`, `severity`, `weight`, `contribution`,
+`absorbed_into`, and the `claim_ids` / `red_flag_ids` / `evidence_ids` /
+`source_ids` / `verification_statuses` behind it — so the report can show exactly
+why the level was chosen, and a reader can walk from any factor to the document
+that produced it.
+
+**De-duplication.** One behaviour noticed by several stages scores once. The
+canonical case: "SEBI approved" is fired on by Phase 1, extracted by Phase 2,
+unverified by Phase 4 and evidenced by Phase 5. The assessment reports `25` from
+the `FAKE_REGULATORY_CLAIM` factor and `0` from the absorbed `UNVERIFIED_CLAIM`
+factor — not `33`. The absorbed factor is kept, with `absorbed_into` pointing at
+the factor that counted it, so the breakdown still shows that the claim was
+unconfirmed (D-026).
+
+**What the score is not.** It is a transparent heuristic indicator of documented
+risk factors. It is not a probability of fraud, of financial loss, or of the
+investment failing, and it is not a recommendation to invest or not invest. The
+weights and bands are declared judgements, not calibrated measurements, and
+neither is derived from a dataset. `SCORE_NOT_A_PROBABILITY` is appended to
+`RiskAssessment` by validation itself, so no output can present a score without
+it (D-025).
+
+**Ratios, not confidences.** `evidence_coverage` is the share of assessed
+risk-relevant claims for which a proof-grade document was assembled;
+`analysis_completeness` is the share of the three per-claim analyses (extract,
+verify, assemble evidence) that were performed. Both are in `[0, 1]`, both are
+documented in the schema as transparency measures, and neither is a probability,
+a confidence, or an accuracy score. Evidence relevance is never summed into a
+number (D-006, D-007, D-027).
 
 ---
 

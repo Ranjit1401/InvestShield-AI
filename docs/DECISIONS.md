@@ -474,3 +474,197 @@ whole point of the phase is to show the reader what was found; overriding Phase
 the same defect in the other direction.
 
 **Date:** 2026-10-01
+
+---
+
+## D-025 — The risk score is a transparent heuristic indicator sum, never a probability
+
+**Decision:** `RiskAssessment.risk_score` is `min(Σ factor.contribution,
+ceiling)`, where each contribution is a declared integer weight from `Settings`
+and no factor can contribute a negative amount. `risk_level` is the band that
+capped score falls into: `0..20` LOW, `21..50` MEDIUM, `51..90` HIGH,
+`91..100` CRITICAL, boundaries inclusive at the top of each band and
+monotonically increasing.
+
+The bands and weights are **product heuristics**. They are not empirically
+validated, not derived from any dataset, and not calibrated. Every assessment
+carries `SCORE_NOT_A_PROBABILITY` as its final warning, and
+`RiskAssessment` appends that string during validation — so it cannot be omitted
+by any caller, including a future Phase 7 rehydrating stored data. The caveat
+names both misreadings a user could take: it is not a probability of fraud or
+loss, and it is not a recommendation to invest or not invest.
+
+`evidence_coverage` and `analysis_completeness` are bounded ratios in `[0, 1]`
+and are documented in the schema as transparency measures, **not** confidence or
+accuracy scores. Nothing in the schema is typed or named as a probability.
+
+**Reason:** A number between 0 and 100 invites the reading "68% chance of
+something", and a tool that invites it will be believed that way regardless of
+what the documentation says. The structural responses are: bound the number,
+make every component inspectable, state the band table explicitly, and attach
+the caveat to the data rather than to the page around it. A confirmation by an
+authoritative record produces no factor at all and nothing nets off, so a
+`VERIFIED` claim can never lower a score either (D-020) — the phase accumulates
+documented indicators and does not trade them against one another.
+
+Keeping the cap as a ceiling rather than a rescaling is what makes one score
+comparable with another: two documents far past the ceiling must score
+identically, or the number means something different in every report.
+
+**Date:** 2026-10-02
+
+---
+
+## D-026 — One signal scores once, however many stages noticed it
+
+**Decision:** A guaranteed-return promise appears in the pipeline four times: a
+Phase 1 red flag, a Phase 2 claim, a Phase 4 verification result, and Phase 5
+evidence. Phase 6 emits **one scoring factor** for it. Where a verification
+result describes a signal a red-flag factor has already counted, that result's
+factor is kept in the bundle at `contribution = 0` with an `absorbed_into`
+pointer to the factor that counted it, and the primary gains the claim's
+verification status as supporting context.
+
+Absorption requires a **scoring** primary, and never applies to a factor that
+already weighs nothing. A duplicate `RedFlagCode` collapses to one; two
+`VerificationResult`s for one `claim_id` collapse to one. Claims are linked to
+red-flag factors by span overlap in the submitted text, or by a deliberately
+narrow `CLAIM_TYPE_RED_FLAG_CODES` map for the cases where Phase 1 and Phase 2
+segmented the same words differently. Evidence attaches `ev_`/`src_` ids and
+contributes nothing.
+
+`RiskFactor` validates `contribution <= weight`, so a factor can never
+contribute more than its declared weight and never more than once.
+
+**Reason:** Double counting is not a cosmetic defect here; it is how a
+document's severity gets inflated in proportion to how thoroughly the tool
+analysed it. A content item that trips three rules and is contradicted by an
+authoritative record would otherwise score four times, and the reader would
+conclude the product is more certain than it is. Keeping the absorbed factor
+rather than dropping it is the other half of the requirement: dropping would
+hide that a claim was contradicted, which is the most material fact in the
+assessment.
+
+The two exclusions exist for different reasons. A zero-weight primary must not
+absorb, or a red flag configured to weigh nothing would silence the claim's own
+finding entirely. A factor that already weighs nothing — in practice every
+`INSUFFICIENT_EVIDENCE` factor — has nothing to de-duplicate, and pointing it at
+a primary would imply that primary accounted for a verification it never
+performed: the red flag counted a *pattern*, and said nothing about whether the
+claim could be checked.
+
+**Date:** 2026-10-02
+
+---
+
+## D-027 — Absence of evidence never raises the risk score
+
+**Decision:** `INSUFFICIENT_EVIDENCE` carries a default weight of `0`.
+`VERIFIED` and `NOT_APPLICABLE` produce no factor at all. An `UNVERIFIED`
+result produces an `UNVERIFIED_CLAIM` factor **only** when its reason code says
+a search actually completed — `NO_CONFIRMATION_FOUND`, `IDENTITY_NOT_FOUND` or
+`IDENTITY_AMBIGUOUS`. Reason codes meaning the search never ran
+(`SEARCH_UNAVAILABLE`, `SEARCH_FAILED`, `NO_QUERY_BUILT`,
+`NO_CLAIM_RELEVANT_SOURCE`, `ZERO_RESULTS`) produce no contribution.
+
+Uncertainty is reported instead of scored, through `RiskFactor.is_uncertainty`,
+`RiskAssessment.analysis_completeness`, and a warning. `SEARCH_UNAVAILABLE` and
+`ZERO_RESULTS` raise different warnings, because "we could not look" and "the
+register was reached and held no entry" are different facts about the world.
+
+Only claim families in `RISK_RELEVANT_CLAIM_TYPES` may produce a factor at all.
+`COMPANY_CLAIM` is excluded: an unverifiable statement about opening hours is
+not an investment risk indicator. `PAYMENT_INSTRUCTION` is included, because
+where the money goes is squarely material.
+
+**Reason:** The failure this prevents is specific and severe: a system whose
+score rises when it loses connectivity. The tool would report the highest risk
+precisely when it is least informed, and the number would be arithmetically
+correct, well-explained, and entirely fictional. This is the reason the
+reason-code gate in `factor_type_for` exists as a separate step: Phase 4's schema
+permits `UNVERIFIED` alongside `SEARCH_UNAVAILABLE` even though the engine never
+emits that pairing, so the combination is representable and had to be excluded at
+the point of use rather than assumed away.
+
+The mirror-image error is excluded by the same rule. `VERIFIED` means an
+authoritative record established the claim — not that the party is legitimate or
+the investment sound — and no `VerificationFactorType` member may encode a risk
+reduction.
+
+**Date:** 2026-10-02
+
+---
+
+## D-028 — One weight table, resolved through the stage that owns each weight
+
+**Decision:** Red-flag weights are resolved through Phase 1's `RULES_BY_CODE`
+and each rule's `weight_attr`, using the same fallback logic as
+`RedFlagEngine.weight_for`. `RiskWeights.red_flag_weights` is keyed by the
+`RedFlagCode` enum, not by a string. Phase 6 adds exactly four settings —
+`risk_weight_contradicted_claim`, `risk_weight_unverified_claim`,
+`risk_weight_insufficient_evidence` and `risk_score_ceiling` — and reads the
+existing fifteen.
+
+`RiskWeights` and `RiskThresholds` are snapshotted onto every assessment, so a
+stored report shows the configuration that produced its own score and level
+rather than today's configuration.
+
+**Reason:** A weight table that can disagree with itself is worse than no
+weight table, because the disagreement is invisible. This was not hypothetical:
+the first implementation keyed the table by `code.value.lower()` and looked it
+up with `code.value`, so every red flag silently resolved to weight `0`. The
+assessment still displayed red-flag factors; it simply scored all of them as
+nothing. Rebuilding setting names from code values is the same hazard in slower
+motion, so weights are read through the rule table that already declares them.
+Keying by the enum removes the casing class of bug entirely.
+
+Snapshotting the configuration is what lets a report be audited months later,
+when the weights have moved on (D-007).
+
+**Date:** 2026-10-02
+
+---
+
+## D-029 — Generated output vocabulary is tested, not reviewed
+
+**Decision:** `test_risk_safety.py` walks every assessment the engine can
+produce — one red flag per rule, all five Phase 4 statuses, with and without
+evidence, all four bands, and the empty investigation — and checks the
+`label`, `description`, `reason` and `source` of every factor plus every
+warning, against a ban list of judgement and advice words.
+
+Matching is **negation-aware**. A banned word preceded by a negation within a
+short window, with no sentence or clause boundary in between, is treated as a
+denial and permitted. This is required by the product's own wording: the
+standing caveat says the score "is not a probability of fraud", and Phase 1's
+`UNVERIFIED_ADVISER` description says its detection is "not a finding that the
+person is unverified or fraudulent". Both name the banned thing in order to rule
+it out.
+
+Two scoping decisions:
+
+- The advice ban (`buy`, `sell`, `invest`, `recommend`, …) applies to text
+  **Phase 6 authors**. For a red-flag factor, `label`, `description` and `reason`
+  are Phase 1's rule catalogue reproduced verbatim, and a rule may legitimately
+  name the activity it detects — `BORROW_TO_INVEST` is named "Borrowing to
+  Invest". That is a description of what was found, not advice to the reader.
+- The judgement ban applies to Phase 6's own text. Phase 1's catalogue is
+  checked separately by `TestPhaseOneCatalogueTripwire`, which pins the exact
+  known set rather than suppressing it. One occurrence is asserted rather than
+  denied: `SUSPICIOUS_URL`'s "commonly seen in fraudulent campaigns". Changing
+  it is a Phase 1 decision with its own tests, so it is recorded, not silently
+  rewritten from here.
+
+**Reason:** Documentation does not stop a future edit from introducing "you
+should invest" into a warning string. A test does, provided it covers the output
+space rather than a sample — which is why the scenarios are assembled from the
+taxonomies instead of hand-listed.
+
+The negation-awareness is the part worth arguing for. A blunt word-boundary ban
+is unsatisfiable without suppressing the disclaimers that carry the product's
+promise, and the obvious fix — an allowlist of approved strings — is a loophole
+that grows one entry per failure. A negation check is narrow, has no list to
+abuse, and is tested directly against mixed text so it cannot become a blanket
+excuse.
+
+**Date:** 2026-10-02

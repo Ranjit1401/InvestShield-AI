@@ -195,14 +195,35 @@ persistence, and any HTTP surface. Evidence explains a verification result; it
 does not judge the investment and cannot contradict Phase 4 (D-020, D-021,
 D-023).
 
-## Phase 6 — Risk Engine `[ ]`
+## Phase 6 — Risk Engine `[x]`
 
-- [ ] Weighted, transparent indicator accumulation
-- [ ] Configurable weights
-- [ ] Bands: `LOW` / `MEDIUM` / `HIGH` / `CRITICAL`
-- [ ] Per-factor contribution breakdown for explainability
-- [ ] No probabilistic language in output
-- [ ] Tests
+- [x] Weighted, transparent indicator accumulation
+- [x] Configurable weights
+- [x] Bands: `LOW` / `MEDIUM` / `HIGH` / `CRITICAL`
+- [x] Per-factor contribution breakdown for explainability
+- [x] No probabilistic language in output
+- [x] Tests
+
+Delivered as `RiskService` over `RiskFactor` / `RiskWeights` / `RiskThresholds` /
+`RiskAssessment`. Four settings added (`risk_weight_contradicted_claim`,
+`risk_weight_unverified_claim`, `risk_weight_insufficient_evidence`,
+`risk_score_ceiling`); the fifteen red-flag weights are Phase 1's own, read
+through `RULES_BY_CODE` so there is one weight table. Bands are
+`0–20 / 21–50 / 51–90 / 91–100`, inclusive and validated as strictly increasing.
+
+Beyond the checklist, three things the plan did not anticipate:
+
+- **Cross-stage de-duplication.** One behaviour noticed by four stages scores
+  once. The extra view is kept at `contribution = 0` with an `absorbed_into`
+  pointer, so the breakdown stays complete without inflating the severity
+  (D-026).
+- **The completed-search gate.** `INSUFFICIENT_EVIDENCE` weighs `0` and an
+  `UNVERIFIED` result produces a factor only when its reason code says a search
+  actually completed — so a tool that cannot reach the internet cannot report its
+  own blindness as somebody's risk (D-027).
+- **A negation-aware vocabulary ban.** Enforced by test over every field and
+  warning, across the whole output space, with denials permitted so the
+  disclaimers survive (D-029).
 
 ## Phase 7 — LangGraph Orchestration `[ ]`
 

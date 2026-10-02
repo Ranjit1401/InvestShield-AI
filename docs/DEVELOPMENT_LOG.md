@@ -724,3 +724,154 @@ red flags, Phase 4 statuses and Phase 5 counts, with a per-factor breakdown and 
 probabilistic language. The constraint carried forward from this phase is that
 `EvidenceRelevance` must never be summed into a number — Phase 6 consumes
 `proof_count` and `source_count` as counts and shows the items behind them.
+
+---
+
+## Phase 6 — Risk engine
+
+**Date:** 2026-10-02
+**Phase:** 6 — Risk engine
+
+### What was implemented
+
+- `app/schemas/risk.py` — `RiskLevel`, `VerificationFactorType`,
+  `RiskFactorOrigin`, `RiskFactor`, `RiskWeights`, `RiskThresholds`,
+  `RiskAssessment`, plus `RISK_RELEVANT_CLAIM_TYPES` and the
+  `SCORE_NOT_A_PROBABILITY` caveat. Most Phase 6 guarantees are validation rules
+  rather than conventions: `contribution <= weight`, an absorbed factor must
+  contribute `0`, `raw_score` must equal the sum of contributions, `risk_score`
+  must be that sum capped at the ceiling, bands must be strictly increasing, and
+  a zero-factor assessment must score `0`. Derived counts are recomputed from
+  `factors` so a report cannot show numbers that disagree with the breakdown.
+- `app/services/risk/risk_scoring.py` — weight and threshold snapshots, band
+  assignment with inclusive bounds, and the score arithmetic. Red-flag weights
+  are resolved through Phase 1's `RULES_BY_CODE` and each rule's `weight_attr`.
+- `app/services/risk/risk_factors.py` — Phase 1 and Phase 4 objects to
+  `RiskFactor`, with the status-to-factor-type mapping, the completed-search
+  reason-code gate, fixed template wording, and derived `rf_`/`rsk_` ids.
+- `app/services/risk/risk_aggregation.py` — the de-duplication layer. Collapses
+  duplicate red flags and duplicate verification results, links claims to
+  red-flag factors by span overlap or claim-type map, attaches evidence ids, and
+  absorbs a verification factor that repeats an already-counted signal.
+- `app/services/risk/risk_service.py` — `RiskService` composing the above, with
+  `evidence_coverage`, `analysis_completeness` and five fixed warnings. The
+  service holds no state, performs no I/O and makes no network call.
+- `app/scripts/manual_risk.py` — offline smoke test in three passes: nothing
+  found, one signal seen by four stages, and search unavailable.
+- Four new `Settings` fields: `risk_weight_contradicted_claim` (25),
+  `risk_weight_unverified_claim` (8), `risk_weight_insufficient_evidence` (0)
+  and `risk_score_ceiling` (100).
+
+### Files created
+
+```
+backend/app/schemas/risk.py
+backend/app/services/risk/__init__.py
+backend/app/services/risk/risk_scoring.py
+backend/app/services/risk/risk_factors.py
+backend/app/services/risk/risk_aggregation.py
+backend/app/services/risk/risk_service.py
+backend/app/scripts/manual_risk.py
+backend/tests/risk_factories.py
+backend/tests/test_risk_schemas.py
+backend/tests/test_risk_scoring.py
+backend/tests/test_risk_factors.py
+backend/tests/test_risk_aggregation.py
+backend/tests/test_risk_service.py
+backend/tests/test_risk_safety.py
+backend/tests/test_risk_package.py
+```
+
+### Files modified
+
+```
+backend/app/core/config.py   (four risk_weight_*/ceiling settings)
+```
+
+### Tests
+
+385 new tests, all offline. Suite total: **1546 passed, 4 deselected** — up from
+1161 with no regressions in Phases 0–5.
+
+### Bugs found and fixed during this phase
+
+1. **Every red-flag weight resolved to `0`.** `RiskWeights.red_flag_weights` was
+   keyed by `code.value.lower()` while `weight_for` looked up with the uppercase
+   `RedFlagCode.value`, so no code ever matched. The symptom was an assessment
+   reporting red-flag factors and scoring `0` — the worst possible failure shape,
+   because the breakdown looked correct. Two changes: the table is now keyed by
+   the `RedFlagCode` enum, and weights are resolved through Phase 1's rule table
+   rather than by reconstructing `f"risk_weight_{code.value.lower()}"`.
+2. **`RISK_RELEVANT_CLAIM_TYPES` imported from the wrong module.** It is defined
+   in `app.schemas.risk`; the import in `risk_factors.py` and `risk_service.py`
+   pointed at `app.schemas.claims` and failed at package import.
+3. **`UNVERIFIED_CLAIM` was wrongly exempted from de-duplication.** The first
+   absorption rule skipped any factor with `is_uncertainty`, which includes
+   `UNVERIFIED_CLAIM` — a weighted factor that genuinely double-counts against
+   the matching red flag. Caught by `test_nothing_scores_twice_for_one_claim`.
+   The rule is now "a factor that already weighs nothing is not absorbed", which
+   covers `INSUFFICIENT_EVIDENCE` without letting a real finding count twice.
+
+### Behaviour narrowed during this phase
+
+4. **`INSUFFICIENT_EVIDENCE` factors no longer receive an `absorbed_into`
+   pointer.** The primary red flag counted a *pattern*; pointing at it implied it
+   had also accounted for a verification it never performed. Such factors are now
+   kept visible at `contribution = 0` with no pointer. `UNVERIFIED_CLAIM`, which
+   is also marked `is_uncertainty` but does carry weight, is still absorbed.
+5. **`ZERO_RESULTS` is separated from the search-failure reason codes.** The two
+   are different facts: "we could not look" versus "the register was reached and
+   held no matching entry". They now raise different warnings
+   (`SEARCH_DATA_UNAVAILABLE` versus `REGISTER_NO_MATCH`), and the second is an
+   observation about the public record rather than a gap in the analysis.
+
+### Pre-existing issue found, not fixed here
+
+6. **Phase 1's `SUSPICIOUS_URL` description asserts the word "fraudulent".** It
+   reads "A link was found that uses a pattern commonly seen in fraudulent
+   campaigns." Phase 6 reuses Phase 1's rule text verbatim by design, so the
+   phrase reaches every risk report. Rewording it is a Phase 1 decision with its
+   own tests and rationale, so it is pinned by
+   `TestPhaseOneCatalogueTripwire::test_the_known_judgement_wording_in_phase_one_is_unchanged`
+   rather than silently changed from here. The tripwire fails if a new occurrence
+   appears, so the set cannot grow unnoticed.
+
+### Notable design points
+
+- The vocabulary ban in `test_risk_safety.py` is **negation-aware**. A blunt
+  word-boundary ban cannot be satisfied without suppressing the disclaimers that
+  carry the product's promise — the standing caveat says the score "is not a
+  probability of fraud", and Phase 1 says a credential detection is "not a
+  finding that the person is unverified or fraudulent". Both name the banned
+  word in order to rule it out.
+- The advice ban applies only to text Phase 6 authors. A rule may name the
+  activity it detects: `BORROW_TO_INVEST` is named "Borrowing to Invest", which
+  describes a pattern rather than advising the reader.
+- `SCORE_NOT_A_PROBABILITY` is enforced by `RiskAssessment` validation rather
+  than by the service, so no caller can omit it.
+- The headline end-to-end case — a "SEBI approved" claim fired on by Phase 1,
+  extracted by Phase 2, unverified by Phase 4 and evidenced by Phase 5 — scores
+  `25` from the red flag and `0` from the absorbed claim factor, not `33`.
+
+### Known limitations
+
+- No live SerpAPI run; `SERPAPI_KEY` is absent, so a real Phase 4 result has
+  never been scored. Every test drives the engine with synthetic but
+  schema-valid Phase 4 and Phase 5 objects.
+- The bands (`20/50/90/100`) and every weight are product heuristics, not
+  calibrated or empirically validated.
+- `CLAIM_TYPE_RED_FLAG_CODES` is a hand-built map. A claim family that is
+  genuinely the same signal as a rule but missing from the map would be scored
+  twice.
+- `evidence_coverage` counts claims with proof-grade evidence, not cross-claim
+  source diversity, which Phase 5 flagged as unaddressed and still is.
+- Nothing is persisted; `RiskAssessment` is returned in memory only.
+  `RiskService.assess_batch` exists for Phase 7; writing is Phase 9 work.
+
+### Next step
+
+Phase 7 — LangGraph orchestration: compose Phases 2–6 into one stateful graph
+over a typed state, so no stage re-derives another's work. `assess_batch` is the
+call shape. Determinism must be preserved or stored reports stop being
+auditable, every typed error code from Phases 3–5 must surface as a report
+limitation, and the vocabulary ban must keep passing unchanged.

@@ -7,19 +7,20 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 5 — Evidence Engine — **COMPLETE**
-**Current Subphase:** Phase 6 — Risk Engine — **NOT STARTED**
-**Last Completed Task:** Phase 5 — `EvidenceService` assembling traceable,
-verbatim-sourced evidence from Phase 3 search results and Phase 4 verification
-decisions: evidence schemas with enforced provenance, Phase 3/4 source
-normalization, relationship/relevance derivation from `AssessedSource`,
-verbatim excerpt construction, first-seen-wins de-duplication, deterministic
-ordering, and honest no-evidence warnings.
-**1161 tests passing** (793 prior + 368 Phase 5).
-**Currently Working On:** Idle. Awaiting instruction to begin Phase 6.
-**Latest Commit:** `feat: implement evidence infrastructure` (Phase 3),
+**Current Phase:** Phase 6 — Risk Engine — **COMPLETE**
+**Current Subphase:** Phase 7 — LangGraph Orchestration — **NOT STARTED**
+**Last Completed Task:** Phase 6 — `RiskService` producing a deterministic,
+explainable risk assessment from Phase 1 red flags, Phase 2 claims, Phase 4
+verification statuses and Phase 5 evidence: risk schemas whose invariants are
+enforced by validation rather than convention, weights resolved through Phase 1's
+own rule table, four inclusive bands with a documented threshold table, and
+cross-stage de-duplication so that one behaviour noticed by four stages scores
+once and the other three views are kept as provenance.
+**1546 tests passing** (1161 prior + 385 Phase 6).
+**Currently Working On:** Idle. Awaiting instruction to begin Phase 7.
+**Latest Commit:** `feat: implement evidence engine` (Phase 5),
 `feat: implement claim verification` (Phase 4)
-**Working Tree:** Phase 5 uncommitted at the time of writing.
+**Working Tree:** Phase 6 uncommitted at the time of writing.
 
 ### Phase Status Summary
 
@@ -31,28 +32,27 @@ ordering, and honest no-evidence warnings.
 | Phase 3 | External services & search infrastructure | **COMPLETE (search only; see limitations)** |
 | Phase 4 | Verification agent | **COMPLETE** |
 | Phase 5 | Evidence engine | **COMPLETE** |
-| Phase 6 | Risk engine | **NEXT** |
+| Phase 6 | Risk engine | **COMPLETE** |
+| Phase 7 | LangGraph orchestration | **NEXT** |
 
 ### Files Recently Changed
 
 ```
-backend/app/schemas/evidence.py                        (new — types, relations, relevance, frozen models)
-backend/app/services/evidence/__init__.py              (new — public surface)
-backend/app/services/evidence/source_normalizer.py     (new — SearchResult → EvidenceSource)
-backend/app/services/evidence/relationship.py          (new — relationship/relevance/type derivation)
-backend/app/services/evidence/evidence_builder.py      (new — verbatim excerpts, ev_ ids, query provenance)
-backend/app/services/evidence/evidence_dedupe.py       (new — de-duplication + deterministic ordering)
-backend/app/services/evidence/evidence_service.py      (new — EvidenceService orchestration)
-backend/app/scripts/manual_evidence.py                 (new — runnable smoke test)
-backend/tests/evidence_factories.py                    (new — shared builders)
-backend/tests/test_evidence_schemas.py                 (new)
-backend/tests/test_evidence_source_normalizer.py       (new)
-backend/tests/test_evidence_relationship.py            (new)
-backend/tests/test_evidence_builder.py                 (new)
-backend/tests/test_evidence_dedupe.py                  (new)
-backend/tests/test_evidence_service.py                 (new)
-backend/tests/test_evidence_integration.py             (new — Phase 3→4→5 chain)
-backend/tests/test_evidence_package.py                 (new — package invariants)
+backend/app/schemas/risk.py                             (new — levels, factors, weights, thresholds, assessment)
+backend/app/services/risk/__init__.py                   (new — public surface)
+backend/app/services/risk/risk_scoring.py               (new — weight snapshot, bands, score arithmetic)
+backend/app/services/risk/risk_factors.py               (new — status → factor mapping, rsk_/rf_ ids)
+backend/app/services/risk/risk_aggregation.py           (new — de-duplication and cross-stage linking)
+backend/app/services/risk/risk_service.py               (new — RiskService orchestration)
+backend/app/scripts/manual_risk.py                      (new — runnable smoke test)
+backend/tests/risk_factories.py                         (new — shared builders)
+backend/tests/test_risk_schemas.py                      (new)
+backend/tests/test_risk_scoring.py                      (new)
+backend/tests/test_risk_factors.py                      (new)
+backend/tests/test_risk_aggregation.py                  (new)
+backend/tests/test_risk_service.py                      (new — end to end)
+backend/tests/test_risk_safety.py                       (new — vocabulary ban, negation-aware)
+backend/tests/test_risk_package.py                      (new — package invariants)
 docs/IMPLEMENTATION_PLAN.md / CURRENT_STATE.md / DEVELOPMENT_LOG.md
 docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
 ```
@@ -61,7 +61,7 @@ docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
 
 ```
 cd backend && python -m pytest
-1161 passed, 4 deselected
+1546 passed, 4 deselected
 ```
 
 ### Tests Failing
@@ -70,31 +70,41 @@ None.
 
 ### Known Bugs
 
-None open. The Phase 5 test suite surfaced and fixed two issues in the new code,
+None open. The Phase 6 test suite surfaced and fixed three issues in the new code,
 recorded in `DEVELOPMENT_LOG.md`:
 
-1. **A source cited only by `src_` id was dropped.** `EvidenceService` filtered
-   supplied results against `matched_result_ids` alone, so a document Phase 4
-   recorded in `source_ids` but not in `matched_result_ids` was excluded from
-   its own evidence bundle. Both id families are now checked.
-2. **A list of warnings was passed where a single string was expected.** Any
-   claim whose supplied results were all filtered out crashed on
-   `EvidenceResponse` construction instead of returning an empty bundle.
-   `_empty()` now normalises and de-duplicates its warnings.
+1. **Every red-flag weight resolved to `0`.** `RiskWeights` was keyed by
+   `code.value.lower()` but looked up with `RedFlagCode.code.value`, so no code
+   ever matched. The symptom was an assessment that scored 0 while reporting
+   red-flag factors. The table is now keyed by the enum itself, and weights are
+   resolved through Phase 1's `RULES_BY_CODE`/`weight_attr` rather than by
+   reconstructing setting names, so the two mappings cannot diverge again.
+2. **`RISK_RELEVANT_CLAIM_TYPES` was imported from the wrong module.** It is
+   defined in `app.schemas.risk`, not `app.schemas.claims`; the import was a
+   package-level `ImportError` and surfaced immediately.
+3. **An `UNVERIFIED_CLAIM` factor was exempted from de-duplication.** The first
+   rule exempted every factor with `is_uncertainty`, which includes
+   `UNVERIFIED_CLAIM` — a weighted factor that genuinely double-counts against
+   the matching red flag. The rule is now "a factor that already weighs nothing
+   is not absorbed", which covers `INSUFFICIENT_EVIDENCE` without letting a real
+   finding count twice.
 
 One behaviour was also **narrowed** after review, recorded in `DEVELOPMENT_LOG.md`:
 
-3. `CONTEXT` now requires an authoritative publisher. A similarly named party on
-   an arbitrary web page is `MENTIONS`; `CONTEXT` is reserved for a relevant
-   authority describing a lookalike. Previously any `AMBIGUOUS` identity produced
-   `CONTEXT` regardless of who published it.
+4. `INSUFFICIENT_EVIDENCE` factors are no longer given an `absorbed_into` pointer.
+   The primary red flag counted a *pattern*; pointing at it implied it had also
+   accounted for a verification it never performed. Such factors now carry no
+   pointer and are kept visible at zero contribution.
 
-Also resolved: `manual_evidence.py` was originally handing `EvidenceService`
-hand-built `SearchResult` objects that Phase 3 never classified, so the demo
-printed `sebi.gov.in (UNKNOWN)` alongside `TIER_1_PRIMARY_REGULATOR`. That was the
-script's shortcut, not a normalizer bug. It now retrieves through
-`SearchService` exactly as Phase 4 does, and the publisher category is
-`REGULATOR`.
+One **pre-existing Phase 1 wording issue** was found and deliberately not fixed
+here, recorded in `DEVELOPMENT_LOG.md`:
+
+5. The `SUSPICIOUS_URL` rule description reads "A link was found that uses a
+   pattern commonly seen in fraudulent campaigns." That asserts the word
+   *fraudulent*, which the product's own vocabulary standard discourages. Phase 6
+   reuses Phase 1's text verbatim by design, so the phrase reaches every risk
+   report. Changing it is a Phase 1 decision with its own tests, so it is pinned
+   by `TestPhaseOneCatalogueTripwire` rather than silently reworded here.
 
 ### Blocked Items
 
@@ -111,42 +121,51 @@ None.
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; `OCRService` not built |
 | `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred; see limitations |
 
-**Consequence for Phase 6:** the whole Phase 4 and Phase 5 suites run against a
+**Consequence for Phase 7:** the whole Phase 4, 5 and 6 suites run against a
 **fake** `SearchProvider`. Without `SERPAPI_KEY` the live path has still never
 executed, so real SerpAPI ranking and snippet quality remain unverified
-assumptions.
+assumptions. The risk engine itself needs no network and was verified fully
+offline.
 
-### Phase 5 Design Decisions
+### Phase 6 Design Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| Three separate axes: type, relationship, relevance | The longer proposed taxonomy encoded the same fact twice; `type: contradiction, relationship: supports` is worse than no type (D-023). |
-| Relationship derived **only** from Phase 4's `AssessedSource` | Evidence explains verification. It cannot re-read a snippet and reach a different conclusion (D-020, D-021). |
-| Evidence may *narrow* Phase 4, never widen it | A supporting cue in a document that failed an authority or identity gate is context, not proof. The gates exist so one party's page cannot confirm another's claim. |
-| `NOT_APPLICABLE` claims yield no evidence, ever | No record was ever looked up, so anything attached would have to be invented. |
-| Only results Phase 4 recorded may be cited | Otherwise a caller could attach a document the verification never saw, and Phase 5 cannot know whether it was real. |
-| `MENTIONS`/`CONTEXT`/`IDENTITY_REFERENCE` items are kept, not suppressed | Suppressing them would hide the searches that found nothing (D-006). |
-| Excerpts are `snippet`, else `title` — never merged | The moment a snippet is rewritten, the user can no longer check it against the page. |
-| `ev_` ids derived by digest, never a counter or clock | Rebuilding the same evidence must yield the same id, or de-duplication and audit trails are meaningless. |
-| Ordering reuses `TIER_PRIORITY` and Phase 3 priority | No new credibility score. A second priority system is a second answer to the same question (D-012). |
-| No numeric evidence strength | D-007 requires transparent weighting, and any score here would silently become the Phase 6 risk input. |
+| One weight per rule, resolved through Phase 1's `RULES_BY_CODE` | Reconstructing `risk_weight_<code>` here would be a second mapping that could silently resolve to `0` (D-007). |
+| `RiskWeights` keyed by the `RedFlagCode` enum, not a string | A key-casing mismatch is invisible and understates risk. The type makes it impossible. |
+| `contribution <= weight` enforced by validation | Turns "do not double count" from an aspiration into an arithmetic invariant. |
+| A de-duplicated factor is **kept** at `0`, never dropped | Dropping hides that a claim was contradicted; scoring it double-counts. |
+| Absorption needs a **scoring** primary | A zero-weight red flag must not silence the claim's own finding. |
+| `VERIFIED` and `NOT_APPLICABLE` produce no factor at all | Neither is a risk indicator, and no member may encode a risk *reduction* (D-020). |
+| `INSUFFICIENT_EVIDENCE` weights `0` by default | Not being able to look is not a finding. Uncertainty is reported, not scored (D-006). |
+| `UNVERIFIED` scores only for **completed-search** reason codes | `SEARCH_UNAVAILABLE` + `UNVERIFIED` is representable and would turn an offline run into an accusation. The reason-code gate is where it is caught. |
+| Claims link to red flags by span overlap **or** claim-type map | Phase 1 and Phase 2 segment text differently, so overlap alone misses real duplicates. |
+| Evidence never contributes; it only attaches ids | The same document reachable from ten queries cannot move a score (D-007). |
+| `SCORE_NOT_A_PROBABILITY` is a **schema** invariant | The assessment appends it during validation, so no caller — service, test, or future Phase 7 rehydration — can omit it. |
+| The score is capped, never rescaled | Two documents far past the ceiling must score identically for one number to mean anything. |
+| Factor and red-flag ids are digests, not counters | A re-run must be comparable to a stored report, and `absorbed_into` must point at something durable. |
 
-### Known Limitations (Phase 5)
+### Known Limitations (Phase 6)
 
-- **No live SerpAPI run.** `SERPAPI_KEY` is absent, so the evidence path over
-  real provider output is unexercised. Transport and normalisation are Phase 3's.
-- **Evidence is snippet-based.** `excerpt_origin` records `snippet` or `title`;
-  no page is fetched and no document is parsed. A reader cannot always confirm a
-  finding from a snippet alone, and the report must say so.
-- **Excerpts are truncated to 400 characters** on a word boundary. Always a
-  prefix of real text, never a rephrasing.
-- **A verified claim with no showable text still shows its status.** Phase 4
-  decided; Phase 5 warns that the confirming record could not be displayed
-  rather than silently downgrading the verdict.
-- **Evidence is not persisted.** `EvidenceBundleResponse` is returned in memory
-  only; writing it is Phase 9 work.
-- **Coverage counts are per claim.** Nothing yet reports cross-claim source
-  diversity, which Phase 6 will need.
+- **No live SerpAPI run.** `SERPAPI_KEY` is absent, so a real Phase 4 result has
+  never been scored. Every test drives the engine with synthetic but schema-valid
+  Phase 4 and Phase 5 objects.
+- **Bands are product heuristics.** `20/50/90/100` were chosen to be
+  explainable and monotonic. They are **not** empirically validated, not derived
+  from any dataset, and no score at any level is a probability of anything.
+- **Weights are not calibrated.** Each `risk_weight_*` is a declared judgement
+  about relative seriousness. Reasonable to argue with; not measured.
+- **Claim-type → red-flag linking is a hand-built map.** `CLAIM_TYPE_RED_FLAG_CODES`
+  is deliberately narrow, but a claim family that is genuinely the same signal as
+  a rule and is missing from the map will be scored twice.
+- **The score is not persisted.** `RiskAssessment` is returned in memory only;
+  `RiskService.assess_batch` exists for Phase 7, and writing is Phase 9 work.
+- **`evidence_coverage` counts claims, not source diversity.** Phase 5 noted
+  cross-claim source diversity as unaddressed; Phase 6 measures the share of
+  assessed claims with at least one proof-grade document, which is a
+  transparency measure and not a confidence.
+- **Phase 1's `SUSPICIOUS_URL` description asserts the word "fraudulent".** Known,
+  pinned by a tripwire test, and a Phase 1 fix. See Known Bugs item 5.
 
 ### Environment Reality Check (verified)
 
@@ -175,33 +194,35 @@ the next phase:
 | D-020 | Verification reports a claim's factual status, never a verdict |
 | D-021 | Only a direct authoritative conflict produces `CONTRADICTED` |
 | D-023 | Evidence type, relationship and relevance are three separate facts; evidence never re-decides verification |
+| D-025 | The risk score is a transparent heuristic indicator sum, never a probability; bands are product heuristics |
 
 ---
 
 ## Next Exact Task
 
-**Phase 6 — Risk Engine.**
+**Phase 7 — LangGraph Orchestration.**
 
-1. Weighted, transparent indicator accumulation over Phase 1 red flags, Phase 4
-   verification statuses and Phase 5 evidence. Every weight must be declared in
-   `app/core/config.py` and mirrored in `.env.example` (D-007).
-2. Bands `LOW` / `MEDIUM` / `HIGH` / `CRITICAL` with an explicit, documented
-   threshold table — no hidden thresholds, no silent defaults.
-3. Per-factor contribution breakdown on every score, so "why was this flagged?"
-   is answerable from the score alone.
-4. **Do not** let `EvidenceRelevance` or `EvidenceRelation` be summed into a
-   number. Phase 5 carries no numeric strength field for exactly this reason;
-   use `proof_count` and `source_count` as *counts*, and show the items.
-5. A `VERIFIED` claim must never raise a risk band by itself, and absence of
-   evidence must never raise one either (D-006, D-021).
-6. No probabilistic language in any output string; add a guard test that fails
-   on "probability", "likely to be a scam", "safe investment" and similar.
-7. Run `python -m pytest`, fix failures, update all docs, commit.
+1. Compose Phases 2–6 into a single stateful graph, with a typed state carrying
+   `ExtractionResult` → `VerificationResult` → `EvidenceResponse` →
+   `RiskAssessment` so no stage re-derives another's work.
+2. `RiskService.assess_batch` is the shape Phase 7 should call: one
+   investigation, many claims.
+3. `risk_weight_*` and `risk_band_*` stay in `Settings` and must be mirrored in
+   `.env.example` (D-007). Phase 6 added three verification weights
+   (`risk_weight_contradicted_claim`, `risk_weight_unverified_claim`,
+   `risk_weight_insufficient_evidence`) and `risk_score_ceiling`.
+4. Preserve determinism: the same inputs must produce the same factor ids and the
+   same score on every run, or stored reports are not auditable.
+5. Surface every typed error code from Phases 3–5 as a report Limitation
+   (D-009). `RiskAssessment.warnings` is the existing place for risk-stage
+   limitations; do not fold them into the score.
+6. Do **not** let the graph introduce a verdict, a probability, or advice. The
+   vocabulary ban in `test_risk_safety.py` must keep passing unchanged.
+7. No API routes (Phase 8), no database persistence (Phase 9).
 
-### Do not start before Phase 6 is green
+### Do not start before Phase 7 is green
 
-- No LangGraph (Phase 7), API routes (Phase 8), database persistence
-  (Phase 9).
+- No FastAPI endpoints (Phase 8), no persistence (Phase 9).
 
 ---
 
@@ -214,7 +235,7 @@ If you are reading this in a fresh session:
 3. [ ] Read `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
 4. [ ] Read the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **1161 passed, 4 deselected**
+6. [ ] Run `cd backend && python -m pytest` — expect **1546 passed, 4 deselected**
 7. [ ] Confirm the test count still matches "Tests Passing" above
 8. [ ] Execute **Next Exact Task**
 

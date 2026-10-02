@@ -176,9 +176,18 @@ Full result of one investigation.
   "input_text": "...",
   "created_at": "2026-10-01T00:00:00Z",
   "risk_level": "HIGH",
-  "risk_score": 125,
+  "risk_score": 90,
+  "raw_score": 90,
   "risk_factors": [
-    { "code": "GUARANTEED_RETURN", "label": "Guaranteed return promise", "weight": 20, "reason": "The message promises a fixed monthly return." }
+    {
+      "id": "rsk_1f2e3d4c5b6a",
+      "factor_type": "GUARANTEED_RETURN",
+      "label": "Guaranteed return promise",
+      "weight": 20,
+      "contribution": 20,
+      "absorbed_into": null,
+      "reason": "The message promises a fixed monthly return."
+    }
   ],
   "summary": "6 red flags, 5 claims and 4 entities were extracted from the submitted content.",
   "claims": [
@@ -360,7 +369,7 @@ Paginated history.
       "input_type": "TEXT",
       "excerpt": "🚨 Exclusive AI Trading Opportunity 🚨 Our SEBI-approved...",
       "risk_level": "HIGH",
-      "risk_score": 125,
+      "risk_score": 90,
       "red_flag_count": 6,
       "claim_count": 5,
       "created_at": "2026-10-01T00:00:00Z"
@@ -437,6 +446,11 @@ Guarantees a client may rely on:
 | `POST /api/investigations/upload` | 8 / 13 / 14 | Planned |
 | `GET /api/investigations` | 8 / 9 | Planned |
 | `GET /api/investigations/{id}` | 8 | Planned |
+
+The `risk_*` fields in the two response examples above are Phase 6 contracts and
+are already final: `risk_score` is bounded by `risk_score_ceiling` (100), so a
+response can never show a score above it, and `raw_score` carries the uncapped
+sum when the value was clamped. The surrounding envelope is still Phase 8 work.
 
 ### Extraction payload (built in Phase 2, not yet exposed over HTTP)
 
@@ -662,6 +676,125 @@ Guarantees a client may rely on:
 - `EvidenceBundleResponse.claims_without_evidence` is tracked explicitly, because
   "we found nothing" must stay visible rather than vanish.
 
+### Risk payload (built in Phase 6, not yet exposed over HTTP)
+
+`RiskService.assess()` produces a `RiskAssessment`. It becomes part of the
+`GET /api/investigations/{id}` response in Phase 8; until then it is a library
+contract only.
+
+```json
+{
+  "risk_score": 45,
+  "raw_score": 45,
+  "risk_level": "MEDIUM",
+  "factors": [
+    {
+      "id": "rsk_1f2e3d4c5b6a",
+      "origin": "RED_FLAG",
+      "factor_type": "FAKE_REGULATORY_CLAIM",
+      "label": "Regulatory Claim Requiring Verification",
+      "description": "A regulator's name is directly attached to an approval or registration claim.",
+      "reason": "A regulator's name is directly attached to an approval or registration claim.",
+      "source": "red flag rf_9f8e7d6c5b4a",
+      "severity": "CRITICAL",
+      "weight": 25,
+      "contribution": 25,
+      "absorbed_into": null,
+      "claim_ids": ["claim_001"],
+      "red_flag_ids": ["rf_9f8e7d6c5b4a"],
+      "evidence_ids": ["ev_2c1f0a9b3d47"],
+      "source_ids": ["src_2d84c639a686"],
+      "verification_statuses": ["UNVERIFIED"],
+      "is_uncertainty": false,
+      "is_scoring": true,
+      "is_evidence_backed": true
+    },
+    {
+      "id": "rsk_7a8b9c0d1e2f",
+      "origin": "VERIFICATION",
+      "factor_type": "UNVERIFIED_CLAIM",
+      "label": "Material Claim Not Confirmed by Any Searched Source",
+      "description": "A search for a material claim completed without finding a source that establishes it. This is a gap in the public record, not a finding that the claim is false.",
+      "reason": "Claim \"claim_001\" — UNVERIFIED. Phase 4 searched for this claim and no authoritative source was found that establishes it. No source disputes it either.",
+      "source": "claim claim_001 (UNVERIFIED)",
+      "severity": "MEDIUM",
+      "weight": 8,
+      "contribution": 0,
+      "absorbed_into": "rsk_1f2e3d4c5b6a",
+      "claim_ids": ["claim_001"],
+      "red_flag_ids": [],
+      "evidence_ids": ["ev_2c1f0a9b3d47"],
+      "source_ids": ["src_2d84c639a686"],
+      "verification_statuses": ["UNVERIFIED"],
+      "is_uncertainty": true,
+      "is_scoring": false,
+      "is_evidence_backed": true
+    }
+  ],
+  "relevant_claims": 1,
+  "assessed_claims": 1,
+  "evidence_coverage": 1.0,
+  "analysis_completeness": 1.0,
+  "weights": {
+    "red_flag_weights": { "GUARANTEED_RETURN": 20, "FAKE_REGULATORY_CLAIM": 25, "...": 0 },
+    "contradicted_claim": 25,
+    "unverified_claim": 8,
+    "insufficient_evidence": 0
+  },
+  "thresholds": { "medium_max": 20, "high_max": 50, "critical_max": 90, "ceiling": 100 },
+  "warnings": [
+    "At least one claim material to the investment could not be confirmed by any source that was searched.",
+    "Some signals were detected by more than one stage of the analysis. Each is counted once; the factors that describe an already-counted signal are listed with a zero contribution.",
+    "The risk score is a transparent heuristic indicator of documented risk factors. It is not a probability of fraud, of financial loss, or of the investment failing, and it is not a recommendation to invest or not invest."
+  ],
+  "assessed_at": "2026-10-02T00:00:00Z",
+  "total_factors": 2,
+  "scoring_factors": 1,
+  "evidence_backed_factors": 1,
+  "uncertainty_factors": 1,
+  "deduplicated_factors": 1,
+  "red_flag_factors": 1
+}
+```
+
+Guarantees a client may rely on:
+
+- `risk_score` is `min(raw_score, thresholds.ceiling)` — a **bounded heuristic
+  indicator sum, never a probability** of fraud, of loss, or of the investment
+  failing, and never a recommendation to invest or not invest. The last entry of
+  `warnings` is always `SCORE_NOT_A_PROBABILITY`, appended by `RiskAssessment`
+  validation so that no caller can omit it (D-025).
+- The bands are product heuristics, not calibrated or empirically validated.
+  Bounds are inclusive at the top of each range: `0..20` LOW, `21..50` MEDIUM,
+  `51..90` HIGH, `91..100` CRITICAL.
+- `raw_score` is the uncapped sum, retained so a client can show that the score
+  was clamped rather than rescaled. Two documents far past the ceiling score
+  identically.
+- `factor_type` is a Phase 1 `RedFlagCode` or a Phase 4 `VerificationFactorType`.
+  There is no risk-specific copy of the red-flag vocabulary, so the two cannot
+  drift apart.
+- `contribution` is never greater than `weight`, and a factor contributes at most
+  once. Both are enforced at construction.
+- `absorbed_into` is non-null exactly when `contribution` is `0` **because the
+  signal was already counted**. De-duplicated factors are kept, not dropped, so
+  the breakdown stays complete and a reader can see that a claim was
+  contradicted even though it added nothing (D-026).
+- `weights` and `thresholds` are snapshotted from the configuration in force, so
+  a stored report can be audited after the configuration moves on (D-007).
+- `evidence_coverage` and `analysis_completeness` are in `[0, 1]` and are
+  transparency measures, **not** confidence or accuracy scores.
+- `id` is `rsk_` + `sha256(origin, factor_type, cited ids)[:12]`, and
+  `red_flag_ids` are `rf_` + `sha256(code, span start, span end, matched text)[:12]`.
+  Both are derived, never minted, so a re-run is comparable to a stored report
+  and `absorbed_into` points at something durable.
+- `assessed_at` is the only wall-clock value and is excluded from every id.
+- Absence of evidence never raises the score. `INSUFFICIENT_EVIDENCE` weighs `0`;
+  `VERIFIED` and `NOT_APPLICABLE` produce no factor; and an `UNVERIFIED` result
+  produces a factor only when its reason code says a search actually completed
+  (D-027). `is_uncertainty` marks the factors that record something which could
+  not be established, as distinct from something that was found.
+
+
 ## Enumerations
 
 `evidence_type`: `REGULATORY_RECORD` | `GOVERNMENT_RECORD` | `EXCHANGE_RECORD` |
@@ -670,3 +803,7 @@ Guarantees a client may rely on:
 `MENTIONS`
 `relevance`: `HIGH` | `MEDIUM` | `LOW`
 `excerpt_origin`: `snippet` | `title`
+`risk_level`: `LOW` | `MEDIUM` | `HIGH` | `CRITICAL`
+`origin`: `RED_FLAG` | `VERIFICATION`
+`factor_type` (verification): `CONTRADICTED_CLAIM` | `UNVERIFIED_CLAIM` |
+`INSUFFICIENT_EVIDENCE`

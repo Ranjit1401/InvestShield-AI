@@ -98,6 +98,27 @@ class Settings(BaseSettings):
     risk_band_high_max: int = 50
     risk_band_critical_max: int = 90
 
+    # ---------- Risk engine: verification-derived factors (Phase 6) ----------
+    # A `CONTRADICTED` result is the strongest external finding the pipeline can
+    # produce, so it carries a weight comparable to the strongest content
+    # indicators. It only contributes at all when no Phase 1 red flag already
+    # counts the same underlying signal.
+    risk_weight_contradicted_claim: int = 25
+    # A completed search that found no confirmation for a material claim. Small
+    # on purpose: "we did not find a registration" is a gap in the record, not a
+    # finding of wrongdoing (D-006).
+    risk_weight_unverified_claim: int = 8
+    # Verification could not be completed. This is **uncertainty**, not risk, so
+    # the default weight is 0: absence of evidence must never raise the score.
+    # Raise it only as an explicit product decision, and read the coverage and
+    # completeness fields alongside it.
+    risk_weight_insufficient_evidence: int = 0
+
+    # The indicator score is capped here so a long document cannot run away with
+    # the band scale. The cap is a ceiling, never a rescaling: a document far
+    # past the cap scores the cap, not a proportionally larger number.
+    risk_score_ceiling: int = 100
+
     # ---------- Red flag engine thresholds ----------
     # A promised monthly/annual return above these percentages is treated as
     # an unrealistic-return indicator. Thresholds are promotional/promissory
