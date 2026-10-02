@@ -258,16 +258,40 @@ Beyond the checklist, three things the plan did not anticipate:
 - [ ] Investigation history queries
 - [ ] Tests
 
-## Phase 10 — Backend Test Suite `[ ]`
+## Phase 10 — Backend Test Suite `[x]` — Testing & Quality Hardening
 
-- [ ] Test 1 — suspicious investment message → HIGH indicators
-- [ ] Test 2 — legitimate-looking text → not auto-flagged as fraud
-- [ ] Test 3 — unverified adviser → `UNVERIFIED`
-- [ ] Test 4 — screenshot OCR continues pipeline
-- [ ] Test 5 — URL analysis
-- [ ] Test 6 — no external evidence → `INSUFFICIENT_EVIDENCE`
-- [ ] Test 7 — search unavailable → graceful degradation
-- [ ] Integration tests across API + DB + pipeline
+> **Naming.** This phase was carried out as **Testing & Quality Hardening**, which
+> is what the list below describes. `CURRENT_STATE.md` had labelled the same number
+> "Report generation"; that label came from `AI_PIPELINE.md`'s **Stage 11**, a
+> pipeline stage on a different numbering axis, and it has been corrected. Report
+> generation is not a numbered project phase and is not started.
+>
+> The seven scenarios below were written as a wish list when the pipeline did not
+> exist. Phases 1–9 built the pipeline, so most of them are now covered — but not
+> all seven, and the two that are not are the honest gap:
+>
+> - **Test 4 (screenshot OCR) and Test 5 (URL analysis) cannot pass.** OCR and URL
+>   ingestion are Phases 13 and 12, and `URL`/`IMAGE`/`PDF` are recognised and
+>   refused with `422`. Leaving the boxes ticked would claim coverage of code that
+>   does not exist, so they stay open and are re-labelled to say so.
+
+- [x] Test 1 — suspicious investment message → HIGH indicators
+- [x] Test 2 — legitimate-looking text → not auto-flagged as fraud
+- [x] Test 3 — unverified adviser → `UNVERIFIED`
+- [ ] Test 4 — screenshot OCR continues pipeline — **blocked: OCR is Phase 13**
+- [ ] Test 5 — URL analysis — **blocked: URL ingestion is Phase 12**
+- [x] Test 6 — no external evidence → `INSUFFICIENT_EVIDENCE`
+- [x] Test 7 — search unavailable → graceful degradation
+- [x] Integration tests across API + DB + pipeline
+
+**What Phase 10 actually delivered**, beyond the list above: a network guard that
+makes the default suite genuinely offline; API input, error-envelope and OpenAPI
+contract coverage; a per-stage failure-injection matrix; secret-leakage tests that
+plant a DSN, a provider key and a credential-shaped submission and prove none reach
+a response; retrieval-contract, query-cost and determinism coverage; and two
+production-code defect fixes (the form-encoded 422 handler, and a missing
+`StarletteHTTPException` handler). See `CURRENT_STATE.md` and the Phase 10 entry in
+`DEVELOPMENT_LOG.md`.
 
 ## Phase 11 — React Frontend `[ ]`
 

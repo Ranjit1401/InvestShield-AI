@@ -1167,3 +1167,181 @@ rather than maintained. There is no code path that can store an assessment witho
 its caveat, and no code path that can read one out without it.
 
 **Date:** 2026-10-02
+
+## D-045 — Network isolation is enforced, and the guarantee is "nothing leaves the machine"
+
+**Decision:** `tests/network_guard.py` wraps four socket entry points and is
+installed by an autouse fixture in `tests/conftest.py`. Loopback literals are exempt.
+Tests marked `@pytest.mark.integration` are exempt. The stated guarantee is that no
+traffic leaves the machine.
+
+**Context:** Until Phase 10 the suite was offline by convention: every settings
+factory passed `_env_file=None` and every provider was a fixture. That is a
+guaranteance that decays on its own. One new test constructs `Settings()` the
+ordinary way, the developer has a real `GROQ_API_KEY` in `.env`, and the test makes
+a live call — which will usually still *pass*, because a real provider returns
+plausible data. That is the failure worth making impossible: a test silently
+succeeding on someone else's API key.
+
+Writing the guard exposed how weak the original claim was. `network_guard.py`
+defined an `autouse` fixture and `conftest.py` imported the module, but an `autouse`
+fixture is only collected from a conftest or a plugin, so **the guard had never once
+blocked a connection.** The suite was green either way, and nothing in 2085 tests
+noticed. A test now attempts a connection from inside an ordinary test and requires it
+to be blocked, which is the only kind of test that can catch this.
+
+**Alternatives:**
+
+- *A warning instead of an exception.* Rejected: a warning is missed, and a
+  ``NetworkAccessBlocked`` exception names the target so the offending test is
+  fixable from its own failure output.
+- *Blocking loopback too.* Rejected, and not on principle: `TestClient(app)` as a
+  context manager starts an anyio blocking portal, and Windows has no
+  `socketpair`, so CPython emulates it with a real TCP connection to `127.0.0.1`.
+  Blocking it breaks every API test on Windows for a reason unrelated to isolation.
+  Only *literals* are exempt, so nothing hides behind a name — `localhost` still has
+  to resolve, and resolution is still blocked. A hostname beginning with `127.` is
+  not exempt; a test pins that, because the obvious prefix check would allow
+  `127.0.0.1.example.invalid`, which anyone can register.
+- *Patching at the C level to catch `psycopg2`.* Rejected: libpq does its own DNS
+  and TCP and never enters Python's `socket` module, so a Python-level guard cannot
+  see it by construction. Recorded as a limit instead of a defect, and the reason the
+  suite's poison DSN points at loopback port 1 rather than a public host.
+- *Leaving it to integration marks alone.* Rejected: the default suite must be
+  offline whether or not anyone remembered a marker.
+
+**Reason:** "The tests do not hit the network" is a property of the harness, not of
+the tests. Stating the guarantee as "nothing leaves the machine" is both true and
+checkable, and it is narrower than "no sockets at all" in a way that matches what
+the suite actually needs.
+
+**Date:** 2026-10-02
+
+## D-046 — The safety vocabulary is enforced at every boundary text crosses
+
+**Decision:** The Phase 6 judgement-and-advice ban is re-asserted over the adapter,
+the JSON response, the database, the `GET` response, the history entry, error bodies
+and the OpenAPI document — not only over the risk engine's own output.
+
+**Context:** `tests/test_risk_safety.py` was written in Phase 6 and proved the
+*engine* cannot emit a verdict. Phase 10 added two layers that re-emit text it
+produced: the Phase 8 adapter and the Phase 9 repository. Either could pass an
+assessment through as a projection and lose `warnings`, which is where
+`SCORE_NOT_A_PROBABILITY` lives — leaving a *retrieved* investigation without the
+caveat while every engine test still passed. A guarantee that holds at one layer and
+is unverified at the next is a guarantee waiting for the layer that quietly breaks
+it.
+
+The machinery moved from the test module to `tests/vocabulary.py` rather than being
+copied, because two matchers free to disagree about what counts as a violation would
+make the whole exercise decorative.
+
+**Alternatives:**
+
+- *Trusting the engine test to cover the boundaries.* Rejected: it cannot, by
+  construction. It never constructs an adapter or a repository.
+- *Copying the matcher into a new test module.* Rejected: two definitions of a
+  violation, free to drift.
+- *Scanning every response string for banned words.* Rejected as unsound: a
+  scammer's own message contains the word "scam", and reproducing it is the product
+  working. Quoted evidence and submitted content are excluded, and the exclusion is
+  itself tested.
+
+**Reason:** Text that leaves the engine passes through adapters, a serialiser, a
+database and a response model. Each is a place a caveat can be dropped, and each
+needs the check, not just the first one.
+
+**Date:** 2026-10-02
+
+## D-047 — Leak-safety is proven by planting the secret, not by reading the handler
+
+**Decision:** Security tests inject a real-shaped secret into a genuine failure and
+assert it does not reach a response. They do not assert on the source of a handler.
+
+**Context:** Leak paths are not where they look. A DSN in a SQLAlchemy message does
+not arrive through the handler that formats SQLAlchemy errors; it arrives because the
+message is logged, the log record attaches to the exception, and a *different* handler
+renders it. A submitted password does not arrive through the validation handler that
+strips values; it arrives through the handler that builds the envelope and then falls
+through to a generic path. Reading a handler proves what it does; it cannot prove what
+it is not handed.
+
+This is not theoretical here. The form-encoded 422 handler really did crash, and it
+crashed *inside* the error path, with a credential in the payload. Only an executed
+test found it.
+
+**Alternatives:**
+
+- *Assert that a handler's source contains no f-string of `exc`.* Rejected: proves
+  nothing about the exception actually being raised.
+- *Snapshot the full error envelope for one failure mode.* Rejected: the envelope was
+  already covered; the risk is in what reaches it, not its shape.
+- *Mock the framework.* Rejected: the form-body defect lived in the interaction
+  between Starlette and Pydantic, which a mock would have removed along with the
+  bug.
+
+**Reason:** The question is not "does this code look careful" but "can this string
+reach the client". Only the second is testable.
+
+**Date:** 2026-10-02
+
+## D-048 — Query cost is asserted as flatness in the data, not as a magic number
+
+**Decision:** N+1 regressions are detected by comparing the statement count for one
+stored run against the count for twenty, not by asserting a fixed number of
+statements.
+
+**Context:** Phase 9 denormalises seven counts onto the `investigations` row and
+loads every relationship with `lazy="selectin"`, so a listing costs a fixed number of
+statements regardless of history size. Asserting that number outright would encode
+it, and the next legitimate query would break the test — at which point the
+pressure is to raise the threshold, which is how an N+1 test quietly stops working.
+
+Flatness catches the failure that matters, cost that *scales with the data*, and
+nothing else. Merging the count and the page into a window function is an
+improvement; flatness would not object, and only the budget test would, which is the
+right friction.
+
+**Alternatives:**
+
+- *Assert an exact statement count.* Rejected: brittle, and invites the threshold
+  ratchet described above.
+- *Time the endpoint.* Rejected: a wall-clock assertion is flaky on shared CI and
+  measures the machine rather than the query.
+- *A benchmark suite.* Rejected: Phase 10 has no performance budget, and a benchmark
+  with no budget is a number nobody acts on.
+
+**Reason:** The property worth protecting is independence from data size. It is also
+the only one that stays true as the schema grows, which a magic number does not.
+
+**Date:** 2026-10-02
+
+## D-049 — `completed_at` stays `null`; the pipeline will not invent a time it never measured
+
+**Decision:** `completed_at` remains absent from `InvestigationState` and renders as
+`null` in the API. Phase 10 records it as correct behaviour and corrects the
+documentation rather than fixing the code.
+
+**Context:** Phase 7 declared the field and no node has ever written it. Phase 9
+persists it faithfully, so the column exists, the response exposes it, and the value
+is always `null`. The project documentation had described it as populated, and
+`CURRENT_STATE.md` separately claimed a retrieved investigation was "byte-identical"
+to the live one. Both claims outran the code.
+
+**Alternatives:**
+
+- *Stamp `completed_at` in the last node to run.* Rejected: a run whose last stage
+  failed never reaches a completion node, so the field would be populated exactly
+  when it is least meaningful. A clock reading at storage time is worse still â€"
+  it measures when the row was written, not when the work finished.
+- *Derive it from `started_at` plus the last timeline entry.* Rejected: that is an
+  inference presented as a measurement.
+- *Remove the field from the schema.* Rejected for now: a client written against
+  Phase 8 expects the key. Removing it is a breaking change to a documented contract,
+  and the honest fix is to populate it when a node can measure it.
+
+**Reason:** A completion time that the pipeline did not measure would be a fabricated
+fact in the one field a client is most likely to use for reporting. `null` says
+"unknown" and is correct; a number would say something the system does not know.
+
+**Date:** 2026-10-02

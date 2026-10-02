@@ -718,7 +718,19 @@ its row. The mapping is one-to-one:
 | 5.5 Retrieval, 5–6 Verification | `VerificationService` (Phase 4) | `verification` |
 | 7–8 Evidence | `EvidenceService` (Phase 5) | `evidence` |
 | 9 Risk Calculation | `RiskService` (Phase 6) | `risk` |
-| 10–12 Report, translation | *not built* | — (Phase 10, 15, 16) |
+| 10–12 Report, translation | *not built* | — (unassigned; see below) |
+
+> **"Stage" here is not "phase".** This document numbers *pipeline stages*, and the
+> other documents number *project phases*; the two numbering schemes are unrelated
+> and were conflated once. Stage 11 Report Generation is **not** project Phase 10.
+> Project Phase 10 is Testing & Quality Hardening, which is complete — it built no
+> pipeline stage, and stages 10–12 remain unbuilt. They are left unassigned to a
+> phase number deliberately: `DATABASE_SCHEMA.md` already declined to create the
+> `reports` table for the same reason, and a report is the first thing that would
+> want one. Assigning a number now would pre-empt a design nobody has asked for.
+> The requirements a report must meet are recorded under "Next Exact Task" in
+> `CURRENT_STATE.md`, and the safety vocabulary it must satisfy is the one Phase 10
+> now enforces in `tests/api/test_api_risk_safety.py`.
 
 Note that stages 5.5 and 6 collapse into one graph node. Search is not a separate
 step: `VerificationService` issues the queries and retrieves the results, and the
@@ -768,7 +780,7 @@ run_investigation()  →  InvestigationState  →  serialize_investigation()  �
 | 9 risk | `risk_assessment`, the Phase 6 object verbatim, caveat included |
 | every stage | `timeline` — what ran, not what it concluded |
 | degradation | `limitations` (codes) and `warnings` (readable) |
-| 10–12 | *not built* — Phase 10, 15, 16 |
+| 10–12 | *not built* — no phase assigned |
 
 ### Status codes, by whose fault
 

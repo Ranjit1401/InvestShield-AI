@@ -19,6 +19,12 @@ for candidate in (BACKEND_DIR, REPO_ROOT):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
+from tests.network_guard import (  # noqa: E402
+    NetworkAccessBlocked,
+    is_integration,
+    no_network,
+)
+
 from app.core.config import Settings  # noqa: E402
 from app.db.session import Database  # noqa: E402
 from app.graph.context import GraphContext  # noqa: E402
@@ -210,3 +216,40 @@ def rich_context(db_settings: Settings) -> GraphContext:
             red_flag_engine=RecordingRedFlagEngine(flags=(build_flag(),)),
         )
     )
+
+
+__all__ = [
+    "NetworkAccessBlocked",
+    "no_network",
+]
+
+
+@pytest.fixture(autouse=True)
+def _offline_by_default(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Block outbound network access around every test that did not opt out.
+
+    **This fixture has to live in `conftest.py`, and that is not a style choice.**
+    An `autouse` fixture is only collected from a file pytest collects as a plugin
+    or a conftest. `tests/network_guard.py` holds the implementation, but importing
+    it — which is all that was being done — does not register its fixtures. The
+    guard therefore existed, was importable, and was never installed once. The
+    suite was green either way, which is exactly why nobody noticed:
+    `tests/test_network_guard.py` asserts the guard is present from inside a normal
+    test, and that assertion is what caught it.
+
+    An integration-marked test is deliberately allowed to reach the network, so the
+    guard is skipped for it rather than left to fail. Otherwise the marker would
+    mean "run and immediately fail", which is not opt-in at all.
+
+    Args:
+        request: The pytest request, used to read the test's markers.
+
+    Yields:
+        `None` for the duration of the test.
+    """
+    if is_integration(request.node):
+        yield
+        return
+
+    with no_network():
+        yield

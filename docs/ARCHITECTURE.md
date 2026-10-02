@@ -870,6 +870,41 @@ is dropped from the response body while `GraphError.error_type` is kept: an erro
 diagnoses a defect for an operator, whereas a warning is something a user may
 read and its diagnostic field is not for them.
 
+**Phase 10 note — these boundaries are now tested by planting the secret.**
+`tests/api/test_secret_leakage.py` injects a real-shaped credential into a genuine
+failure and asserts it does not reach a response: a
+`postgresql://user:password@…` DSN in an unreachable database, a provider key in a
+search failure, a `GROQ_API_KEY` in an extraction exception, a DSN quoted inside a
+provider error, and credential-shaped values in an unknown field, a wrong-type
+field, a form body, malformed JSON, a query parameter and a URL path. No response may
+contain a traceback, a stack trace, SQL, a DSN, a password, an API key or a
+filesystem path (D-047).
+
+The reason for planting rather than reading handlers is that leak paths are not where
+they look. A DSN in a SQLAlchemy message does not arrive through the handler that
+formats SQLAlchemy errors; it arrives because the message is logged, the log record
+attaches to the exception, and a *different* handler renders it. This was not
+theoretical: the form-encoded 422 handler really did crash, inside the error path,
+with a credential in the payload.
+
+Two further boundaries were found or confirmed in Phase 10:
+
+- **Pydantic validation details carry submitted values by default.** The 422 handler
+  now copies only `type`, `loc` and `msg`, so a submitted secret is excluded by
+  construction rather than by filtering.
+- **`/api/health` names credential environment variables.** An unauthenticated health
+  check returns detail such as `"GROQ_API_KEY is not set."` No value is exposed and
+  the `configured` boolean a legitimate client reads is unaffected, but on a public
+  deployment the wording is reconnaissance. Left as Phase 8 behaviour, recorded as a
+  known limitation, and pinned by
+  `TestHealthReportsConfigurationWithoutDisclosingIt`.
+
+**Outstanding, not a Phase 10 item.** A credential was committed in an earlier state
+of this repository and remains in Git history. Rotating it is an operational action
+and history rewriting is out of scope. The current tree is clean: `.env` is
+gitignored, every settings factory passes `_env_file=None`, and no `.env` value is
+read, printed or asserted on anywhere.
+
 ### 2.3d Orchestration layer (Phase 7, complete)
 
 `app/graph/` is the seam between the services and everything that drives them. It
@@ -1148,3 +1183,85 @@ investigation.
 
 Because `public_id` is not unique, two runs of the same content both appear in
 the history and `load()` returns the most recent.
+
+---
+
+### 2.3g Test architecture (Phase 10, complete)
+
+The test suite surrounds the architecture above; it does not replace or duplicate
+any part of it. Every test that claims something about a layer exercises the real
+layer, with only the *outside world* faked — a search provider, a clock, a
+repository. A test that stubbed the graph to test the API, or the adapter to test
+the repository, would assert that the stub behaves as intended.
+
+#### Network isolation
+
+`tests/network_guard.py` wraps `socket.socket.connect`, `connect_ex`,
+`socket.create_connection` and `socket.getaddrinfo`. A blocked call raises
+`NetworkAccessBlocked` naming the target and the remedy. The autouse fixture that
+installs it lives in `tests/conftest.py` — **not** in the guard module, because an
+`autouse` fixture is only collected from a conftest or a plugin, and importing a
+module registers nothing. That distinction cost the project its first draft of this
+guard: it was importable, looked installed, and had never blocked a connection
+(D-045).
+
+The guarantee is that **no traffic leaves the machine**. Two exemptions:
+
+- **Loopback literals**, because `TestClient(app)` as a context manager starts an
+  anyio blocking portal and Windows emulates `socketpair` with a real loopback TCP
+  connection. Only literals qualify; `localhost` still has to resolve, and
+  resolution is still blocked. A hostname beginning with `127.` does not qualify.
+- **`@pytest.mark.integration`** tests, which are deselected by default.
+
+**The guard cannot see `psycopg2`.** libpq performs its own DNS and TCP in C and
+never enters Python's `socket` module, so a database pointed at a routable host
+would connect regardless. This is why the suite's poison DSN targets loopback port
+1 — refused by the kernel in milliseconds — and why no test points a database
+anywhere else.
+
+#### Shared helpers
+
+| File | Role |
+| --- | --- |
+| `tests/network_guard.py` | The guard itself: four wrapped entry points, `allow_network`, `is_integration` |
+| `tests/vocabulary.py` | The Phase 6 judgement-and-advice matcher, extracted so one definition governs a violation across every layer |
+| `tests/contract_helpers.py` | Response-walking helpers: every string in a body at a path, timestamp stripping, ignored paths |
+| `tests/graph/graph_factories.py` | Recording services and real offline dependencies (Phase 7) |
+| `tests/persistence_factories.py` | Investigation content and run helpers (Phase 9) |
+
+#### Coverage by concern
+
+| Concern | Modules |
+| --- | --- |
+| API input and error contract | `tests/api/test_api_contract_inputs.py`, `test_api_errors.py` |
+| OpenAPI surface | `tests/api/test_openapi_contract.py`, `test_api_schemas.py` |
+| Graph wiring | `tests/api/test_graph_integration.py`, `tests/graph/` |
+| Status semantics | `tests/api/test_status_semantics.py` (D-037) |
+| Safety vocabulary | `tests/test_risk_safety.py`, `tests/api/test_api_risk_safety.py` |
+| Failure injection | `tests/test_failure_injection.py` |
+| Secret leakage | `tests/api/test_secret_leakage.py` |
+| Persistence and retrieval | `tests/db/`, `tests/api/test_persistence_endpoints.py`, `test_retrieval_contract.py` |
+| Query cost | `tests/db/test_query_efficiency.py`, `tests/api/test_query_efficiency.py` (D-048) |
+| Determinism | `tests/test_determinism.py`, `tests/api/test_determinism_http.py` |
+| Isolation itself | `tests/test_network_guard.py` |
+
+#### Two conventions worth knowing
+
+**Semantic comparison, not byte comparison.** Where a wall-clock timestamp is
+involved, states are compared through `semantic_view` (`app/graph/state.py`), which
+strips `TIMESTAMP_FIELDS` at every depth and reduces the timeline to
+`(stage, status, message)`. In the API the same field is named `at`, so
+`RESPONSE_TIME_FIELDS` adds it — the two sets are combined rather than one replacing
+the other, so a new timestamp field has to be added deliberately in both places.
+
+Note what the fixed test clock does and does not cover: it pins the graph's
+`started_at`, but Phase 5 and Phase 6 stamp `built_at` and `assessed_at` from their
+own clocks. Raw states therefore differ by microseconds, which is exactly what
+`semantic_view` exists to exclude.
+
+**Flatness, not a magic number.** N+1 regressions are detected by comparing the
+statement count for one stored run against twenty, not by asserting a fixed count
+(D-048). `list_page` costs a count query, a page query, and one per child collection
+— the last because every relationship is `lazy="selectin"`, which is what makes the
+cost independent of history size. A fixed-count assertion would break on the next
+legitimate query and invite the threshold ratchet that quietly retires an N+1 test.

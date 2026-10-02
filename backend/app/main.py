@@ -19,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.errors import UNPROCESSABLE_CONTENT, ApiError
 from app.api.routes import health_router, investigations_router
@@ -28,6 +29,73 @@ from app.db.session import Database
 from app.graph.context import build_default_context
 
 logger = get_logger(__name__)
+
+#: Keys copied from a pydantic validation error into the response `detail`.
+#:
+#: `input` is deliberately **not** among them. It holds the value the client sent,
+#: which is why two of the three exclusions matter: echoing it reflects the whole
+#: request body back to whoever sent it, and for a client that mistakenly puts a
+#: credential in a field this API forbids, that reflection hands the credential
+#: straight back in the error. `ctx` can hold the same class of value, and `url`
+#: is documentation metadata.
+_ALLOWED_VALIDATION_KEYS: tuple[str, ...] = ("type", "loc", "msg")
+
+#: Stable codes for the failures the router itself raises, so a client can branch
+#: on `error.code` rather than on the status number.
+_HTTP_ERROR_CODES: dict[int, str] = {
+    404: "ROUTE_NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+}
+
+#: Fixed wording per framework status. Says what happened to the request; never
+#: anything about the deployment, which is the usual source of detail in a
+#: framework's default body.
+_HTTP_ERROR_MESSAGES: dict[int, str] = {
+    404: "No endpoint matches that path and method.",
+    405: "That endpoint does not accept this method.",
+    401: "Authentication is required for that endpoint.",
+    403: "That endpoint is not available.",
+}
+
+
+def _http_message(status_code: int) -> str:
+    """Return fixed wording for a framework-raised HTTP failure.
+
+    Args:
+        status_code: The status the router raised with.
+
+    Returns:
+        Wording safe to surface, generic when the status has none of its own.
+    """
+    return _HTTP_ERROR_MESSAGES.get(
+        status_code, "The request could not be handled as sent."
+    )
+
+
+def _validation_detail(exc: RequestValidationError) -> list[dict[str, object]]:
+    """Reduce validation errors to the keys a client may see.
+
+    Pydantic's `errors()` cannot be handed straight to `JSONResponse`. Its `input`
+    is the submitted value, and for a request whose body is not a JSON object at
+    all — a client that posted form data to a JSON endpoint, which is the most
+    common shape of that mistake — that value is raw `bytes`. `json.dumps` then
+    raises `TypeError` *inside the error handler*, which escapes as a `500`
+    `INTERNAL_ERROR`: a malformed request reported as a server fault.
+
+    Copying only `type`, `loc` and `msg` fixes both halves at once. The detail
+    stays JSON-serialisable by construction rather than by luck, and no submitted
+    value is reflected back to the sender.
+
+    Args:
+        exc: The validation error FastAPI raised.
+
+    Returns:
+        One dict per validation error, containing only the allowed keys.
+    """
+    return [
+        {key: error[key] for key in _ALLOWED_VALIDATION_KEYS if key in error}
+        for error in exc.errors()
+    ]
 
 DESCRIPTION = """
 **Investigate Before You Invest.**
@@ -131,7 +199,7 @@ def _register_error_handlers(app: FastAPI) -> None:
                 "error": {
                     "code": "VALIDATION_ERROR",
                     "message": "The request could not be validated.",
-                    "detail": exc.errors(),
+                    "detail": _validation_detail(exc),
                 }
             },
         )
@@ -145,6 +213,31 @@ def _register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": {"code": exc.code, "message": exc.message, "detail": exc.detail}},
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        """Render a framework-raised HTTP failure in the documented envelope.
+
+        An unmatched path and a wrong method are raised by the router, below every
+        application handler, so without this they escape as Starlette's default
+        `{"detail": ...}`. That is the one failure shape a client would meet that
+        its error handling does not cover — and the likeliest one a client meets,
+        because a mistyped URL is the most common mistake there is.
+        """
+        logger.info(
+            "Framework HTTP error",
+            extra={"status_code": exc.status_code},
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": _HTTP_ERROR_CODES.get(exc.status_code, "HTTP_ERROR"),
+                    "message": _http_message(exc.status_code),
+                    "detail": None,
+                }
+            },
         )
 
     @app.exception_handler(Exception)

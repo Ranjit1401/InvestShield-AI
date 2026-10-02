@@ -127,15 +127,34 @@ every run.
 Seven counts are stored on the run rather than aggregated on read, so the history
 endpoint can list a hundred runs with one indexed query instead of a thousand
 joins. A count that disagrees with its children is worse than no count, so the
-agreement is pinned by a test in `backend/tests/db/test_round_trip.py`.
+agreement is pinned by a test in `backend/tests/db/test_round_trip.py`, and the
+agreement is also checked from the outside — that the number on a history row equals
+the length of the collection in the retrieved run — by
+`test_the_counts_on_a_list_row_agree_with_the_retrieved_run` in
+`backend/tests/api/test_query_efficiency.py`.
+
+Phase 10 also pinned the *cost* of the listing, which is the reason the counts are
+denormalised at all. A count query, a page query, and one per child collection
+(every relationship is `lazy="selectin"`) — a total independent of how many runs are
+stored. `backend/tests/db/test_query_efficiency.py` asserts that flatness by
+comparing one stored run against twenty rather than by asserting a fixed statement
+count, so the next legitimate query does not break the test and the next *per-row*
+query is caught immediately (D-048).
 
 ### `completed_at` is currently always `NULL`
 
 Phase 7 declares `completed_at` on the state and the Phase 8 response exposes it,
-but **no graph node writes it**. This is a Phase 7 gap, not a Phase 9 one, and it
-is recorded here rather than papered over: storage preserves whatever the state
-carries, including the absence, so the round trip stays exact. Inventing a finish
-time at storage time would be a claim the pipeline never made.
+but **no graph node writes it**. The key is *absent* from `InvestigationState` — not
+present-and-null — and the adapter renders it as `null`. This is a Phase 7 gap, not a
+Phase 9 or Phase 10 one, and it is recorded here rather than papered over: storage
+preserves whatever the state carries, including the absence, so the round trip stays
+exact. Inventing a finish time at storage time would be a claim the pipeline never
+made (D-049).
+
+Pinned by `test_completed_at_is_still_null_after_a_round_trip` in
+`backend/tests/api/test_retrieval_contract.py`, which also asserts that storage does
+not default the column to "now" on write — that would make a retrieved run look
+finished when it was not, in the one field a client is most likely to report on.
 
 ---
 
@@ -618,7 +637,7 @@ These are the substantive changes:
 | Earlier sketch | Now | Why |
 | --- | --- | --- |
 | `users` table, `investigations.user_id` | **Not created** | There is no authentication in this version. An empty placeholder table looks decided; nothing has been asked to design a user model. |
-| `reports` table, 1:1 with an investigation | **Not created** | Phase 10. The Phase 6 assessment data it was going to hold is now in `risk_assessments` + `risk_factors`, where the trace survives. |
+| `reports` table, 1:1 with an investigation | **Not created** | No phase assigned. The Phase 6 assessment data it was going to hold is now in `risk_assessments` + `risk_factors`, where the trace survives. A report is the first thing that would want this table, so it should be designed when a report is, not before. |
 | `investigations.public_id` unique UUID | `public_id` = `inv_<16 hex>`, **not unique** | The id is a content digest, so a unique constraint would make re-running content an error. `id` is the primary key. |
 | `status` ∈ `PENDING \| PROCESSING \| COMPLETED \| FAILED` | `COMPLETED \| PARTIAL \| FAILED` | The graph is synchronous (D-036), so there is no queued or running state. `PARTIAL` is what the sketch lacked, and it matters: it is how a degraded run stays distinguishable from a clean one (D-006). |
 | `input_text` / `input_url` / `file_name` | `raw_input`, `extracted_text` | One column for the submitted content. `URL`, `IMAGE` and `PDF` are recognised and refused in this version, so a per-kind column set would describe ingestion that does not exist yet. |

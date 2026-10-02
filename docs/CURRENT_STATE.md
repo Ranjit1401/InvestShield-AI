@@ -7,19 +7,37 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 9 — Database persistence — **COMPLETE**
-**Current Subphase:** Phase 10 — Report generation — **NOT STARTED**
-**Last Completed Task:** Phase 9 — the persistence layer. Fourteen tables in
-`app/models/investigation.py` registered on `Base.metadata`; a repository in
-`app/repositories/investigations.py` that round-trips a finished
-`InvestigationState` through them and back into an `InvestigationState`; schema
-creation in the `lifespan` handler; and two new endpoints,
-`GET /api/investigations/{id}` and `GET /api/investigations`. The `POST`
-endpoints now store what they return. The load-bearing property is that a
-retrieved investigation is byte-identical to the live one, because both are
-shaped by the same Phase 8 adapter from the same domain models — there is no
-second rendering path that could disagree.
-**Latest Commit:** `feat: implement investigation persistence` (Phase 9)
+**Current Phase:** Phase 10 — Testing & Quality Hardening — **COMPLETE**
+**Current Subphase:** Phase 11 — React frontend — **NOT STARTED**
+
+> **Phase 10 naming, reconciled.** Two project documents disagreed about what
+> Phase 10 is. `IMPLEMENTATION_PLAN.md` has always called it "Backend Test Suite";
+> this file's phase table called it "Report generation", which is
+> `AI_PIPELINE.md`'s **Stage 11** — a pipeline stage, on a different numbering axis,
+> not a project phase. **Phase 10 is Testing & Quality Hardening.** Report
+> generation is unstarted and remains later scope; it is deliberately *not* renumbered
+> into a phase here, because inventing a number for it is exactly the kind of
+> premature decision `DATABASE_SCHEMA.md` was careful to avoid when it declined to
+> create the `reports` table.
+
+**Last Completed Task:** Phase 10 — testing and quality hardening. No new product
+behaviour: the architecture in `ARCHITECTURE.md` §2.3g is unchanged, and the only
+production-code change was a defect fix in the 422 handler (below). The work was
+coverage, isolation and contract proof:
+
+- A **network guard** that makes the default suite genuinely offline, replacing a
+  guarantee that had only ever been a matter of discipline.
+- **API contract** coverage for inputs, error envelopes and the OpenAPI document.
+- A **failure-injection matrix** across every stage, and **security** tests that
+  plant a DSN, a provider key and a credential-shaped submission and prove none of
+  them reaches a response.
+- **Persistence** coverage for the round trip, the retrieval contract, history
+  ordering and query cost.
+- **Determinism** coverage for the content-derived id and for semantic
+  reproducibility across the graph, storage and HTTP.
+- Two real defects found and fixed along the way — see "Defects found in Phase 10".
+
+**Latest Commit:** `test: harden backend quality and regression coverage` (Phase 10)
 **Working Tree:** see `git status`.
 
 ### Phase Status Summary
@@ -36,9 +54,40 @@ second rendering path that could disagree.
 | Phase 7 | LangGraph orchestration | **COMPLETE** |
 | Phase 8 | API layer (FastAPI endpoints) | **COMPLETE** |
 | Phase 9 | Database models & repositories | **COMPLETE** |
-| Phase 10 | Report generation | **NEXT** |
+| Phase 10 | Testing & quality hardening | **COMPLETE** |
+| Phase 11 | React frontend | **NEXT** |
+
+> Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
+> Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is
+> **not** a numbered project phase and is not started.
 
 ### Files Recently Changed
+
+**Phase 10 — testing and quality hardening:**
+
+```
+backend/app/main.py                              (2 defect fixes: 422 handler and HTTP exception handler)
+backend/tests/conftest.py                        (autouse network-guard fixture)
+backend/tests/network_guard.py                   (new — the guard itself)
+backend/tests/vocabulary.py                      (new — the judgement/advice matcher, shared)
+backend/tests/contract_helpers.py                (new — response-walking helpers)
+backend/tests/test_risk_safety.py                (machinery moved out to tests/vocabulary.py)
+backend/tests/test_failure_injection.py          (new — deterministic failure matrix)
+backend/tests/test_network_guard.py              (new — proves the guard is installed)
+backend/tests/test_determinism.py                (new — id derivation and semantic reproducibility)
+backend/tests/api/test_api_contract_inputs.py    (new)
+backend/tests/api/test_openapi_contract.py       (new)
+backend/tests/api/test_graph_integration.py      (new)
+backend/tests/api/test_status_semantics.py       (new)
+backend/tests/api/test_api_risk_safety.py        (new)
+backend/tests/api/test_secret_leakage.py         (new)
+backend/tests/api/test_determinism_http.py       (new)
+backend/tests/api/test_retrieval_contract.py     (new)
+backend/tests/api/test_query_efficiency.py       (new)
+backend/tests/db/test_query_efficiency.py        (new)
+```
+
+**Phase 9 — persistence:**
 
 ```
 backend/app/models/__init__.py                   (new — registers every table on Base.metadata)
@@ -60,19 +109,136 @@ backend/tests/db/test_history.py                 (new)
 backend/tests/db/test_schema.py                  (new)
 backend/tests/api/test_persistence_endpoints.py  (new)
 docs/DATABASE_SCHEMA.md                          (rewritten to match the implemented schema)
-docs/ARCHITECTURE.md / DECISIONS.md / DEVELOPMENT_LOG.md / CURRENT_STATE.md
 ```
+
+### The retrieval contract, stated correctly
+
+An earlier version of this file said a retrieved investigation is **byte-identical**
+to the live one. That was an overclaim, and it is corrected here because the
+difference matters to anyone reasoning about what the contract protects.
+
+**The guarantee is semantic equivalence.** Every substantive field — claims,
+entities and their relationships, red flags with their spans, verification results,
+evidence with its provenance, the risk assessment with its factors and its caveat,
+warnings, errors, and the timeline's decisions — survives storage and comes back
+equal. Both paths are shaped by the same Phase 8 adapter from the same domain
+models, so there is no second rendering path that could disagree (D-041).
+
+Three precisions:
+
+1. **Timestamps are stored, not regenerated.** A `GET` returns the `started_at` the
+   run actually recorded. So `POST` then `GET` currently yields byte-equal bodies —
+   a *stronger* property than the contract requires. The contract does not depend on
+   it: if a future phase regenerates a timestamp on read, retrieval is still correct
+   and only the exact-equality test needs updating. Both forms are asserted, in
+   `tests/api/test_retrieval_contract.py`.
+2. **`completed_at` is `null`, always** — see Known Bugs 1.
+3. **Two runs of identical content share an id and are not one retrievable body.**
+   The public id is a content fingerprint; Phase 9's surrogate key is what lets both
+   runs be stored. `GET` by that id returns the *newest* run, while both remain
+   listed in history. "Identical content implies an identical response" is true for
+   any single run and false as a statement about two runs.
 
 ### Tests Passing
 
 ```
 cd backend && python -m pytest
-2085 passed, 4 deselected
+2510 passed, 4 deselected
 ```
 
-**Zero failures.** Baseline before Phase 9 was `1997 passed, 4 deselected`. Phase 9
-added **88 tests** (`tests/db/`, `tests/api/test_persistence_endpoints.py`) and
-modified **no** Phase 1-8 test.
+**Zero failures.** The four deselected are the `integration`-marked tests, which
+need a real external service and are excluded by `pytest.ini`
+(`addopts = -q --strict-markers -m "not integration"`).
+
+Phase 9 closed at `2085 passed, 4 deselected`. Phase 10 added **425 tests** across
+13 new modules and changed no existing assertion's meaning. The one existing file
+touched, `tests/test_risk_safety.py`, had its matcher moved into
+`tests/vocabulary.py` with no test added, removed or weakened.
+
+| Area | Collected | Module |
+| --- | --- | --- |
+| API input contract | 62 | `tests/api/test_api_contract_inputs.py` |
+| OpenAPI contract | 46 | `tests/api/test_openapi_contract.py` |
+| Graph wiring (AST + runtime) | 34 | `tests/api/test_graph_integration.py` |
+| Status semantics | 36 | `tests/api/test_status_semantics.py` |
+| Risk safety over the API | 34 | `tests/api/test_api_risk_safety.py` |
+| Secret leakage | 33 | `tests/api/test_secret_leakage.py` |
+| Failure injection | 58 | `tests/test_failure_injection.py` |
+| Network guard | 24 | `tests/test_network_guard.py` |
+| Determinism | 68 | `tests/test_determinism.py` (65) + `tests/api/test_determinism_http.py` (3) |
+| Retrieval contract | 14 | `tests/api/test_retrieval_contract.py` |
+| Query cost / N+1 | 16 | `tests/db/test_query_efficiency.py` (8) + `tests/api/test_query_efficiency.py` (8) |
+| **Total** | **425** | |
+
+Counts are what pytest collects, which is larger than the number of `def test_`
+functions wherever a test is parametrised — the status-semantics and failure-injection
+modules in particular earn much of their coverage from parameterisation over input
+shapes and error codes.
+
+### Defects found in Phase 10
+
+Two were real bugs in production code. Both are fixed; the rest were Phase 10's own
+test code and are noted only because they say something about the design.
+
+1. **The 422 handler crashed on form-encoded bodies.** It assumed Pydantic's
+   `input` value was JSON-serialisable. For a form body it is raw `bytes`, so
+   serialising it raised `TypeError` *inside* the error handler, which fell through
+   to a generic `500 INTERNAL_ERROR` — turning a clean `422` into an internal error,
+   and doing so with a submitted credential in the payload. Fixed by
+   `_validation_detail()` in `app/main.py`, which copies only `type`, `loc` and
+   `msg` and so excludes submitted values by construction. Pinned by
+   `test_a_credential_in_form_data_is_not_reflected`.
+2. **No handler for `StarletteHTTPException`.** A `404` on an unknown path and a
+   `405` on a wrong method bypassed the error envelope entirely and returned
+   FastAPI's default body. Fixed with a handler mapping `404 → ROUTE_NOT_FOUND` and
+   `405 → METHOD_NOT_ALLOWED` in the documented envelope.
+
+Two more were found in Phase 10's *own* additions, which is worth recording because
+each would have been invisible:
+
+3. **The network guard was never installed.** `tests/network_guard.py` defined an
+   `autouse` fixture, and `conftest.py` imported the module — but an `autouse`
+   fixture is only collected from a file pytest treats as a conftest or a plugin, so
+   importing the module registered nothing. The guard existed, was importable, and
+   had never once blocked a connection. The suite was green either way, which is
+   exactly why it went unnoticed. Fixed by defining the fixture in
+   `tests/conftest.py`; `tests/test_network_guard.py` now asserts from inside a
+   normal test that a connection is blocked, so this cannot recur silently.
+4. **`allow_network(host)` did not work as documented for DNS.** An entry with no
+   port was documented as permitting any port, but `_is_allowed` matched only an
+   exact `(host, port)` pair, so a `getaddrinfo` call — which is always handed a
+   concrete port — was still blocked. Fixed, and pinned.
+
+### Network isolation
+
+`tests/network_guard.py`, installed by an autouse fixture in `tests/conftest.py`,
+wraps four entry points: `socket.socket.connect`, `socket.socket.connect_ex`,
+`socket.create_connection` and `socket.getaddrinfo`. A blocked call raises
+`NetworkAccessBlocked` naming the target and the remedy, so an offending test fails
+loudly instead of quietly succeeding on a developer's real API key.
+
+**The guarantee is that no traffic leaves the machine.** Two exemptions, both
+deliberate and both pinned by tests so neither can widen quietly:
+
+- **Loopback literals.** `TestClient(app)` used as a context manager starts an anyio
+  blocking portal, and Windows has no `socketpair`, so CPython emulates it with a
+  real TCP connection to `127.0.0.1`. Without this exemption the guard breaks every
+  API test on Windows for a reason unrelated to isolation. Only literals are exempt —
+  the name `localhost` still has to resolve, and resolution is still blocked, so
+  nothing hides behind it. A hostname beginning with `127.` is *not* exempt, which a
+  test pins because the obvious prefix check would allow
+  `127.0.0.1.example.invalid`.
+- **Tests marked `@pytest.mark.integration`**, which are deselected by default
+  anyway. No live service is required to run the suite.
+
+**One library bypasses the guard entirely.** `psycopg2` connects through libpq,
+which does its own DNS and TCP in C and never enters Python's `socket` module. A
+test pointed at a real PostgreSQL host would therefore make a live connection that
+the guard cannot see. This is why
+`tests/api/test_secret_leakage.py` points its poison DSN at loopback port 1 —
+refused by the kernel in milliseconds — rather than at a public host name, where it
+would have sat in a real connect timeout. No test in the suite should point a
+database at a routable address.
 
 ### Tests Failing
 
@@ -81,21 +247,35 @@ None.
 ### Known Bugs
 
 1. **Phase 7 declares `InvestigationState.completed_at` and no node ever writes
-   it.** The Phase 8 response exposes the field and Phase 9 persists it, so it is
-   stored and returned faithfully — but it is always `None`. This is a Phase 7
-   gap, deliberately not fixed in Phase 9: inventing a finish time at storage time
-   would be a claim the pipeline never made. Pinned by
-   `test_run_timings_are_preserved_exactly_as_recorded`.
+   it.** The key is *absent* from the state and the Phase 8 adapter renders it as
+   `null`; the Phase 8 response exposes the field and Phase 9 persists it, so it is
+   stored and returned faithfully — but it is always `null`. This is a Phase 7 gap,
+   deliberately not fixed in Phase 9 or Phase 10: inventing a finish time would be a
+   claim the pipeline never made. Pinned by
+   `test_run_timings_are_preserved_exactly_as_recorded`,
+   `test_completed_at_is_null_because_it_is_never_stamped` and
+   `test_completed_at_is_still_null_after_a_round_trip`.
 2. **Phase 4 discards the search responses Phase 5 needs.** Phase 7 works around
    this with `RecordingSearchService` rather than editing Phase 4 (D-031). The
    clean fix is for `VerificationService` to return its responses, which should be
    done if Phase 4 is ever reopened.
 3. **Phase 1's `SUSPICIOUS_URL` description asserts the word "fraudulent".**
    Known, pinned by `TestPhaseOneCatalogueTripwire`, and a Phase 1 fix.
+4. **The network guard cannot see `psycopg2` connections.** See "Network isolation"
+   above. Not a defect in the guard's design — a Python-level guard cannot intercept
+   a C-level connect — but it is a real limit on what "the suite is offline" means.
 
 > The Phase 7 revision's Known Bug 1 — `/api/health` ignoring injected settings —
 > was **fixed in Phase 8** and is now covered by
 > `tests/api/test_health_boundary.py`.
+
+> `/api/health` reports the **names** of the credential environment variables it
+> looks for — `"GROQ_API_KEY is not set."` — and is unauthenticated. No value is
+> ever exposed, and the `configured` boolean a legitimate client reads is
+> unaffected, but on a public deployment the wording is reconnaissance. Recorded in
+> Phase 10 rather than changed, because it is Phase 8 behaviour, the strings are
+> arguably useful to an operator, and no credential leaks. Pinned by
+> `TestHealthReportsConfigurationWithoutDisclosingIt`.
 
 ### Blocked Items
 
@@ -117,7 +297,12 @@ None.
 > A repository-root `.env` exists (gitignored, contains real credentials). It is
 > **not** committed. `tests/graph/graph_factories.py`, `tests/api/conftest.py` and
 > `tests/conftest.py` all pass `_env_file=None` so the suites stay offline
-> regardless of what it contains.
+> regardless of what it contains — and as of Phase 10 that isolation is enforced
+> rather than merely intended: see "Network isolation" above.
+>
+> A credential was committed in an earlier state of this repository and is still in
+> Git history. Rotating it is an outstanding operational task. Phase 10 neither
+> rewrote history nor read any `.env` value.
 
 ### Phase 9 Architecture
 
@@ -163,7 +348,9 @@ GET /api/investigations ──────► repo.list_page() ──► summari
 | A storage failure is a `500`, not a swallowed error | Returning `200` while discarding the result would tell a client its investigation is safe to look up later when it is not |
 | The Phase 8 response shape is unchanged | A client written against Phase 8 keeps working. No `persisted` flag: the id was already there and is what the client uses |
 
-### Known Limitations (Phase 9)
+### Known Limitations (Phase 10)
+
+Carried forward from Phase 9, unchanged:
 
 - **No authentication, therefore no ownership check.** Anyone holding an id can
   read that investigation. Acceptable only because there is nothing to
@@ -181,11 +368,61 @@ GET /api/investigations ──────► repo.list_page() ──► summari
 - **`limit`/`offset` paging only.** Fine at this scale; offset paging would need
   replacing for a table large enough for it to hurt.
 - **`limitations` is still a flat code array** with no per-claim attribution, so a
-  limitation cannot be joined back to the claim it affected. Phase 10 may need a
-  junction table.
-- **`completed_at` is always `NULL`** — see Known Bugs.
+  limitation cannot be joined back to the claim it affected.
+- **`completed_at` is always `NULL`** — see Known Bugs 1.
 - **Only `TEXT` input is analysed.** `URL`, `IMAGE` and `PDF` are recognised and
   refused with `422`.
+
+Identified in Phase 10, recorded rather than fixed, because fixing any of them means
+redesigning something Phase 10 was explicitly not scoped to redesign:
+
+- **`GET /api/investigations/limits` is typed `dict[str, object]`,** so its OpenAPI
+  schema is an inline `additionalProperties: true`. A client gets no machine-readable
+  shape for the four fields it returns. The response is correct and the endpoint is
+  documented; only the schema is loose. Pinned as a known limitation by
+  `tests/api/test_openapi_contract.py` rather than fixed, because the alternative is
+  introducing a response model to satisfy a schema generator, and a hand-written
+  model for four fields is a thing to add when a client needs it.
+- **Graph nodes do not validate every malformed dependency return.** A dependency
+  that breaks its contract can escape as a raw `AttributeError` or `TypeError`
+  rather than the stage's typed failure code — a malformed `RiskAssessment` from
+  Phase 6, for instance, does not reliably become `RISK_ASSESSMENT_FAILED`. The
+  existing coverage asserts that *an* error is recorded and that the run does not
+  score, which is the safety-relevant part; what is missing is the specific error
+  *code*. Fixing this means validating every node's inputs, which is a Phase 7
+  change, not a testing change. Pinned by
+  `TestRiskFailures::test_malformed_dependency_data_does_not_reach_a_score`.
+- **`psycopg2` bypasses the network guard** — see Known Bugs 4.
+- **`/api/health` names credential variables** — see the note under Known Bugs.
+- **No coverage percentage was produced.** `pytest-cov` is not installed, and it was
+  not added for this phase: a number generated by a tool the project does not
+  otherwise use would be a metric with no process behind it. The 425 tests added are
+  organised by concern and each module states what property it defends, which is the
+  more useful artefact. `ruff`, `mypy` and `hypothesis` are likewise absent and were
+  not added.
+
+### Security Posture (Phase 10)
+
+The suite plants a real-shaped secret at every place one could escape and proves it
+does not: a `postgresql://user:password@...` DSN in an unreachable database, a
+provider key in a search failure, a `GROQ_API_KEY` in an extraction exception, a
+DSN quoted inside a provider error, and credential-shaped values in an unknown
+field, a wrong-type field, a form body, malformed JSON, a query parameter and a URL
+path. No response may contain a traceback, a stack trace, SQL, a DSN, a password, an
+API key or a filesystem path.
+
+The vocabulary ban is checked end to end too — graph, adapter, JSON, database, `GET`
+response, history entry, error body and the OpenAPI document — with the negation
+handling Phase 6 built, so the disclaimers that *name* fraud to rule it out are not
+violations. One narrow, documented exemption exists: the product tagline in the
+OpenAPI description, because a description of this tool cannot avoid naming it.
+
+**Historical credential exposure.** A credential was committed in an earlier state
+of this repository and remains in Git history. It is **not** addressed in Phase 10:
+rotating it is an operational action, and rewriting history is explicitly out of
+scope. It remains an outstanding task for whoever holds the affected accounts. The
+current tree is clean — `.env` is gitignored, every settings factory passes
+`_env_file=None`, and no `.env` value is read, printed or asserted on anywhere.
 
 ### Environment Reality Check (verified)
 
@@ -199,7 +436,7 @@ GET /api/investigations ──────► repo.list_page() ──► summari
 | `pytesseract` / `Pillow` / PyMuPDF | not installed | deferred |
 | `sentence-transformers` | not installed | deferred |
 | Repository-root `.env` | **exists, gitignored** | holds real credentials; no longer breaks the suite |
-| `ruff` / `mypy` | **not installed, not configured** | this project has no linter or typechecker step; import hygiene was checked by hand |
+| `ruff` / `mypy` / `pytest-cov` / `hypothesis` | **not installed, not configured** | this project has no linter, typechecker or coverage step; Phase 10 deliberately did not add them — see Known Limitations |
 
 ### Important Decisions
 
@@ -223,33 +460,58 @@ the next phase:
 | D-040 | `public_id` is a content fingerprint, so a surrogate key owns identity |
 | D-041 | Persistence returns an `InvestigationState`; the adapter shapes both paths |
 | D-042 | Order is stored, never inferred from a value the database already stores |
+| D-043 | Registry match is a tier-1, unanimous check |
+| D-044 | The risk caveat is reproduced by the model, not stored in its own column |
+| D-045 | Network isolation is a guard, not a convention; the guarantee is "nothing leaves the machine" |
+| D-046 | The safety vocabulary is enforced at every boundary text crosses, not only in the engine |
+| D-047 | Leak-safety is proven by planting the secret, never by reading the handler |
+| D-048 | Query cost is asserted as flatness in the data, not as a magic number |
+| D-049 | `completed_at` stays `null`; the pipeline will not invent a time it never measured |
 
 ---
 
 ## Next Exact Task
 
-**Phase 10 — Report generation.**
+**Phase 11 — React frontend**, per `IMPLEMENTATION_PLAN.md`.
 
-1. Build the report layer over a *stored* investigation. The retrieval path
-   `Phase 9` established — `repo.load()` returning an `InvestigationState` — is
-   the input a report generator needs, and it is the first consumer that reads an
-   investigation some time after the run that produced it.
-2. A report renders evidence and indicators. It must not introduce a probability,
-   a verdict or advice, and it must not restate `risk_score` as a likelihood
-   (D-025). The `RiskAssessment` caveat has to survive into the rendered text.
+1. Vite + React + TS + Tailwind + shadcn/ui scaffold; `/`, `/dashboard`,
+   `/investigate`, `/investigation/:id`, `/history`; an API client layer.
+2. The backend contract the frontend must code against is unchanged since Phase 8,
+   with Phase 9's two additions: `GET /api/investigations/{id}` and
+   `GET /api/investigations`. Note that a shared investigation id resolves to the
+   **newest** run — see "The retrieval contract, stated correctly".
+3. Frontend work will hit three known limitations directly and should plan for them
+   rather than discover them: `GET /api/investigations/limits` has no machine-readable
+   schema, `completed_at` is always `null` so duration cannot be shown, and
+   `URL`/`IMAGE`/`PDF` submissions are refused with `422`.
+
+### Report generation
+
+Not a numbered phase, and not started. It is `AI_PIPELINE.md` **Stage 11**, and it
+remains later scope. The five requirements Phase 9's `CURRENT_STATE` recorded for it
+still stand unchanged:
+
+1. Build the report layer over a *stored* investigation. `repo.load()` returning an
+   `InvestigationState` is the input it needs, and it is the first consumer that
+   reads an investigation some time after the run that produced it.
+2. A report renders evidence and indicators. It must not introduce a probability, a
+   verdict or advice, and it must not restate `risk_score` as a likelihood (D-025).
+   The `RiskAssessment` caveat has to survive into the rendered text.
 3. Decide where reports live. `docs/DATABASE_SCHEMA.md` sketches a `reports` table;
-   it was deliberately **not** created in Phase 9, so this is an open decision
-   rather than a continuation of existing work.
+   it was deliberately **not** created in Phase 9, so this is an open decision.
 4. Rendering is multilingual in intent — `Language` accepts `en`/`hi`/`mr` and the
-   value is already stored on the run — but Phase 10 should still ship English
-   only and record the requested language, as Phase 8 did.
-5. A report that cites a risk factor must be able to walk to the claim, red flag
-   and source behind it. Phase 9 stored that trace, so this is a read, not a
-   reconstruction.
+   value is already stored on the run — but a report should ship English only and
+   record the requested language, as Phase 8 did.
+5. A report that cites a risk factor must walk to the claim, red flag and source
+   behind it. Phase 9 stored that trace, so this is a read, not a reconstruction.
 
-### Do not start before Phase 10 is green
+> The safety vocabulary Phase 10 now enforces end to end is the constraint a report
+> will have to satisfy. `tests/api/test_api_risk_safety.py` is the executable
+> statement of it, and a report's rendered text should meet the same bar.
 
-- No frontend (Phase 11+).
+### Do not start before Phase 11 is green
+
+- No authentication, no OCR/PDF/URL ingestion, no report generation.
 
 ---
 
@@ -260,9 +522,10 @@ If you are reading this in a fresh session:
 1. [x] Read `docs/CURRENT_STATE.md` (this file)
 2. [ ] Read `docs/IMPLEMENTATION_PLAN.md`
 3. [ ] Read `docs/ARCHITECTURE.md` (§2.3d for the graph, §2.3e for the API,
-       §2.3f for persistence) and `docs/DECISIONS.md` (D-030…D-042)
+       §2.3f for persistence, §2.3g for the test architecture) and
+       `docs/DECISIONS.md` (D-030…D-047)
 4. [ ] Read `docs/DATABASE_SCHEMA.md` and the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **2085 passed, 4 deselected,
+6. [ ] Run `cd backend && python -m pytest` — expect **2510 passed, 4 deselected,
        0 failed**
 7. [ ] Execute **Next Exact Task**

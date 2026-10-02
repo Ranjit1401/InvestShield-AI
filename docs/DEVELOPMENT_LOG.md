@@ -1231,3 +1231,137 @@ quietly dropped. The risk trace Phase 10 will need — factor → claim → red 
 evidence → source — is stored and round-trips, so a report is a read rather than a
 reconstruction. Whether reports are a stored snapshot, a rendered artefact, or
 both is still an open decision; no `reports` table was created.
+
+
+## 2026-10-02 — Phase 10 — Testing & Quality Hardening
+
+**Scope.** Coverage, isolation and contract proof. No new product behaviour. The
+architecture in `ARCHITECTURE.md` is unchanged; the only production-code changes were
+two defect fixes below.
+
+**Phase naming.** Two documents disagreed about what Phase 10 is.
+`IMPLEMENTATION_PLAN.md` has always called it "Backend Test Suite";
+`CURRENT_STATE.md` called it "Report generation", which is `AI_PIPELINE.md` Stage 11
+— a pipeline stage, on a different numbering axis. Phase 10 is **Testing & Quality
+Hardening**. Report generation is not a numbered project phase, is not started, and
+was deliberately not renumbered into one: giving it a number is the kind of premature
+decision `DATABASE_SCHEMA.md` avoided when it declined to create the `reports` table.
+
+**Tests: 2085 → 2510 passed, 4 deselected, 0 failed.** 425 added. Two production
+defects found and fixed; one guard that was never installed; two more bugs in the
+Phase 10 additions themselves.
+
+### Defects found and fixed in production code
+
+**1. The 422 handler crashed on form-encoded bodies.** It assumed Pydantic's `input`
+value was JSON-serialisable. For a form body it is raw `bytes`, so serialising it
+raised `TypeError` *inside* the error handler, which fell through to a generic
+`500 INTERNAL_ERROR`. A clean `422` became an internal error, and it did so with a
+submitted credential in the payload. Fixed by `_validation_detail()` in
+`app/main.py`, which copies only `type`, `loc` and `msg` — excluding submitted
+values by construction rather than by filtering. Pinned by
+`test_a_credential_in_form_data_is_not_reflected`.
+
+**2. No handler for `StarletteHTTPException`.** A `404` on an unknown path and a
+`405` on a wrong method bypassed the error envelope entirely and returned FastAPI's
+default body. Added a handler mapping `404 → ROUTE_NOT_FOUND` and
+`405 → METHOD_NOT_ALLOWED` in the documented envelope.
+
+### A guard that was never installed
+
+`tests/network_guard.py` defined an `autouse` fixture and `tests/conftest.py`
+imported the module. **That registered nothing.** An `autouse` fixture is only
+collected from a file pytest treats as a conftest or a plugin, so the guard existed,
+was importable, and had never once blocked a connection. The suite was green either
+way, and nothing in 2085 tests noticed — a test that reaches the network usually
+still passes, which is what made the absence invisible.
+
+The fixture now lives in `tests/conftest.py`. `tests/test_network_guard.py` attempts
+a connection from inside an ordinary test and requires it to be blocked, which is the
+only kind of test that can catch this class of mistake. Two further bugs surfaced
+while writing it: `allow_network(host)` did not work as documented for DNS (a
+wildcard port never matched the concrete port `getaddrinfo` is handed), and the
+loopback exemption it needed for `TestClient` was briefly written as a `127.` prefix
+check, which would have allowed the registrable domain `127.0.0.1.example.invalid`.
+Both are now pinned from both sides.
+
+### What was added
+
+- **API input contract** — 62 tests. Valid multilingual, Unicode, multiline, CRLF and
+  boundary-length input; missing, null, wrong-type, oversized, unknown-field, list,
+  object, string and numeric bodies; malformed JSON and form data; error-envelope
+  discipline; 404/405 envelopes; credential non-reflection.
+- **OpenAPI contract** — 46 tests. Endpoint inventory, schema bounds, enums, paging,
+  error documentation, OpenAPI 3.1, dangling references, and the absence of internal
+  ORM, repository and graph schemas from the public surface.
+- **Graph wiring** — 34 AST and runtime tests. The production route calls
+  `run_investigation` and `serialize_investigation`; it does not bypass the graph or
+  reach for a hidden engine. Stage execution counts, input immutability, context
+  reuse, stage order, response shape, deterministic id derivation, frozen
+  dependencies and recorder sharing.
+- **Status semantics** — 36 tests. `COMPLETED` / `PARTIAL` / `FAILED` and stage-level
+  `SKIPPED`, derived from the stage timeline and never from the warning list
+  (D-037). A search that ran and found nothing is a real attempt, not
+  `SEARCH_UNAVAILABLE`; an unavailable provider requires an injected one.
+- **Risk safety** — 34 tests, plus the Phase 6 machinery moved to
+  `tests/vocabulary.py` so one matcher defines a violation. The vocabulary is now
+  checked over the adapter, the JSON response, the database, the `GET` response, the
+  history entry, error bodies and the OpenAPI document — not only the engine. The
+  `SCORE_NOT_A_PROBABILITY` caveat is asserted live, stored, reloaded and in history.
+- **Secret leakage** — 33 tests. A DSN, a provider key, a `GROQ_API_KEY`, a DSN
+  quoted inside a provider error, and credential-shaped values in six request
+  positions. Nothing reaches a response.
+- **Failure injection** — 58 tests across every stage, plus the semantic-
+  reproducibility property that a given failure produces the same result every time.
+- **Network guard** — 24 tests, described above.
+- **Determinism** — 68 tests. The content-derived id, and semantic reproducibility
+  across the graph, storage and HTTP. Records that the fixed test clock covers the
+  graph but not the services, which is precisely why `semantic_view` exists.
+- **Retrieval contract** — 14 tests. Semantic equivalence field by field, the
+  timestamp contract, and the limit of it: two runs of identical content share an id
+  and are not one retrievable body.
+- **Query cost** — 16 tests. Flatness in the data rather than a magic number, at both
+  the repository and the HTTP boundary, plus the check that a list row carries no
+  payload.
+
+### Known limitations recorded, not fixed
+
+Each of these would mean redesigning something Phase 10 was explicitly not scoped to
+redesign. They are in `CURRENT_STATE.md` and each is pinned by a test.
+
+- `GET /api/investigations/limits` is typed `dict[str, object]`, so OpenAPI shows an
+  inline `additionalProperties: true`. The response is correct; only the schema is
+  loose. Fixing it means adding a response model for a schema generator's benefit.
+- Graph nodes do not validate every malformed dependency return, so a broken contract
+  can surface as `AttributeError` rather than the stage's typed failure code. The
+  safety-relevant part — an error is recorded and the run does not score — is
+  covered; the specific error code is not, and fixing it is a Phase 7 change.
+- `psycopg2` connects through libpq, which never enters Python's `socket` module, so
+  the guard cannot see a database connection. This is why the poison DSN points at
+  loopback port 1: refused in milliseconds, and no test points a database at a
+  routable address.
+- `/api/health` reports the *names* of credential environment variables and is
+  unauthenticated. No value leaks and the `configured` boolean is unaffected, but the
+  wording is reconnaissance on a public deployment. Recorded rather than changed,
+  since it is Phase 8 behaviour and useful to an operator.
+
+### Documentation corrections
+
+- `CURRENT_STATE.md` said a retrieved investigation is **byte-identical** to the live
+  one. The guarantee is **semantic equivalence**. Byte equality does hold today for
+  `POST`-then-`GET`, because `started_at` is stored rather than regenerated — but the
+  contract does not depend on it, and two runs of identical content are *not*
+  byte-identical to each other while sharing an id. Corrected, with both the exact
+  and the semantic comparison asserted so neither claim is doing unstated work.
+- The claim that `completed_at` is populated was corrected. No node has ever written
+  it: the key is absent from the state and the adapter renders `null` (D-049).
+
+### Not done, deliberately
+
+No coverage percentage: `pytest-cov` is not installed and was not added for one
+number. `ruff`, `mypy` and `hypothesis` likewise absent and not added. No frontend,
+authentication, OCR, report generation, URL ingestion or new product features. The
+historical credential in Git history was not rewritten and not rotated — that is an
+operational action, and history rewriting is out of scope. The current tree is clean:
+`.env` is gitignored, every settings factory passes `_env_file=None`, and no `.env`
+value is read, printed or asserted on.

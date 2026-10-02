@@ -239,6 +239,24 @@ The graph makes no network call of its own. External access stays inside the
 search service, and the searches performed during verification are recorded so
 the evidence stage can cite them rather than repeating them.
 
+### The default test suite is offline, and that is enforced
+
+An autouse fixture installs a guard that blocks `socket.socket.connect`,
+`connect_ex`, `socket.create_connection` and `socket.getaddrinfo`, so a test that
+reaches the network fails loudly instead of quietly succeeding on whatever
+`GROQ_API_KEY` or `SERPAPI_KEY` the developer's `.env` supplies. A blocked call
+raises `NetworkAccessBlocked` naming the destination, so the offending test is
+fixable from its own output.
+
+Two exemptions, both deliberate and both pinned by tests: **loopback literals**,
+because `TestClient(app)` as a context manager needs one on Windows; and tests marked
+`@pytest.mark.integration`, which are deselected by default anyway. The guarantee is
+that **no traffic leaves the machine** — loopback never does.
+
+One limit worth knowing: `psycopg2` connects through libpq, which never enters
+Python's `socket` module, so the guard cannot see a database connection. No test
+points a database at a routable address (D-045).
+
 ---
 
 ## 7. Important Environment Details
@@ -311,6 +329,19 @@ Full detail in `ARCHITECTURE.md`.
 12. One underlying signal scores once, however many stages noticed it.
 13. A limitation never stops an investigation; a failure always does. A run that
     stopped must never be mistakable for a run that finished and found little.
+14. **The default test suite must not reach the network.** Not as a convention — as a
+    guard. A test that reaches a provider usually still *passes*, which is what makes
+    an accidental live call invisible (D-045).
+15. **A guarantee is asserted at every layer text or data crosses**, not only where it
+    originates. A caveat that survives the engine and is dropped by an adapter is
+    indistinguishable from one that was never added (D-046).
+16. **Security properties are proven by planting the secret**, not by reading the
+    handler that would have to filter it. Leak paths are rarely where they look
+    (D-047).
+17. **Do not restate a claim as a stronger one.** A semantic guarantee is not a byte
+    guarantee; a stored value is not a measured one. If a documented property is
+    stronger than the code, correct the documentation — and add the test that says
+    which one the code provides.
 
 ## 12. Session Recovery Rule
 

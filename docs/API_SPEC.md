@@ -210,6 +210,25 @@ than after being refused. Needs no investigation and never fails.
 }
 ```
 
+**Schema limitation (Phase 10).** This route is declared
+`-> dict[str, object]`, so its OpenAPI schema is an inline
+`additionalProperties: true`. A client reading `/openapi.json` or generating a typed
+client from it gets no machine-readable shape for these four fields, and must treat
+them as a documented convention. The response body itself is correct, stable and
+pinned by `tests/api/test_openapi_contract.py`; only the schema is loose.
+
+This is recorded rather than fixed. Adding a response model would give the schema
+generator something to work with, but it means hand-maintaining a model for four
+fields to satisfy a tool rather than a client — and a client that needs typed
+discovery is a better reason to add it than a coverage percentage would have been.
+It should be revisited when a frontend client is actually generated from this
+document.
+
+**Route ordering note.** `/api/investigations/limits` is declared *before*
+`/api/investigations/{investigation_id}`. FastAPI matches routes in declaration
+order, so declaring it after would make `limits` a path parameter and return a
+`404`. Pinned by `test_the_limits_endpoint_is_not_shadowed_by_the_id_route`.
+
 ---
 
 ## Investigation Response
