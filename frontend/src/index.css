@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+/*
+ * Financial Security Command Center.
+ *
+ * A restrained, high-signal palette: near-black slate surfaces, a single
+ * cyan "instrument" accent for interactive affordances, and a deliberately
+ * narrow set of semantic tones reserved for risk states. Colour is only ever
+ * used to carry meaning — there are no decorative gradients, glows or
+ * glassmorphism.
+ */
+
+@theme {
+  --color-surface: oklch(0.16 0.014 258);
+  --color-surface-raised: oklch(0.2 0.016 258);
+  --color-surface-overlay: oklch(0.24 0.018 258);
+  --color-hairline: oklch(0.32 0.02 258);
+
+  --color-ink: oklch(0.97 0.005 258);
+  --color-ink-muted: oklch(0.75 0.017 258);
+  --color-ink-faint: oklch(0.6 0.02 258);
+
+  --color-accent: oklch(0.78 0.13 205);
+  --color-accent-strong: oklch(0.85 0.12 205);
+  --color-accent-muted: oklch(0.45 0.07 205);
+
+  --color-tone-neutral: oklch(0.6 0.02 258);
+  --color-tone-info: oklch(0.72 0.12 235);
+  --color-tone-success: oklch(0.74 0.14 155);
+  --color-tone-warning: oklch(0.8 0.14 85);
+  --color-tone-danger: oklch(0.68 0.17 25);
+  --color-tone-critical: oklch(0.58 0.21 15);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Cascadia Mono", monospace;
+
+  --radius-card: 0.75rem;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    border-color: var(--color-hairline);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-surface);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /*
+   * A single visible focus treatment for every interactive element. The
+   * outline is offset so it never clips against a card border.
+   */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-muted);
+    color: var(--color-ink);
+  }
+}
+
+@layer components {
+  /*
+   * A fine grid used behind the landing hero. Masked to fade out, so it reads
+   * as a technical substrate rather than an animated background.
+   */
+  .grid-substrate {
+    background-image:
+      linear-gradient(to right, oklch(1 0 0 / 0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, oklch(1 0 0 / 0.035) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 35%, transparent 78%);
+  }
+
+  /* Respect a reduced-motion preference for every animation in the app. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

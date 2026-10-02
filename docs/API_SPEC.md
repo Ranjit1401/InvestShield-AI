@@ -7,6 +7,13 @@ Content type: `application/json` (uploads use `multipart/form-data`)
 API schemas are **separate** from SQLAlchemy database models (D-010). This
 document is the contract; the frontend client mirrors it.
 
+> **Machine-readable mirror.** The Phase 11 frontend carries a TypeScript copy of
+> this contract at `frontend/src/types/api.ts`. Every union and field in it was
+> taken from the **running** FastAPI application (`app.openapi()` plus the enums in
+> `app/schemas/*`) rather than transcribed from this prose, so where the two ever
+> disagree, the generated types and the code are authoritative. The frontend
+> adapts to the API; it does not redefine it, and Phase 11 changed no contract.
+
 ---
 
 ## Status Codes

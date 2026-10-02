@@ -1345,3 +1345,114 @@ fact in the one field a client is most likely to use for reporting. `null` says
 "unknown" and is correct; a number would say something the system does not know.
 
 **Date:** 2026-10-02
+
+## D-050 — Input-mode availability is read from the API, not hardcoded in the frontend
+
+**Decision:** The Investigate page drives each input mode's enabled state from
+`GET /api/investigations/limits` → `supported_input_types`, defaulting to Text only when
+that call has not succeeded. The phase labels ("Coming in Phase 12/13/14") are the only
+static mapping in the UI.
+
+**Context:** The four input modes are a product roadmap, and Text is the only one the
+backend processes. The obvious implementation is a hardcoded `TEXT` branch, which works
+until the backend gains a mode and the UI keeps calling it unavailable — or gains none and
+the UI still offers it. The failure is silent in both directions.
+
+**Alternatives:**
+
+- *Hardcode `mode === "TEXT"`.* Rejected: two sources of truth that drift, with no signal
+  when they do.
+- *Let the user select a mode and let the API refuse it.* Rejected: a visible control that
+  reliably fails is worse than one that is honestly unavailable, and it teaches the user to
+  expect errors.
+- *Hide the unimplemented modes entirely.* Rejected: the roadmap is part of the product
+  story and the task requires the surfaces to be present and clearly labelled.
+
+**Reason:** The API already publishes its own accepted input types. Reading them makes the
+UI incapable of claiming a mode works when the backend has stopped accepting it. The phase
+labels stay static because they are a schedule, not a capability.
+
+**Date:** 2026-10-02
+
+## D-051 — No chart where the API provides no data; say so in the interface
+
+**Decision:** The dashboard shows no risk-distribution chart. Recharts is used in exactly
+one place — risk contribution by severity, computed from `risk_assessment.factors[]` on the
+report page. Where the list API cannot support a chart, the UI states the reason in
+prose instead of drawing an approximation.
+
+**Context:** `InvestigationSummaryResponse` carries no risk level, so a dashboard risk
+distribution would have to be invented, estimated, or aggregated from data the endpoint does
+not return. All three were available and all three were rejected.
+
+**Alternatives:**
+
+- *Derive a distribution from per-record counts.* Rejected: `factor_count` and
+  `red_flag_count` are not risk levels, and mapping them onto risk bands would be a
+  fabricated statistic wearing a real one's name.
+- *Drop the section silently.* Rejected: a reader would wonder whether the product simply
+  lacks the feature, when the honest answer is that the list endpoint does not expose it.
+- *Call the detail endpoint per record.* Rejected: N+1 requests over the whole history to
+  reconstruct a view the contract deliberately keeps cheap.
+
+**Reason:** A dashboard is where invented numbers do the most damage, because they are read
+as measurements. Explaining the gap costs one sentence and preserves the claim that every
+dynamic figure on screen came from the API.
+
+**Date:** 2026-10-02
+
+## D-052 — No backend change in Phase 11; the frontend adapts to the API
+
+**Decision:** Phase 11 modifies no file under `backend/`. Every gap between the plan and the
+API was closed on the frontend side, and `frontend/src/types/api.ts` was generated from the
+running application rather than transcribed from documentation.
+
+**Context:** The task anticipated a possible integration mismatch and set a decision order:
+inspect the actual schema, prefer adapting the frontend, change the backend only if the
+contract is objectively broken, and never silently change a contract. Investigating the live
+application first — rather than reading `API_SPEC.md` — mattered, because the prose and the
+real enums do not fully agree: `ClaimType` has 14 members and `EntityType` 19, several of
+which the document's tables do not enumerate. Building types from the code avoided baking
+those omissions into the UI.
+
+**Alternatives:**
+
+- *Write types from `API_SPEC.md`.* Rejected: verified to understate the enums, which would
+  have produced a type that rejected valid server data.
+- *Widen the OpenAPI enum to match observed values.* Rejected as out of scope: the enum is
+  correct in code, the prose is merely incomplete, and a schema edit is a contract change
+  that belongs to its own phase with its own decision record.
+- *Add the missing endpoints the UI wanted.* Rejected: that is Phase 12–14, not Phase 11.
+
+**Reason:** Keeping the phase boundary honest means the API contract has exactly one owner.
+The frontend consumed it as written, and the documentation gap it exposed is recorded here
+rather than patched silently.
+
+**Date:** 2026-10-02
+
+## D-053 — `strictPort` on the dev server, because CORS names one port
+
+**Decision:** The Vite dev server is pinned to port 5173 with `strictPort: true`.
+
+**Context:** The backend's `cors_origins` default names `http://localhost:5173` and
+`http://127.0.0.1:5173` and nothing else. Vite's default behaviour when 5173 is busy is to
+bind the next free port and keep running. The app then loads, every request fails, and the
+browser reports it as an opaque CORS error — a failure that points at the wrong layer
+entirely. This was observed directly: with the server on 5174, the preflight returned `400`
+and no `access-control-allow-origin` header.
+
+**Alternatives:**
+
+- *Leave the default fallback.* Rejected: produces a confusing failure from a common,
+  unremarkable cause.
+- *Widen the backend's CORS allow-list.* Rejected: relaxing a security control to suit a
+  dev-server default inverts the correct order of authority, and Phase 11 must not change
+  backend behaviour.
+- *Proxy `/api` through the dev server.* Rejected for now: it hides the base URL that
+  `VITE_API_BASE_URL` is specified to configure, and adds a layer the task did not ask for.
+
+**Reason:** A loud failure at startup is far cheaper than a silent one at runtime. The
+developer is told immediately that the port they need is taken, instead of discovering later
+that the browser is blocking requests for a reason the error message deliberately hides.
+
+**Date:** 2026-10-02

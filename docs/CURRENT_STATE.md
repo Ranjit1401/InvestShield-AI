@@ -7,8 +7,8 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 10 — Testing & Quality Hardening — **COMPLETE**
-**Current Subphase:** Phase 11 — React frontend — **NOT STARTED**
+**Current Phase:** Phase 11 — React Frontend — **COMPLETE**
+**Current Subphase:** Phase 12 — URL Analysis — **NOT STARTED**
 
 > **Phase 10 naming, reconciled.** Two project documents disagreed about what
 > Phase 10 is. `IMPLEMENTATION_PLAN.md` has always called it "Backend Test Suite";
@@ -20,24 +20,26 @@
 > premature decision `DATABASE_SCHEMA.md` was careful to avoid when it declined to
 > create the `reports` table.
 
-**Last Completed Task:** Phase 10 — testing and quality hardening. No new product
-behaviour: the architecture in `ARCHITECTURE.md` §2.3g is unchanged, and the only
-production-code change was a defect fix in the 422 handler (below). The work was
-coverage, isolation and contract proof:
+**Last Completed Task:** Phase 11 — the React frontend. A new `frontend/` application
+integrating with the existing API. **No backend file was modified in Phase 11**, and no
+API contract was changed: the frontend types were written from the running FastAPI
+application and the app was adapted wherever the API fell short of the plan.
 
-- A **network guard** that makes the default suite genuinely offline, replacing a
-  guarantee that had only ever been a matter of discipline.
-- **API contract** coverage for inputs, error envelopes and the OpenAPI document.
-- A **failure-injection matrix** across every stage, and **security** tests that
-  plant a DSN, a provider key and a credential-shaped submission and prove none of
-  them reaches a response.
-- **Persistence** coverage for the round trip, the retrieval contract, history
-  ordering and query cost.
-- **Determinism** coverage for the content-derived id and for semantic
-  reproducibility across the graph, storage and HTTP.
-- Two real defects found and fixed along the way — see "Defects found in Phase 10".
+- **Five routes** — landing, dashboard, investigate, investigation report, history — plus
+  a not-found page.
+- **A typed API client** as the only `fetch` boundary, with the documented error envelope,
+  `ApiError` kinds (`http` / `network` / `timeout` / `malformed`), and no `any` in `src/`.
+- **A financial-security command-center design system**: Tailwind v4 theme, shadcn/ui-style
+  primitives, Lucide icons, and one Recharts view (risk contribution by severity) backed by
+  real factor data.
+- **Text is the only operational input.** URL, Screenshot and PDF surfaces are present and
+  clearly marked unavailable; their availability is read from
+  `GET /api/investigations/limits` rather than hardcoded. No request is sent for them.
+- **Verified against the running backend**, not mocks: 48 API-client assertions, 17 live
+  end-to-end text-flow assertions, and 26 server-render assertions over a real investigation
+  payload. See "Phase 11 verification" below.
 
-**Latest Commit:** `test: harden backend quality and regression coverage` (Phase 10)
+**Latest Commit:** `feat: implement React frontend` (Phase 11)
 **Working Tree:** see `git status`.
 
 ### Phase Status Summary
@@ -55,11 +57,82 @@ coverage, isolation and contract proof:
 | Phase 8 | API layer (FastAPI endpoints) | **COMPLETE** |
 | Phase 9 | Database models & repositories | **COMPLETE** |
 | Phase 10 | Testing & quality hardening | **COMPLETE** |
-| Phase 11 | React frontend | **NEXT** |
+| Phase 11 | React frontend | **COMPLETE** |
+| Phase 12 | URL analysis | **NEXT** |
 
 > Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
 > Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is
 > **not** a numbered project phase and is not started.
+>
+> **Phase 11 does not implement Phases 12–14.** The URL, Screenshot and PDF input
+> surfaces exist in the UI and are explicitly marked unavailable, because their backend
+> processing does not exist. The UI marks them rather than faking them.
+
+### Phase 11 — React frontend
+
+**Location:** `frontend/` — a Vite + React + TypeScript SPA. See `frontend/README.md` for
+the full architecture, scripts and product rules.
+
+| Route                | Page                  | Endpoints used                                  |
+| -------------------- | --------------------- | ----------------------------------------------- |
+| `/`                  | Landing               | none (static explanatory content only)           |
+| `/dashboard`         | Dashboard             | `GET /api/health`, `GET /api/investigations`     |
+| `/investigate`       | New investigation     | `GET /api/investigations/limits`, `POST /api/investigations/text` |
+| `/investigation/:id` | Report                | `GET /api/investigations/{id}`                   |
+| `/history`           | History               | `GET /api/investigations` (limit/offset)         |
+| `*`                  | Not found             | none                                            |
+
+**Backend contract, as implemented.** `GET /api/investigations/limits` returns
+`supported_input_types: ["TEXT"]`, and the OpenAPI document exposes **no** `/url` or
+`/upload` endpoint. The frontend therefore implements only the endpoints that exist. This
+is the reason the input-mode tabs are a planned-surface disclosure rather than a working
+multi-upload form.
+
+**Charting.** Recharts is used in exactly one place: risk contribution by severity, built
+from `risk_assessment.factors[].contribution`. No chart is rendered where the API provides
+no data — in particular the dashboard does **not** show a risk distribution, because
+`InvestigationSummaryResponse` carries no risk level. Both the dashboard and the history
+page say this in the interface rather than approximating it.
+
+**Product invariants enforced in the UI** (see `frontend/README.md` for the full list):
+
+- An `UNVERIFIED` or `INSUFFICIENT_EVIDENCE` claim is never presented as fraudulent.
+- Absence of evidence is never presented as a contradiction.
+- The risk caveat is fixed copy, shown verbatim, and never strengthened.
+- Limitations and recorded stage failures appear above the findings, never hidden.
+- Evidence links open with `rel="noopener noreferrer"` and `referrerPolicy="no-referrer"`;
+  a non-`http(s)` URL renders as inert text.
+
+**Security posture.** `VITE_API_BASE_URL` is the only environment variable read. A secret
+scan across `frontend/` confirms no `GROQ_API_KEY`, `SERPAPI_KEY`, `DATABASE_URL`, token or
+credential reference exists outside the `.env.example` comment warning against them.
+`frontend/.env` is gitignored; `.env.example` is committed.
+
+### Phase 11 verification
+
+All checks below were executed against the **running** backend, not mocks.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Type check | `npm run typecheck` | pass, no errors |
+| Lint | `npm run lint` | pass, 0 errors / 0 warnings |
+| Production build | `npm run build` | pass, 2233 modules, split into app / react / charts chunks |
+| API client vs live API | `npm run verify:api` | **48 passed, 0 failed** |
+| Live TEXT round-trip | `RUN_LIVE=1 npm run verify:flow` | **17 passed, 0 failed** |
+| Component render (populated + empty) | `node scripts/verify-render.mjs …` | **26 passed, 0 failed** |
+| All five routes served | `GET /` … `/history` on the dev server | 200, every module compiles |
+| CORS preflight | `OPTIONS /api/investigations/text`, origin `localhost:5173` | `access-control-allow-origin: http://localhost:5173` |
+
+`verify:api` covers the happy paths for all five endpoints plus the error paths:
+`INPUT_EMPTY`, over-length text, `INVESTIGATION_NOT_FOUND`, an out-of-range `limit`, and a
+simulated unreachable backend. `verify:flow` creates a real investigation through the same
+client function the Investigate page calls, then reads it back and confirms it appears in
+the history list with matching counts.
+
+**Not verified in a real browser.** No automated browser was available in this environment,
+so mouse-driven interaction, visual layout at each breakpoint and the dev-server HMR
+experience were not exercised. Rendering correctness, the API contract and route serving
+were verified as described above.
 
 ### Files Recently Changed
 

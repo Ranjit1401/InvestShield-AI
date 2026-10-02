@@ -50,8 +50,9 @@ CLAIM  →  EVIDENCE  →  SOURCE
 
 ## Status
 
-**Phases 0–8 are complete.** The full investigation pipeline runs and is exposed
-over HTTP:
+**Phases 0–11 are complete.** The full investigation pipeline runs, is exposed
+over HTTP, is persisted, is covered by an offline test suite, and has a React
+frontend:
 
 | Phase | Scope | Status |
 | --- | --- | --- |
@@ -60,7 +61,10 @@ over HTTP:
 | 6 | Risk engine | complete |
 | 7 | LangGraph orchestration | complete |
 | 8 | FastAPI investigation API | complete |
-| 9+ | Persistence, report layer, frontend | not started |
+| 9 | Persistence (models & repositories) | complete |
+| 10 | Testing & quality hardening | complete |
+| 11 | React frontend | complete |
+| 12–14 | URL, screenshot/OCR, PDF analysis | not started |
 
 Live endpoints:
 
@@ -69,6 +73,8 @@ GET  /api/health
 GET  /api/investigations/limits
 POST /api/investigations
 POST /api/investigations/text
+GET  /api/investigations
+GET  /api/investigations/{id}
 ```
 
 `POST /api/investigations/text` returns the complete investigation synchronously —
@@ -81,7 +87,8 @@ Only a malformed submission or a broken internal contract produces a `4xx`/`5xx`
 
 Only `TEXT` input is analysed. `URL`, image and PDF endpoints are not implemented
 yet — those input types are recognised and refused with a `422` that lists what
-this version does analyse.
+this version does analyse. The frontend shows those modes as disabled and labels
+each with the phase that will implement it (12–14); it does not pretend they work.
 
 See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for the full
 roadmap and [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for exactly where
@@ -109,7 +116,15 @@ investshield-ai/
 │   ├── tests/
 │   ├── requirements.txt
 │   └── requirements-ai.txt
-├── frontend/           # React + Vite + TypeScript (Phase 11)
+├── frontend/           # React 18 + Vite + TypeScript (Phase 11)
+│   ├── src/
+│   │   ├── components/ # ui/ layout/ common/ investigation/ evidence/ risk/
+│   │   ├── hooks/
+│   │   ├── lib/
+│   │   ├── pages/
+│   │   ├── services/   # api-client.ts — the only fetch boundary
+│   │   └── types/      # TypeScript mirror of the API contract
+│   └── README.md
 ├── data/               # local SQLite database
 └── docs/               # persistent project memory
 ```
@@ -186,9 +201,26 @@ cd backend
 python -m pytest
 ```
 
-Expected: `1997 passed, 4 deselected`. The suite is fully offline — it clears the
+Expected: `2510 passed, 4 deselected`. The suite is fully offline — it clears the
 API keys and the `DATABASE_URL` environment variable, so it never reaches a
 network service even when a real `.env` is present.
+
+### 5. Run the frontend
+
+With the backend already running on port 8000:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+- App: <http://localhost:5173>
+
+The dev server is pinned to port 5173 because the backend's CORS allow-list names
+that origin. `VITE_API_BASE_URL` in `frontend/.env.local` overrides the API base
+URL; it is the only environment variable the frontend reads, and it must never
+hold a secret. See [`frontend/README.md`](frontend/README.md).
 
 ### Optional: run the whole stack with Docker
 

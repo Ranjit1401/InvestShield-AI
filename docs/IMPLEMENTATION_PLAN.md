@@ -293,17 +293,31 @@ production-code defect fixes (the form-encoded 422 handler, and a missing
 `StarletteHTTPException` handler). See `CURRENT_STATE.md` and the Phase 10 entry in
 `DEVELOPMENT_LOG.md`.
 
-## Phase 11 — React Frontend `[ ]`
+## Phase 11 — React Frontend `[x]`
 
-- [ ] Vite + React + TS + Tailwind + shadcn/ui scaffold
-- [ ] `/` landing
-- [ ] `/dashboard`
-- [ ] `/investigate` (Text | URL | Screenshot | PDF)
-- [ ] `/investigation/:id` result page
-- [ ] `/history`
-- [ ] API client layer
-- [ ] Financial-security command-center design system
-- [ ] Loading / error / empty states
+**Goal:** an investor-safety investigation frontend over the existing API. No backend
+change and no API contract change.
+
+- [x] Vite + React + TS + Tailwind v4 + shadcn/ui scaffold
+- [x] `/` landing
+- [x] `/dashboard`
+- [x] `/investigate` (Text | URL | Screenshot | PDF)
+- [x] `/investigation/:id` result page
+- [x] `/history`
+- [x] API client layer
+- [x] Financial-security command-center design system
+- [x] Loading / error / empty states
+
+**Status:** complete. Implemented in `frontend/`. `npm run typecheck`, `npm run lint` and
+`npm run build` pass, and the client was verified against the running backend (48 API
+assertions, 17 live end-to-end text-flow assertions, 26 render assertions).
+
+> **The URL, Screenshot and PDF input surfaces are present as UI, but their backend
+> processing is deferred to Phases 12–14 and does not work.** The OpenAPI document exposes
+> no `/url` or `/upload` endpoint and `GET /api/investigations/limits` reports
+> `supported_input_types: ["TEXT"]`. Those input modes are therefore rendered as disabled
+> and labelled with the phase that will implement them; the frontend sends no request for
+> them. They must not be described as operational.
 
 ## Phase 12 — URL Analysis `[ ]`
 

@@ -1365,3 +1365,130 @@ historical credential in Git history was not rewritten and not rotated — that 
 operational action, and history rewriting is out of scope. The current tree is clean:
 `.env` is gitignored, every settings factory passes `_env_file=None`, and no `.env`
 value is read, printed or asserted on.
+
+---
+
+## Phase 11 — React Frontend
+
+**Date:** 2026-10-02
+**Phase:** 11 — React frontend
+**Commit:** `feat: implement React frontend`
+
+### What was implemented
+
+A new `frontend/` application: Vite + React 18 + TypeScript (strict), Tailwind CSS v4,
+shadcn/ui-style primitives, Lucide React, Recharts, react-router-dom. Five routes plus a
+not-found page: `/`, `/dashboard`, `/investigate`, `/investigation/:id`, `/history`.
+
+- `src/types/api.ts` — a TypeScript mirror of the backend contract. Every union and field
+  was read from the **running** FastAPI app (`app.openapi()` plus the enums in
+  `app/schemas/*`), not from documentation prose. No `any` anywhere in `src/`; ESLint runs
+  `@typescript-eslint/no-explicit-any` as an error.
+- `src/services/api-client.ts` — the only module that calls `fetch`. Owns the base URL, the
+  documented `{ "error": { code, message, detail } }` envelope, request timeouts, abort
+  handling, and a typed `ApiError` whose `kind` distinguishes `http`, `network`, `timeout`
+  and `malformed`. Components never issue requests themselves.
+- Design system — a "financial security command center": a dark, high-signal palette, a
+  single cyan instrument accent, and a narrow set of semantic tones reserved for risk
+  states. No decorative gradients, glassmorphism, fake market charts or large decorative
+  animation. Colour never carries meaning alone; every status also renders text.
+- Report page — investigation header, risk assessment, red flags ("why was this flagged?"),
+  claims with verification status, the claim → evidence → source panels, entities, the
+  eight-stage timeline, limitations and recorded errors, and a standing disclaimer.
+- `frontend/.env.example` with `VITE_API_BASE_URL` only. `VITE_API_BASE_URL` is the single
+  environment variable the app reads; a development fallback of `http://127.0.0.1:8000` is
+  used when it is absent.
+
+### Contract decisions
+
+- **Text is the only implemented input.** `GET /api/investigations/limits` reports
+  `supported_input_types: ["TEXT"]`, and the OpenAPI document exposes **no** `/url` or
+  `/upload` endpoint. The URL, Screenshot and PDF surfaces exist so the roadmap is visible,
+  but they are disabled, removed from the tab order, labelled with the phase that will
+  implement them, and **no request is ever sent for them**.
+- **Input-mode availability is read from the API**, not hardcoded, so the UI cannot claim a
+  mode works when the backend stops accepting it.
+- **No risk distribution chart on the dashboard.** `InvestigationSummaryResponse` carries no
+  risk level, so there is no real distribution to plot. Both the dashboard and the history
+  page state this in the interface instead of approximating it. Recharts is used in exactly
+  one place, where real data exists: risk contribution by severity, from
+  `risk_assessment.factors[].contribution`.
+- **History paging uses the API contract.** `limit` is constrained to 1–100 and `offset` to
+  ≥ 0, matching the backend; no client-side pagination was invented.
+- **No backend change was made or needed.** Where the API fell short of the plan, the
+  frontend adapted. No contract was silently altered.
+
+### Product invariants implemented
+
+- An `UNVERIFIED` or `INSUFFICIENT_EVIDENCE` claim is never labelled fraudulent; it is
+  rendered with plain wording and the backend's own `reason` text.
+- Absence of evidence is never converted into a contradiction; the empty state says so
+  explicitly.
+- The risk caveat is fixed copy — "Risk score is a transparent heuristic indicator and is not
+  a probability of fraud or financial loss." — shown verbatim and never reworded into a
+  stronger claim.
+- Limitations and recorded stage failures render above the findings rather than behind a
+  disclosure.
+- Evidence links open with `rel="noopener noreferrer"` and `referrerPolicy="no-referrer"`,
+  and a non-`http(s)` URL is rendered as inert text rather than as a link.
+
+### Accessibility
+
+Semantic landmarks, a skip-to-content link as the first focusable element, a visible focus
+ring on every interactive element, `aria-label` on all icon-only buttons, labelled form
+controls with `aria-describedby`, `role="status"` live regions for submission and paging
+state, `role="meter"` for the risk score, and full `prefers-reduced-motion` support.
+
+### Duplicate-submission guard
+
+`POST /api/investigations/text` runs the full pipeline synchronously and can take around a
+minute. The submit button is disabled while in flight, and the hook additionally holds an
+in-flight ref so a keyboard repeat or a double click that lands before React re-renders
+cannot start a second request.
+
+### Verification
+
+Executed against the **running** backend rather than mocks:
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` | pass, no errors |
+| `npm run lint` | pass, 0 errors / 0 warnings |
+| `npm run build` | pass, 2233 modules, chunks split app / react / charts |
+| `npm run verify:api` | 48 passed, 0 failed |
+| `RUN_LIVE=1 npm run verify:flow` | 17 passed, 0 failed |
+| `node scripts/verify-render.mjs` | 26 passed, 0 failed |
+| All five routes on the dev server | 200, every module compiles |
+| CORS preflight from `localhost:5173` | `access-control-allow-origin: http://localhost:5173` |
+
+`verify:api` asserts every endpoint plus the failure paths: `INPUT_EMPTY`, over-length text,
+`INVESTIGATION_NOT_FOUND`, an out-of-range `limit`, and a simulated unreachable backend.
+`verify:flow` creates a real investigation through the same client function the Investigate
+page calls, reads it back, and confirms it appears in the history list with matching counts.
+`verify-render.mjs` server-renders the report components against a captured real payload and
+asserts both the populated and every empty state.
+
+### Environment issue found and worked around
+
+Node was upgraded from v20.20.2 to v22.23.2 partway through the session, which broke the
+PowerShell `npm.ps1` shim (`Cannot find module '@npmcli/config'`). `npm.cmd` was used for the
+remainder of the work. Separately, `tailwindcss@4.0.0` with `@tailwindcss/vite@4.0.0` fails
+to build on Node 22 with `Cannot convert undefined or null to object`, even for a file
+containing only `@import "tailwindcss";`. Both packages were pinned up to `4.3.3`, which
+builds cleanly. This is a toolchain fact worth recording: the 4.0.0 native binding does not
+work on Node 22.
+
+### Not done, deliberately
+
+- **Phases 12–14 are not implemented.** URL, screenshot/OCR and PDF surfaces are present as
+  disabled, phase-labelled UI only. Their backend processing does not exist and the frontend
+  does not pretend otherwise.
+- **No authentication, portfolio, trading, recommendation or payment features**, per scope.
+- **No browser-driven verification.** No automated browser was available in this
+  environment, so visual layout at each breakpoint, mouse interaction and HMR were not
+  exercised. Rendering correctness, the API contract and route serving were verified as
+  described above.
+- **No Redux or a server-state library.** Plain React state and hooks; the project has no
+  demonstrated need for more.
+- **No backend file was modified.** `git diff` for this phase touches `frontend/` and
+  `docs/` only.
