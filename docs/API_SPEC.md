@@ -807,3 +807,34 @@ Guarantees a client may rely on:
 `origin`: `RED_FLAG` | `VERIFICATION`
 `factor_type` (verification): `CONTRADICTED_CLAIM` | `UNVERIFIED_CLAIM` |
 `INSUFFICIENT_EVIDENCE`
+
+---
+
+## Phase 7 Note — No New Endpoints
+
+Phase 7 adds **no HTTP surface**. The graph is a library, callable from Python:
+
+```python
+from app.graph import run_investigation
+
+state = run_investigation("Guaranteed 30% monthly returns, pay the fee today")
+state["risk_assessment"].risk_score
+state["warnings"]
+state["timeline"]
+```
+
+It accepts a `GraphContext` so an API process injects real services once while
+tests inject fakes. Phase 8 is where this becomes a route; designing the request
+and response shapes before the persistence and report layers exist would mean
+guessing at them.
+
+What the graph does define is the **result shape** a future endpoint will return,
+and it is worth reading `ARCHITECTURE.md` §2.3d and `app/graph/state.py` before
+designing that response. In particular:
+
+- `warnings` and `errors` are structured objects with stable `code` values, so a
+  client can branch on a limitation without parsing English.
+- `timeline` is stage metadata for a future UI, and carries no explanation field.
+- `risk_assessment` is the Phase 6 object, including its standing caveat. It is a
+  heuristic indicator count, never a probability (D-025), and any endpoint
+  exposing it must carry that caveat through unchanged.

@@ -292,3 +292,24 @@ Deleting an investigation cascades to `claims`, `entities`, `red_flags`,
   them with an explicit `Z` suffix.
 - No Postgres-only features are used, so `DATABASE_URL` is the only change
   required to move to Neon.
+
+---
+
+## Phase 7 Note — No Schema Change
+
+Phase 7 introduces **no tables, columns, indexes or migrations**. It is an
+orchestration layer over Phases 1-6, none of which persist anything yet.
+
+Three things in the graph look like persistence and are not, recorded here so a
+future schema does not assume otherwise:
+
+| Thing | What it actually is | Why it is not a database id |
+| --- | --- | --- |
+| `InvestigationState.investigation_id` | A SHA-256 digest of the input type and the submitted text | Deterministic on purpose, so a re-run of the same content is comparable field by field. Two investigations of identical content therefore **share** an id. It is a content fingerprint, not an investigation key. |
+| `TimelineEvent.at` | The graph's clock, injectable via `GraphContext.clock` | Metadata for a future UI; excluded from determinism comparisons by `semantic_view`. |
+| `RiskAssessment.assessed_at`, `EvidenceResponse.built_at`, `SearchResult.retrieved_at` | Stamped by Phases 6, 5 and 3 from their own clocks | Phase 7 cannot control them and does not try to. |
+
+When Phase 9 adds persistence, the graph will need to be given a real
+investigation id at the point the run starts, and `investigation_id_for` becomes a
+content fingerprint used for grouping or re-run detection rather than the primary
+key. That change belongs to Phase 9, not here.

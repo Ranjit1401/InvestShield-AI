@@ -875,3 +875,80 @@ over a typed state, so no stage re-derives another's work. `assess_batch` is the
 call shape. Determinism must be preserved or stored reports stop being
 auditable, every typed error code from Phases 3–5 must surface as a report
 limitation, and the vocabulary ban must keep passing unchanged.
+
+---
+
+## Phase 7 — LangGraph Orchestration
+
+**Commit:** `feat: implement LangGraph investigation orchestration`
+**Tests:** 291 added. Suite result recorded in `CURRENT_STATE.md`.
+
+### What was added
+
+`langgraph==1.2.12`, verified to install and run on CPython 3.14.5 (Windows).
+Only `StateGraph`, `START`/`END` and the runtime context are used — no agent, no
+model, no tool-calling.
+
+The graph package, seven test modules, and a runnable `manual_graph.py` that
+demonstrates three passes offline: a full pipeline with a fixture provider, a
+degraded run with search unavailable, and a rejected empty submission.
+
+### The seam between Phase 4 and Phase 5
+
+Wiring Phase 5 into the pipeline surfaced a real gap. `VerificationService`
+performs the searches and discards the `SearchResponse` objects, because nothing
+downstream asked for them; `EvidenceService.build_all` needs them to know which
+query surfaced which document.
+
+The obvious fix — having the graph run the searches itself — would duplicate every
+network call, and the second copy could rank differently from the first, putting
+evidence in front of a verification that never saw the underlying document. That
+is precisely the fabrication D-023 forbids, so it was rejected.
+
+`RecordingSearchService` wraps the real `SearchService`, delegates every call
+unchanged, and keeps the responses. Recording is a side effect of delegation
+rather than a separate step, so there is no way to search through it without the
+response being kept. The per-claim grouping is reconstructed through
+`VerificationResult.queries`, which Phase 4 populates from the responses it
+actually received.
+
+Verified end to end: a run against a fixture provider shows an evidence item
+carrying the exact query Phase 4 issued.
+
+### Bugs found and fixed
+
+1. **A failed stage continued the run.** Only the input node was guarded. A run
+   whose extraction raised still went on to produce a full `risk_assessment`, and
+   a failed red-flag pass reported "no patterns found". Both understate risk
+   while looking like complete investigations. Fixed by applying the same
+   `route_on_recorded_error` predicate after every stage (D-032).
+2. **The evidence abort edge was missing.** The first loop over the stage chain
+   excluded the final pair, so an evidence-stage error would have continued to
+   risk. Evidence cannot currently record an error, but the guard belongs there
+   anyway rather than depending on that staying true.
+3. **`analysis_completeness`/`assessed_at` broke whole-state comparison.**
+   `RiskAssessment.assessed_at` is stamped by Phase 6 from a real clock, so two
+   runs can never be byte-identical. Added `semantic_view` and
+   `TIMESTAMP_FIELDS` (D-034).
+4. **A factory named `test_settings` was collected as a test.** Pytest collects
+   imported callables whose names begin with `test_`. Renamed to
+   `offline_settings`.
+5. **Test settings leaked the developer's `.env`.** `offline_settings()` now
+   passes `_env_file=None`, so "fully offline" is a property of the tests rather
+   than of the machine they run on. Without it a local `.env` supplying a real
+   `SERPAPI_KEY` would have let a test quietly reach the network and still pass.
+
+### A pre-existing issue found, not fixed here
+
+`tests/test_health.py::test_health_reports_database_state` asserts the health
+endpoint reports the `sqlite` dialect, but `/api/health` probes the
+**module-level** `engine` in `app/db/session.py`, which is built from
+`get_settings()` rather than from the settings injected into `create_app`. When a
+repository-root `.env` sets `DATABASE_URL` to PostgreSQL, that engine is
+PostgreSQL and the assertion fails however the app was constructed.
+
+This is out of Phase 7's scope — it is a Phase 0/8 concern about how the health
+route resolves its database — and it reproduces identically with the Phase 7 tests
+excluded, so it is not caused by this phase. Recorded here rather than patched,
+because the correct fix belongs with the API layer and changing it from here
+would scope-creep into a completed phase. See `CURRENT_STATE.md`.

@@ -7,20 +7,17 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 6 — Risk Engine — **COMPLETE**
-**Current Subphase:** Phase 7 — LangGraph Orchestration — **NOT STARTED**
-**Last Completed Task:** Phase 6 — `RiskService` producing a deterministic,
-explainable risk assessment from Phase 1 red flags, Phase 2 claims, Phase 4
-verification statuses and Phase 5 evidence: risk schemas whose invariants are
-enforced by validation rather than convention, weights resolved through Phase 1's
-own rule table, four inclusive bands with a documented threshold table, and
-cross-stage de-duplication so that one behaviour noticed by four stages scores
-once and the other three views are kept as provenance.
-**1546 tests passing** (1161 prior + 385 Phase 6).
-**Currently Working On:** Idle. Awaiting instruction to begin Phase 7.
-**Latest Commit:** `feat: implement evidence engine` (Phase 5),
-`feat: implement claim verification` (Phase 4)
-**Working Tree:** Phase 6 uncommitted at the time of writing.
+**Current Phase:** Phase 7 — LangGraph Orchestration — **COMPLETE**
+**Current Subphase:** Phase 8 — API layer — **NOT STARTED**
+**Last Completed Task:** Phase 7 — a LangGraph graph connecting Phases 1-6 into
+one investigation, owning order and bookkeeping only: a typed state carrying the
+Phase 1-6 objects themselves, six nodes that each call exactly one service,
+dependency injection through LangGraph's runtime context, structured warnings and
+errors, a stage timeline for the future UI, and a uniform rule that a recorded
+error ends the run while a recorded limitation never does. No Phase 1-6 file was
+modified.
+**Latest Commit:** `feat: implement LangGraph investigation orchestration` (Phase 7)
+**Working Tree:** clean.
 
 ### Phase Status Summary
 
@@ -33,78 +30,76 @@ once and the other three views are kept as provenance.
 | Phase 4 | Verification agent | **COMPLETE** |
 | Phase 5 | Evidence engine | **COMPLETE** |
 | Phase 6 | Risk engine | **COMPLETE** |
-| Phase 7 | LangGraph orchestration | **NEXT** |
+| Phase 7 | LangGraph orchestration | **COMPLETE** |
+| Phase 8 | API layer (FastAPI endpoints) | **NEXT** |
 
 ### Files Recently Changed
 
 ```
-backend/app/schemas/risk.py                             (new — levels, factors, weights, thresholds, assessment)
-backend/app/services/risk/__init__.py                   (new — public surface)
-backend/app/services/risk/risk_scoring.py               (new — weight snapshot, bands, score arithmetic)
-backend/app/services/risk/risk_factors.py               (new — status → factor mapping, rsk_/rf_ ids)
-backend/app/services/risk/risk_aggregation.py           (new — de-duplication and cross-stage linking)
-backend/app/services/risk/risk_service.py               (new — RiskService orchestration)
-backend/app/scripts/manual_risk.py                      (new — runnable smoke test)
-backend/tests/risk_factories.py                         (new — shared builders)
-backend/tests/test_risk_schemas.py                      (new)
-backend/tests/test_risk_scoring.py                      (new)
-backend/tests/test_risk_factors.py                      (new)
-backend/tests/test_risk_aggregation.py                  (new)
-backend/tests/test_risk_service.py                      (new — end to end)
-backend/tests/test_risk_safety.py                       (new — vocabulary ban, negation-aware)
-backend/tests/test_risk_package.py                      (new — package invariants)
-docs/IMPLEMENTATION_PLAN.md / CURRENT_STATE.md / DEVELOPMENT_LOG.md
+backend/app/graph/__init__.py                 (new — public surface)
+backend/app/graph/state.py                    (new — InvestigationState, stage/timeline vocabulary)
+backend/app/graph/context.py                  (new — GraphDependencies, GraphContext, RecordingSearchService)
+backend/app/graph/nodes.py                    (new — six stage nodes, fixed message tables)
+backend/app/graph/edges.py                    (new — route_on_recorded_error)
+backend/app/graph/investigation_graph.py      (new — build_investigation_graph, run_investigation)
+backend/app/scripts/manual_graph.py           (new — offline three-pass demo)
+backend/tests/graph/graph_factories.py        (new — recording fakes + real offline builders)
+backend/tests/graph/test_graph_construction.py
+backend/tests/graph/test_graph_state.py
+backend/tests/graph/test_graph_recorder.py
+backend/tests/graph/test_graph_nodes.py
+backend/tests/graph/test_graph_execution.py
+backend/tests/graph/test_graph_safety.py
+backend/tests/graph/test_graph_package.py
+backend/requirements.txt                      (+ langgraph==1.2.12)
 docs/ARCHITECTURE.md / AI_PIPELINE.md / API_SPEC.md / DECISIONS.md
+docs/IMPLEMENTATION_PLAN.md / DEVELOPMENT_LOG.md / PROJECT_CONTEXT.md
 ```
 
 ### Tests Passing
 
 ```
 cd backend && python -m pytest
-1546 passed, 4 deselected
+1882 passed, 4 deselected, 1 failed
 ```
+
+**The one failure is `tests/test_health.py::test_health_reports_database_state`,
+and it is pre-existing and environment-caused, not a Phase 7 regression.** See
+Known Bugs item 1.
+
+Baseline before Phase 7 was `1592 passed, 4 deselected`. Phase 7 added **291
+tests** (`tests/graph/`). No Phase 1-6 test was modified or removed.
 
 ### Tests Failing
 
-None.
+One, and it is not caused by Phase 7:
+
+1. **`test_health_reports_database_state`** — asserts `/api/health` reports the
+   `sqlite` dialect, but the route probes the **module-level** `engine` in
+   `app/db/session.py`, which is built from `get_settings()` rather than from the
+   settings injected into `create_app`. A repository-root `.env` setting
+   `DATABASE_URL` to PostgreSQL makes that engine PostgreSQL regardless of how
+   the app was constructed.
+
+   **Evidence that Phase 7 did not cause it:**
+   `python -m pytest --ignore=tests/graph` → `1591 passed, 1 failed` — the same
+   single failure with every Phase 7 test excluded.
+
+   **Left unfixed deliberately.** The correct fix belongs to the API layer
+   (Phase 8), which is where the health route's database resolution should be
+   decided. Patching it from here would scope-creep into a completed phase. The
+   local `.env` was also not modified: it holds real credentials.
 
 ### Known Bugs
 
-None open. The Phase 6 test suite surfaced and fixed three issues in the new code,
-recorded in `DEVELOPMENT_LOG.md`:
-
-1. **Every red-flag weight resolved to `0`.** `RiskWeights` was keyed by
-   `code.value.lower()` but looked up with `RedFlagCode.code.value`, so no code
-   ever matched. The symptom was an assessment that scored 0 while reporting
-   red-flag factors. The table is now keyed by the enum itself, and weights are
-   resolved through Phase 1's `RULES_BY_CODE`/`weight_attr` rather than by
-   reconstructing setting names, so the two mappings cannot diverge again.
-2. **`RISK_RELEVANT_CLAIM_TYPES` was imported from the wrong module.** It is
-   defined in `app.schemas.risk`, not `app.schemas.claims`; the import was a
-   package-level `ImportError` and surfaced immediately.
-3. **An `UNVERIFIED_CLAIM` factor was exempted from de-duplication.** The first
-   rule exempted every factor with `is_uncertainty`, which includes
-   `UNVERIFIED_CLAIM` — a weighted factor that genuinely double-counts against
-   the matching red flag. The rule is now "a factor that already weighs nothing
-   is not absorbed", which covers `INSUFFICIENT_EVIDENCE` without letting a real
-   finding count twice.
-
-One behaviour was also **narrowed** after review, recorded in `DEVELOPMENT_LOG.md`:
-
-4. `INSUFFICIENT_EVIDENCE` factors are no longer given an `absorbed_into` pointer.
-   The primary red flag counted a *pattern*; pointing at it implied it had also
-   accounted for a verification it never performed. Such factors now carry no
-   pointer and are kept visible at zero contribution.
-
-One **pre-existing Phase 1 wording issue** was found and deliberately not fixed
-here, recorded in `DEVELOPMENT_LOG.md`:
-
-5. The `SUSPICIOUS_URL` rule description reads "A link was found that uses a
-   pattern commonly seen in fraudulent campaigns." That asserts the word
-   *fraudulent*, which the product's own vocabulary standard discourages. Phase 6
-   reuses Phase 1's text verbatim by design, so the phrase reaches every risk
-   report. Changing it is a Phase 1 decision with its own tests, so it is pinned
-   by `TestPhaseOneCatalogueTripwire` rather than silently reworded here.
+1. **`/api/health` ignores injected settings for its database probe** — see
+   Tests Failing above. Phase 0/8 scope.
+2. **Phase 4 discards the search responses Phase 5 needs.** Phase 7 works around
+   this with `RecordingSearchService` rather than editing Phase 4 (D-031). The
+   clean fix is for `VerificationService` to return its responses, which should be
+   done if Phase 4 is ever reopened.
+3. **Phase 1's `SUSPICIOUS_URL` description asserts the word "fraudulent".**
+   Known, pinned by `TestPhaseOneCatalogueTripwire`, and a Phase 1 fix.
 
 ### Blocked Items
 
@@ -114,71 +109,82 @@ None.
 
 | Service | Status | Evidence |
 | --- | --- | --- |
-| `GROQ_API_KEY` | **present** | configured; Phase 2 extraction uses it |
+| `GROQ_API_KEY` | present but **not working** | a local `.env` now supplies one; the LLM returns an error status and Phase 2 degrades to deterministic patterns, which it reports honestly |
 | `SERPAPI_KEY` | **absent** | `SearchService.available = false`; verification degrades to `SEARCH_UNAVAILABLE` |
-| SQLite | working | `/api/health` → `database.connected = true` |
-| `httpx` | installed | used by both `LLMService` and `SerpAPIProvider` |
+| SQLite | working | used by the Phase 7 tests via `sqlite:///:memory:` |
+| `httpx` | installed | used by `LLMService` and `SerpAPIProvider` |
+| `langgraph` | **installed, 1.2.12** | `requirements.txt`; verified on CPython 3.14 |
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; `OCRService` not built |
-| `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred; see limitations |
+| `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred |
 
-**Consequence for Phase 7:** the whole Phase 4, 5 and 6 suites run against a
-**fake** `SearchProvider`. Without `SERPAPI_KEY` the live path has still never
-executed, so real SerpAPI ranking and snippet quality remain unverified
-assumptions. The risk engine itself needs no network and was verified fully
-offline.
+> A repository-root `.env` now exists (gitignored, contains real credentials).
+> It appeared during the Phase 7 session and is the cause of Known Bug 1. It is
+> **not** committed. `tests/graph/graph_factories.py` passes `_env_file=None` so
+> the graph tests stay offline regardless of what it contains.
 
-### Phase 6 Design Decisions
+### Phase 7 Architecture
+
+```
+START ─► input ─┬─(error)─► END
+                └─(ok)────► extraction ─► red_flags ─► verification ─► evidence ─► risk ─► END
+```
+
+| Concern | Where |
+| --- | --- |
+| State | `InvestigationState` (`TypedDict`), `warnings`/`errors`/`timeline` carry `operator.add` reducers |
+| Stages | `GraphStage` enum, doubling as node names and timeline labels |
+| Timeline | `TimelineEvent(stage, status, message, at)`; status ∈ STARTED / COMPLETED / PARTIAL / FAILED / SKIPPED |
+| Warnings | `GraphWarning(code, stage, message, error_type)` with fixed wording |
+| Errors | `GraphError(code, stage, message, error_type)`; any entry ends the run |
+| Dependency injection | `GraphDependencies` (frozen) + `GraphContext` via LangGraph `context_schema` |
+| Search seam | `RecordingSearchService` wraps `SearchService`; the graph issues no search |
+| Determinism | `semantic_view` + `TIMESTAMP_FIELDS`; `GraphContext.clock` injectable |
+| Entry point | `run_investigation(raw_input, input_type=..., context=...)` |
+| Factory | `build_investigation_graph()` — a fresh compiled graph per call |
+
+### Phase 7 Design Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| One weight per rule, resolved through Phase 1's `RULES_BY_CODE` | Reconstructing `risk_weight_<code>` here would be a second mapping that could silently resolve to `0` (D-007). |
-| `RiskWeights` keyed by the `RedFlagCode` enum, not a string | A key-casing mismatch is invisible and understates risk. The type makes it impossible. |
-| `contribution <= weight` enforced by validation | Turns "do not double count" from an aspiration into an arithmetic invariant. |
-| A de-duplicated factor is **kept** at `0`, never dropped | Dropping hides that a claim was contradicted; scoring it double-counts. |
-| Absorption needs a **scoring** primary | A zero-weight red flag must not silence the claim's own finding. |
-| `VERIFIED` and `NOT_APPLICABLE` produce no factor at all | Neither is a risk indicator, and no member may encode a risk *reduction* (D-020). |
-| `INSUFFICIENT_EVIDENCE` weights `0` by default | Not being able to look is not a finding. Uncertainty is reported, not scored (D-006). |
-| `UNVERIFIED` scores only for **completed-search** reason codes | `SEARCH_UNAVAILABLE` + `UNVERIFIED` is representable and would turn an offline run into an accusation. The reason-code gate is where it is caught. |
-| Claims link to red flags by span overlap **or** claim-type map | Phase 1 and Phase 2 segment text differently, so overlap alone misses real duplicates. |
-| Evidence never contributes; it only attaches ids | The same document reachable from ten queries cannot move a score (D-007). |
-| `SCORE_NOT_A_PROBABILITY` is a **schema** invariant | The assessment appends it during validation, so no caller — service, test, or future Phase 7 rehydration — can omit it. |
-| The score is capped, never rescaled | Two documents far past the ceiling must score identically for one number to mean anything. |
-| Factor and red-flag ids are digests, not counters | A re-run must be comparable to a stored report, and `absorbed_into` must point at something durable. |
+| Nodes call one service and return its output | Keeps the boundary between *what was found* and *what runs in what order* (D-030) |
+| `RecordingSearchService`, not a second search pass | Duplicating searches could present evidence the verification never saw (D-031, D-023) |
+| One error predicate guards every stage | A failed red-flag pass that reports "no patterns found" understates risk (D-032) |
+| Evidence failure degrades instead of stopping | Phase 6 established evidence carries no weight, only provenance ids |
+| `operator.add` reducers on the three accumulators | Appending becomes a schema property, not a per-node convention (D-033) |
+| Timestamp names listed, not detected by type | A real datetime finding (a claim's publication date) must not be discarded with the metadata (D-034) |
+| All four input types declared, three refused | OCR/PDF/image are out of scope; silently analysing a path as text would be dishonest (D-035) |
 
-### Known Limitations (Phase 6)
+### Known Limitations (Phase 7)
 
-- **No live SerpAPI run.** `SERPAPI_KEY` is absent, so a real Phase 4 result has
-  never been scored. Every test drives the engine with synthetic but schema-valid
-  Phase 4 and Phase 5 objects.
-- **Bands are product heuristics.** `20/50/90/100` were chosen to be
-  explainable and monotonic. They are **not** empirically validated, not derived
-  from any dataset, and no score at any level is a probability of anything.
-- **Weights are not calibrated.** Each `risk_weight_*` is a declared judgement
-  about relative seriousness. Reasonable to argue with; not measured.
-- **Claim-type → red-flag linking is a hand-built map.** `CLAIM_TYPE_RED_FLAG_CODES`
-  is deliberately narrow, but a claim family that is genuinely the same signal as
-  a rule and is missing from the map will be scored twice.
-- **The score is not persisted.** `RiskAssessment` is returned in memory only;
-  `RiskService.assess_batch` exists for Phase 7, and writing is Phase 9 work.
-- **`evidence_coverage` counts claims, not source diversity.** Phase 5 noted
-  cross-claim source diversity as unaddressed; Phase 6 measures the share of
-  assessed claims with at least one proof-grade document, which is a
-  transparency measure and not a confidence.
-- **Phase 1's `SUSPICIOUS_URL` description asserts the word "fraudulent".** Known,
-  pinned by a tripwire test, and a Phase 1 fix. See Known Bugs item 5.
+- **Only `TEXT` input is analysed.** `URL`, `IMAGE` and `PDF` are recognised and
+  refused with a typed reason. There is no ingestion stage yet.
+- **No live SerpAPI run.** `SERPAPI_KEY` is absent, so real ranking and snippet
+  quality remain unverified assumptions. The recorder is proven against a fixture
+  provider with the genuine Phase 3, 4 and 5 services.
+- **No LLM-backed extraction has succeeded.** A local `.env` supplies a key that
+  the API rejects, so Phase 2 degrades to deterministic patterns in every manual
+  run. That path is honest — it reports `EXTRACTION_FALLBACK` — but the
+  model-assisted path is untested against a live model.
+- **No persistence, no report, no endpoint.** The result is returned in memory.
+- **`semantic_view` is how determinism is asserted.** Whole states never compare
+  equal because Phases 3, 5 and 6 stamp their own timestamps.
+- **The timeline is metadata only.** No natural-language stage explanations, by
+  design — see the D-035 and D-030 notes on vocabulary.
+- **`investigation_id` is a digest of the input**, so two different investigations
+  of identical content share an id. That is what makes a re-run comparable, but it
+  means the id is not unique per investigation. Phase 9 will need a real id.
 
 ### Environment Reality Check (verified)
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
-| `GROQ_API_KEY` | **present** in OS environment | Phase 2 extraction configured |
+| `langgraph` | **1.2.12, installed** | `python -m pip show langgraph`; graph compiles and runs |
+| `GROQ_API_KEY` | present but rejected by the API | extraction falls back, reports `EXTRACTION_FALLBACK` |
 | `SERPAPI_KEY` | **absent** | `SearchService.available = false` |
-| Tesseract binary | present at `C:\Program Files\Tesseract-OCR\tesseract.exe`, not on `PATH` | resolved by `resolve_tesseract_cmd()` |
-| `pytesseract` / `Pillow` | not installed | deferred |
-| PyMuPDF (`fitz`) | not installed | deferred |
+| Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` |
+| `pytesseract` / `Pillow` / PyMuPDF | not installed | deferred |
 | `sentence-transformers` | not installed | deferred |
-| `langgraph` / `langchain-groq` | not installed | Phase 7 |
-| SQLite | working | `/api/health` → `database.connected = true` |
+| Repository-root `.env` | **exists, gitignored** | cause of Known Bug 1; holds real credentials |
 
 ### Important Decisions
 
@@ -187,42 +193,46 @@ the next phase:
 
 | ID | Decision |
 | --- | --- |
-| D-006 | Absence of evidence is never an accusation — `CONTRADICTS` requires direct authoritative contradiction |
-| D-007 | Risk weighting must be transparent and configurable; no hidden scores |
-| D-009 | Every external service degrades into a typed error code surfaced in report Limitations |
-| D-018 | Source authority recognised by hostname identity, never by keyword |
+| D-006 | Absence of evidence is never an accusation |
+| D-009 | Every external service degrades into a typed error code surfaced as a Limitation |
 | D-020 | Verification reports a claim's factual status, never a verdict |
-| D-021 | Only a direct authoritative conflict produces `CONTRADICTED` |
-| D-023 | Evidence type, relationship and relevance are three separate facts; evidence never re-decides verification |
-| D-025 | The risk score is a transparent heuristic indicator sum, never a probability; bands are product heuristics |
+| D-023 | Evidence never re-decides; it cannot make a finding easier |
+| D-025 | The risk score is a heuristic indicator sum, never a probability |
+| D-030 | The graph is the orchestrator and owns no business logic |
+| D-031 | Phase 4's searches are recorded, not repeated |
+| D-032 | A recorded error ends the run; a recorded limitation does not |
+| D-033 | State accumulates structurally; services are injected through a context |
+| D-034 | Determinism is asserted on the semantic view, not on the clock |
+| D-035 | Only text is analysed in Phase 7; other input types are refused |
 
 ---
 
 ## Next Exact Task
 
-**Phase 7 — LangGraph Orchestration.**
+**Phase 8 — API layer (FastAPI endpoints).**
 
-1. Compose Phases 2–6 into a single stateful graph, with a typed state carrying
-   `ExtractionResult` → `VerificationResult` → `EvidenceResponse` →
-   `RiskAssessment` so no stage re-derives another's work.
-2. `RiskService.assess_batch` is the shape Phase 7 should call: one
-   investigation, many claims.
-3. `risk_weight_*` and `risk_band_*` stay in `Settings` and must be mirrored in
-   `.env.example` (D-007). Phase 6 added three verification weights
-   (`risk_weight_contradicted_claim`, `risk_weight_unverified_claim`,
-   `risk_weight_insufficient_evidence`) and `risk_score_ceiling`.
-4. Preserve determinism: the same inputs must produce the same factor ids and the
-   same score on every run, or stored reports are not auditable.
-5. Surface every typed error code from Phases 3–5 as a report Limitation
-   (D-009). `RiskAssessment.warnings` is the existing place for risk-stage
-   limitations; do not fold them into the score.
-6. Do **not** let the graph introduce a verdict, a probability, or advice. The
-   vocabulary ban in `test_risk_safety.py` must keep passing unchanged.
-7. No API routes (Phase 8), no database persistence (Phase 9).
+1. Expose the investigation pipeline over HTTP. `run_investigation` is the library
+   entry point and is already usable from a route; Phase 8 wraps it, not rewrites
+   it. See `docs/API_SPEC.md` for the intended resource shapes.
+2. **Decide the `/api/health` database question first** (Known Bug 1). The route
+   currently probes a module-level engine built from `get_settings()` rather than
+   from the request's settings. Fixing it belongs here, not in Phase 7.
+3. `GraphWarning.code` and `GraphError.code` are stable strings. Surface them as
+   the machine-readable `limitations` array rather than flattening them to prose.
+4. Carry `RiskAssessment`'s standing caveat through the response unchanged. The
+   score is a heuristic indicator count, never a probability (D-025).
+5. `InvestigationState` holds Pydantic models and is serialisable. Decide whether
+   the endpoint returns the whole state or a projection; the whole state is large
+   and includes `extraction`, which a client has no use for.
+6. No persistence yet (Phase 9). A Phase 8 endpoint must work in-memory, so think
+   about what happens when Phase 9 lands rather than designing around it.
+7. Do not let the API layer introduce a verdict, a probability or advice. The
+   vocabulary ban in `tests/graph/test_graph_safety.py` and
+   `tests/test_risk_safety.py` must keep passing unchanged.
 
-### Do not start before Phase 7 is green
+### Do not start before Phase 8 is green
 
-- No FastAPI endpoints (Phase 8), no persistence (Phase 9).
+- No persistence (Phase 9), no report generation (Phase 10), no frontend (11+).
 
 ---
 
@@ -232,10 +242,9 @@ If you are reading this in a fresh session:
 
 1. [x] Read `docs/CURRENT_STATE.md` (this file)
 2. [ ] Read `docs/IMPLEMENTATION_PLAN.md`
-3. [ ] Read `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
+3. [ ] Read `docs/ARCHITECTURE.md` (§2.3d for the graph) and `docs/DECISIONS.md` (D-030…D-035)
 4. [ ] Read the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **1546 passed, 4 deselected**
-7. [ ] Confirm the test count still matches "Tests Passing" above
-8. [ ] Execute **Next Exact Task**
-
+6. [ ] Run `cd backend && python -m pytest` — expect **1882 passed, 4 deselected, 1 failed**
+      (the one failure is Known Bug 1, pre-existing)
+7. [ ] Execute **Next Exact Task**

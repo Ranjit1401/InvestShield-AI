@@ -753,3 +753,127 @@ could not be completed.
   an eval, or a templating engine.
 - We never download or execute APKs or arbitrary binaries — `.apk` content is
   only ever *described* as a red flag.
+
+### 2.3d Orchestration layer (Phase 7, complete)
+
+`app/graph/` is the seam between the services and everything that drives them. It
+owns **order and bookkeeping only**. No rule, prompt, regex, threshold, weight or
+score is computed in it, and `tests/graph/test_graph_package.py` fails the build
+if that changes.
+
+```
+                     ┌───────────────────────────┐
+                     │  LangGraph StateGraph     │
+                     │  orchestration only       │
+                     └─────────────┬─────────────┘
+                                   │
+       ┌───────────────────────────┼───────────────────────────┐
+       ▼                           ▼                           ▼
+ ExtractionService          RedFlagEngine           VerificationService
+   (Phase 2)                 (Phase 1)                  (Phase 4)
+                                                           │
+        ┌──────────────────────────────────────────────────┘
+        ▼
+ EvidenceService                            RecordingSearchService
+   (Phase 5)                                wraps SearchService so Phase 5
+                                            can cite the queries Phase 4 ran
+        │
+        ▼
+  RiskService
+   (Phase 6)
+```
+
+#### Files
+
+| File | Responsibility |
+| --- | --- |
+| `state.py` | `InvestigationState`, the stage and timeline vocabularies, `GraphWarning`/`GraphError`, `semantic_view` |
+| `context.py` | `GraphDependencies`, `GraphContext`, `RecordingSearchService`, `build_default_context` |
+| `nodes.py` | The six stage nodes and the fixed warning/error message tables |
+| `edges.py` | The single conditional predicate, `route_on_recorded_error` |
+| `investigation_graph.py` | `build_investigation_graph()`, `run_investigation()`, `investigation_summary()` |
+
+#### State
+
+`InvestigationState` is a `TypedDict` carrying the Phase 1-6 objects themselves —
+`Claim`, `Entity`, `RedFlag`, `VerificationResult`, `EvidenceResponse`,
+`RiskAssessment` — never plain dictionaries. Re-deriving dicts would mean
+re-validating the same data and discarding the invariants the schemas enforce.
+
+Three channels carry `operator.add` reducers: `warnings`, `errors` and
+`timeline`. Appending is therefore a property of the schema rather than a
+convention each node must remember. Without the reducers a node returning one
+warning would silently discard the ones already recorded, and a happy-path test
+would not catch it because that path never accumulates twice.
+
+`investigation_id` is a SHA-256 digest of the input type and submitted text, not
+a counter or a database id: Phase 7 has no persistence (that is Phase 9), and a
+derived id makes a re-run comparable.
+
+#### Nodes
+
+| Node | Calls | Notes |
+| --- | --- | --- |
+| `input` | nothing | Validates the submission. Normalization belongs to Phase 2, so nothing is rewritten here. |
+| `extraction` | `ExtractionService.extract` | Keeps the whole `ExtractionResult` so Phase 4's `verify_extraction` can consume it. |
+| `red_flags` | `RedFlagEngine.detect` | Runs on `raw_input`, never on `extracted_text`: a `RedFlag`'s span indexes the submitted string, so a normalized variant would point at the wrong characters. |
+| `verification` | `VerificationService.verify_claims` | Builds no query, classifies no source, decides no status. |
+| `evidence` | `EvidenceService.build_all` | Given the responses Phase 4 retrieved, grouped by claim. |
+| `risk` | `RiskService.assess_batch` | Stores what Phase 6 computed. No arithmetic here. |
+
+#### The search seam
+
+Phase 4 performs the searches and discards the `SearchResponse` objects; Phase 5
+needs them to know which query surfaced which document. `RecordingSearchService`
+wraps the real `SearchService`, delegates every call unchanged and keeps what it
+saw, so the searches are still Phase 4's, still issued once, and the graph makes
+no network call of its own (D-031).
+
+Responses are mapped back to claims through `VerificationResult.queries`, which
+Phase 4 populates from the responses it actually received — so a query Phase 4
+never issued cannot pull a result into a claim that did not cause it.
+
+#### Failure policy
+
+One predicate guards every stage: **a recorded `GraphError` ends the run.** A
+`GraphWarning` never does.
+
+The distinction is between typed degradation and contract violation. Phase 3-5
+already turn real-world problems into typed values — `SEARCH_UNAVAILABLE`,
+`SEARCH_FAILED`, `INSUFFICIENT_EVIDENCE` — so a missing key is a limitation and
+the pipeline continues. An exception escaping a service means a contract is
+broken, and continuing would report an assessment built on a stage that silently
+did nothing; for the stages feeding the score that understates risk.
+
+The one deliberate exception is the evidence node. Phase 6 established that
+evidence contributes no weight and only attaches provenance ids, so losing it
+degrades the explanation without changing the assessment. It records a warning,
+logs the full exception and names the class, then lets the run finish (D-032).
+
+#### Dependency injection
+
+`GraphDependencies` holds the five services and is frozen, so a run cannot swap a
+service halfway. `GraphContext` wraps it with the run's clock and is passed to
+each node as LangGraph's runtime context. The state therefore carries
+investigation data only, never a live service, which keeps it serialisable and
+the nodes testable in isolation.
+
+`build_investigation_graph()` compiles a **fresh** graph per call rather than
+exposing a module-level instance, so one test's wiring cannot leak into another's.
+
+#### Determinism
+
+Two runs of the same input with the same fixtures agree field for field.
+Wall-clock timestamps are metadata and are excluded by `semantic_view`, which
+strips the six names in `TIMESTAMP_FIELDS` — including three stamped by Phases 3,
+5 and 6 rather than by the graph. `GraphContext.clock` is injectable, so the
+graph's *own* stamps are asserted equal outright (D-034).
+
+#### Timeline
+
+Each stage appends `TimelineEvent(stage, status, message, at)`, where status is
+`STARTED`, `COMPLETED`, `PARTIAL`, `FAILED` or `SKIPPED`. `PARTIAL` and
+`SKIPPED` are distinct on purpose: collapsing them would make "we could not check
+this" indistinguishable from "we checked and found nothing", which is the exact
+confusion D-006 exists to prevent. This is metadata for a Phase 11/16 UI; there is
+no field for an explanation, so no stage narrative can be smuggled in.

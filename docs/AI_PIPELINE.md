@@ -701,3 +701,45 @@ contribution itemised.
 | Invalid URL | 0 | 422 validation error, no investigation created |
 | Empty input text | 1.5–3 | Mode `FALLBACK`, empty result, warning *"Input text was empty; nothing to extract."* |
 | DB write fails | final | Investigation still returned to the user; persistence warning logged |
+
+---
+
+## 5. How the Stages Map to the Graph (Phase 7, complete)
+
+LangGraph does not implement any of the stages above. It decides their **order**
+and records what happened, and every stage body belongs to the service named in
+its row. The mapping is one-to-one:
+
+| AI_PIPELINE stage | Owner | Graph node |
+| --- | --- | --- |
+| 0 Input Processing | `app.graph.nodes.input_node` | `input` |
+| 1–3 Extraction | `ExtractionService` (Phase 2) | `extraction` |
+| 4 Red Flag Detection | `RedFlagEngine` (Phase 1) | `red_flags` |
+| 5.5 Retrieval, 5–6 Verification | `VerificationService` (Phase 4) | `verification` |
+| 7–8 Evidence | `EvidenceService` (Phase 5) | `evidence` |
+| 9 Risk Calculation | `RiskService` (Phase 6) | `risk` |
+| 10–12 Report, translation | *not built* | — (Phase 10, 15, 16) |
+
+Note that stages 5.5 and 6 collapse into one graph node. Search is not a separate
+step: `VerificationService` issues the queries and retrieves the results, and the
+graph never runs a search of its own. `RecordingSearchService` records what
+Phase 4 retrieved so stage 7 can cite it without repeating the work (D-031).
+
+### Failure behaviour, at graph level
+
+The failure matrix in §4 is about what each stage *reports*. The graph adds one
+rule on top: **a recorded error ends the run, a recorded limitation does not.**
+
+| Condition | Reported by | Graph behaviour |
+| --- | --- | --- |
+| Empty submission | `INPUT_EMPTY` | Stop at `input` |
+| `URL` / `IMAGE` / `PDF` submitted | `INPUT_TYPE_NOT_SUPPORTED` | Stop at `input`; not analysed in Phase 7 (D-035) |
+| No claims extracted | `NO_CLAIMS_EXTRACTED` | Continue; verification and evidence report `SKIPPED`; Phase 1 still runs and risk still scores |
+| Search unavailable | `SEARCH_UNAVAILABLE`, `PARTIAL_VERIFICATION` | Continue; no accusation, no score contribution |
+| Extraction fell back to patterns | `EXTRACTION_FALLBACK` | Continue; reported as weaker extraction |
+| Evidence stage raised | `EVIDENCE_UNAVAILABLE` | Continue; evidence carries no weight, so the score is unaffected (D-032) |
+| A service contract broken | `EXTRACTION_FAILED` / `RED_FLAG_DETECTION_FAILED` / `VERIFICATION_FAILED` / `RISK_ASSESSMENT_FAILED` | Stop; **no `risk_assessment` is reported** |
+
+The last row is the one that matters most. A run that stopped must never look
+like a run that finished and found little, so a stopped run reports no score at
+all.

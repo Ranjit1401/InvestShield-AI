@@ -208,6 +208,39 @@ field and warning the engine can produce, not by review.
 | OCR | pytesseract + Tesseract binary |
 | PDF | PyMuPDF (`fitz`) |
 
+## 6.2 How the investigation runs
+
+The stages are connected by a **LangGraph** graph. The graph is the
+orchestrator and nothing else: it decides the order, passes each stage's output
+to the next, and records what happened. Every judgement in the system is made by
+the stage that owns it — the pattern engine detects patterns, the verification
+service decides a claim's status, the evidence service assembles provenance, and
+the risk service produces the score. The graph never makes a finding of its own.
+
+```
+START ─► input ─┬─(error)─► END
+                └─(ok)────► extraction ─► red_flags ─► verification ─► evidence ─► risk ─► END
+```
+
+Two properties are deliberate and enforced by tests rather than by convention:
+
+- **A limitation never stops an investigation.** Search being unavailable, a
+  claim that cannot be checked, an extraction that fell back to patterns: each is
+  recorded as a structured warning with a stable code, and the investigation
+  continues. A user with no network still gets everything the offline stages can
+  establish, plus an honest statement of what could not be checked.
+- **A failure always stops it.** If a stage breaks in a way its contract says is
+  impossible, the run ends with a structured error and **no risk score at all**.
+  A stopped investigation must never be mistakable for a finished one that found
+  little — which is the failure mode that would matter most, because it makes the
+  tool's silence look like reassurance.
+
+The graph makes no network call of its own. External access stays inside the
+search service, and the searches performed during verification are recorded so
+the evidence stage can cite them rather than repeating them.
+
+---
+
 ## 7. Important Environment Details
 
 Verified on this machine:
@@ -276,6 +309,8 @@ Full detail in `ARCHITECTURE.md`.
 10. Never invent evidence, sources, or probabilities.
 11. Absence of evidence is never a finding. Uncertainty is reported, not scored.
 12. One underlying signal scores once, however many stages noticed it.
+13. A limitation never stops an investigation; a failure always does. A run that
+    stopped must never be mistakable for a run that finished and found little.
 
 ## 12. Session Recovery Rule
 

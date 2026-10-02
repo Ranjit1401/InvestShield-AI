@@ -668,3 +668,176 @@ abuse, and is tested directly against mixed text so it cannot become a blanket
 excuse.
 
 **Date:** 2026-10-02
+
+---
+
+## D-030 — The graph is the orchestrator and owns no business logic
+
+**Decision:** Every node in `app/graph/` does exactly one thing: read the state,
+call one Phase 1-6 service, and return the partial state that service's output
+implies. No rule, prompt, regex, threshold, weight or score is computed in a node.
+
+**Alternatives:**
+
+- *Put the pipeline logic in the graph and delete the services.* Rejected: it
+  would make each stage untestable in isolation and force a rewrite of Phases 1-6
+  to change the orchestration order.
+- *Let nodes call helpers opportunistically.* Rejected: an orchestration layer
+  that grows one "small" lookup is on a path to becoming a second implementation
+  of a domain decision, with none of that domain's tests.
+
+**Reason:** The phase boundary in this project is between *what was found* and
+*what runs in what order*. Once those blur, the risk engine can no longer be
+tested without a graph, and the graph can no longer be tested without real
+engines. `tests/graph/test_graph_package.py` enforces the boundary mechanically:
+it fails if any module under `app/graph/` imports a decision module
+(`red_flag_rules`, `decision_engine`, `comparator`, `query_builder`,
+`source_classifier`, `evidence_builder`, `risk_scoring`), reads a `risk_weight_*`
+setting, or calls `.search(` outside the recorder.
+
+**Date:** 2026-10-02
+
+---
+
+## D-031 — Phase 4's searches are recorded, not repeated
+
+**Decision:** `RecordingSearchService` wraps the real `SearchService` and keeps
+the responses Phase 4 retrieved. The graph reads that record and hands Phase 5
+the per-claim grouping. The graph issues no search of its own.
+
+**Context:** Phase 4's `VerificationService` performs the searches and discards
+the `SearchResponse` objects, because nothing downstream asked for them. Phase 5's
+`EvidenceService.build_all` needs them to know which query surfaced which
+document. The two phases do not line up, and Phase 7 is where that becomes
+visible.
+
+**Alternatives:**
+
+- *Have the graph run the searches itself and pass them to Phase 5.* Rejected on
+  two counts. It duplicates every network call, and the second copy could rank
+  differently from the first, which would put evidence in front of a
+  verification that never saw it — the exact fabrication D-023 forbids. It would
+  also make the graph a second search client, which the task explicitly rules out.
+- *Change `VerificationService` to return its responses.* This is the cleanest
+  long-term shape and would be the right change, but it edits a completed phase
+  whose contract is pinned by its own tests. Phase 7 does not modify Phases 1-6.
+  Recorded here as the preferred fix if Phase 4 is ever reopened.
+- *Let Phase 5 run without results.* Rejected: evidence would be permanently
+  empty, which is indistinguishable from "nothing was found".
+
+**Reason:** Recording is a side effect of delegation rather than a separate step,
+so there is no way to search through the recorder without the response being kept,
+and no way for the graph to obtain a document that Phase 4 did not retrieve. The
+mapping back to claims goes through `VerificationResult.queries`, which Phase 4
+populates from the responses it actually received, so a query it never issued
+cannot pull in a result. The only new inference in the module is that lookup.
+
+**Date:** 2026-10-02
+
+---
+
+## D-032 — A recorded error ends the run; a recorded limitation does not
+
+**Decision:** One predicate guards every stage: if any stage has recorded a
+`GraphError`, the run stops. A `GraphWarning` never stops it.
+
+**Context:** Phase 3-5 already convert real-world problems into *typed values* —
+a missing key becomes `SEARCH_UNAVAILABLE`, a timeout becomes `SEARCH_FAILED`, an
+uncheckable claim becomes `INSUFFICIENT_EVIDENCE`. Those are values, so they are
+warnings and the pipeline continues. An exception escaping a service is different:
+Phase 2 documents that `extract` never raises and Phase 4 documents that a
+provider failure never propagates, so an escaping exception means a contract is
+broken, not that the world is difficult.
+
+**The bug this replaced:** the first wiring guarded only the input node and let
+extraction, red-flag and verification failures be recorded and then walked past.
+The observed result was the worst available behaviour: a run whose extraction had
+raised still went on to produce a full `risk_assessment`, and a red-flag pass that
+failed then reported "no patterns found". To any caller that reads as a complete
+investigation. It understates risk, which is the one direction this product must
+never err in.
+
+**The one deliberate exception:** an evidence failure degrades rather than stops,
+because Phase 6 established that evidence contributes no weight and only attaches
+provenance ids. Losing it removes the explanation of an assessment without
+changing the assessment. It is still recorded, still logged in full, and still
+names the exception class. The asymmetry is documented at both the node and this
+entry rather than left to be discovered.
+
+**Reason:** The predicate tests for a *recorded error* rather than for known
+failure codes, so a new failure mode added to a node is routed correctly by
+default instead of being accidentally let through.
+
+**Date:** 2026-10-02
+
+---
+
+## D-033 — State accumulates structurally; services are injected through a context
+
+**Decision:** `InvestigationState` is a `TypedDict` whose `warnings`, `errors`
+and `timeline` channels carry `operator.add` reducers. Services are not read from
+globals: nodes receive a `GraphContext` through LangGraph's `context_schema`.
+
+**Reason:** The reducers make appending a property of the schema rather than a
+convention every future node must remember. Without them a node that returns one
+warning silently discards the three already recorded — and a naive happy-path
+test would not catch it, because the happy path never accumulates twice. The
+injectable context is what keeps the state carrying investigation data only, never
+a live service, which is what makes it serialisable and the nodes testable in
+isolation. `build_investigation_graph()` compiles a fresh graph per call rather
+than exposing a module-level instance, so one test's wiring cannot leak into
+another's.
+
+**Date:** 2026-10-02
+
+---
+
+## D-034 — Determinism is asserted on the semantic view, not on the clock
+
+**Decision:** `semantic_view(state)` strips every field named in
+`TIMESTAMP_FIELDS` — `started_at`, `completed_at`, `assessed_at`, `built_at`,
+`retrieved_at`, `searched_at` — and reduces the timeline to stage/status/message
+triples. `GraphContext.clock` is injectable.
+
+**Context:** `RiskAssessment.assessed_at`, `EvidenceResponse.built_at` and
+`SearchResult.retrieved_at` are stamped from real clocks by Phases 6, 5 and 3.
+The graph cannot control them, so a whole-state comparison of two runs can never
+be equal on a real pipeline. That is not the graph being non-deterministic; it is
+timestamps being metadata.
+
+**Alternatives:**
+
+- *Freeze every phase's clock.* Rejected: it would mean editing Phases 3, 5 and 6,
+  which this phase does not do.
+- *Compare nothing involving time.* Rejected: the graph's own timestamps would go
+  unchecked, and a clock that drifted between stages would go unnoticed.
+- *Drop only the graph's timestamps.* Insufficient — the nested ones remain.
+
+**Reason:** The timestamp names are listed rather than detected by type, so a
+genuine finding that happens to be a datetime — a publication date carried on a
+claim — is not silently discarded along with the metadata. With the clock frozen,
+the graph's own stamps are asserted equal outright, and the nested ones are
+compared through the semantic view. Both halves are tested.
+
+**Date:** 2026-10-02
+
+---
+
+## D-035 — Only text is analysed in Phase 7; the other input types are refused
+
+**Decision:** `InvestigationInputType` declares all four kinds the product
+accepts. The input node analyses `TEXT` and refuses `URL`, `IMAGE` and `PDF` with
+a typed `INPUT_TYPE_NOT_SUPPORTED` error and an `INPUT_TYPE_NOT_ANALYSED`
+warning.
+
+**Reason:** OCR, PDF and image ingestion are explicitly out of Phase 7's scope,
+so there is no way to analyse those three honestly. The two failures available were
+both bad: silently treating a file path or a URL as text would produce an
+investigation of a string that is not the content, and an enum listing only `TEXT`
+would quietly redefine the product's stated contract. Declaring all four and
+refusing three states the real position. A test asserts that exactly one kind is
+currently analysed, so starting to analyse another — without the ingestion work
+that would require — fails there rather than producing an empty investigation that
+reads like a clean one.
+
+**Date:** 2026-10-02

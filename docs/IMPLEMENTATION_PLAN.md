@@ -315,3 +315,52 @@ Beyond the checklist, three things the plan did not anticipate:
 - [ ] "Why was this flagged?" experience
 - [ ] Demo flow per README
 - [ ] Documentation final pass
+
+---
+
+## Phase 7 — LangGraph Orchestration — COMPLETE
+
+**Goal:** connect Phases 1-6 into one deterministic, testable investigation
+graph, without moving any business logic into it.
+
+**Status:** complete. 291 tests added. No Phase 1-6 file was modified.
+
+**What was built**
+
+```
+backend/app/graph/
+├── __init__.py             public surface
+├── state.py                InvestigationState, stage/timeline vocabulary
+├── context.py              GraphDependencies, GraphContext, RecordingSearchService
+├── nodes.py                the six stage nodes + fixed message tables
+├── edges.py                route_on_recorded_error
+└── investigation_graph.py  build_investigation_graph, run_investigation
+backend/tests/graph/
+├── graph_factories.py      recording fakes + real-service offline builders
+├── test_graph_construction.py
+├── test_graph_state.py
+├── test_graph_recorder.py
+├── test_graph_nodes.py
+├── test_graph_execution.py
+├── test_graph_safety.py
+└── test_graph_package.py
+backend/app/scripts/manual_graph.py
+```
+
+**Decisions recorded:** D-030 … D-035.
+
+**The two findings worth carrying forward**
+
+1. *A failed stage originally continued anyway.* Guarding only the input node
+   meant an extraction failure still produced a full `risk_assessment`, and a
+   failed red-flag pass reported "no patterns found" — understating risk while
+   looking complete. One predicate now guards every stage (D-032).
+2. *Phase 4 discards the search responses Phase 5 needs.* Solved by recording
+   them at the provider boundary rather than re-running searches, which would
+   have duplicated every call and risked presenting evidence that the
+   verification never saw (D-031).
+
+**Not done, deliberately:** no FastAPI route (Phase 8), no persistence (Phase 9),
+no report (Phase 10), no OCR/PDF/image ingestion, no parallel execution. Only
+`TEXT` input is analysed; the other three declared types are refused with a typed
+reason (D-035).

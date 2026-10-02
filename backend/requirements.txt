@@ -10,6 +10,14 @@ SQLAlchemy==2.0.52
 httpx==0.27.0
 python-multipart==0.0.20
 
+# --- orchestration (Phase 7) ---
+# Pulls in langgraph-checkpoint, langgraph-prebuilt, langchain-core and
+# langchain-protocol. Verified to install and run on CPython 3.14 (Windows);
+# langchain-core is a transitive requirement, not a direct one, so it is not
+# pinned here. The graph uses only StateGraph, START/END and the runtime
+# context — no agent, no model, no tool-calling.
+langgraph==1.2.12
+
 # --- testing ---
 pytest==9.1.1
 pytest-asyncio==1.4.0
