@@ -116,8 +116,8 @@ no consumer until Phase 8+.
 - [x] Provider failures mapped to stable codes; never converted to "no results"
 - [x] Secrets never logged, returned, or embedded in warnings
 - [x] 260 tests, fully offline; opt-in `integration` marker for a live check
-- [ ] `OCRService` (Phase 13 wiring) — deferred
-- [ ] `PDFService` (Phase 14 wiring) — deferred
+- [x] `OCRService` (Phase 13 wiring) — implemented
+- [x] `PDFService` (Phase 14 wiring) — implemented
 - [ ] `EmbeddingService` / `VectorStore` — deferred to Phase 8+
 
 **Intentionally not built:** claim verification, entity verification, evidence
@@ -313,14 +313,14 @@ change and no API contract change.
 `npm run build` pass, and the client was verified against the running backend (48 API
 assertions, 17 live end-to-end text-flow assertions, 26 render assertions).
 
-> **The Screenshot and PDF input surfaces are present as UI, but their backend
-> processing is deferred to Phases 13–14 and does not work.** The OpenAPI
-> document exposes no `/upload` endpoint and
-> `GET /api/investigations/limits` reports
-> `supported_input_types: ["TEXT", "URL"]` since Phase 12. Those input modes
-> are therefore rendered as disabled and labelled with the phase that will
-> implement them; the frontend sends no request for them. They must not be
-> described as operational.
+> **The Screenshot and PDF input surfaces were present as UI but not
+> operational at this phase.** Their backend processing was deferred to
+> Phases 13–14, both of which are now complete: `POST /api/investigations/image`
+> and `POST /api/investigations/pdf` are implemented, and all four input
+> modes are operational. (Historical note: at Phase 11 the OpenAPI document
+> exposed no `/image` or `/pdf` endpoint and `GET /api/investigations/limits`
+> reported `supported_input_types: ["TEXT"]`, so those modes were rendered
+> disabled and phase-labelled.)
 
 ## Phase 12 — URL Analysis `[x]`
 
@@ -356,22 +356,57 @@ instead of faking text), and any verdict on a domain itself — the
 pipeline analyses *claims in the page*, never "is this domain a scam"
 (D-006, D-020).
 
-> **The Screenshot and PDF input surfaces remain UI-only.** Their
-> backend processing is Phases 13–14; the frontend keeps them disabled
-> and phase-labelled, and `GET /api/investigations/limits` now reports
-> `supported_input_types: ["TEXT", "URL"]`.
+> **The Screenshot and PDF input surfaces remained UI-only at this
+> phase.** Their backend processing was Phases 13–14, both now complete;
+> the frontend now offers working Screenshot and PDF modes, and
+> `GET /api/investigations/limits` reports
+> `supported_input_types: ["TEXT", "URL", "IMAGE", "PDF"]`.
 
-## Phase 13 — Screenshot / OCR `[ ]`
+## Phase 13 — Screenshot / OCR `[x]`
 
-- [ ] Image upload → OCR → text → standard pipeline
-- [ ] OCR unavailable → `OCR_UNAVAILABLE`, pipeline continues
-- [ ] File size / type validation
+- [x] Image upload → OCR → text → standard pipeline
+- [x] OCR unavailable → `OCR_UNAVAILABLE`, pipeline continues
+- [x] File size / type validation
 
-## Phase 14 — PDF Analysis `[ ]`
+**Status:** complete. `POST /api/investigations/image` accepts a
+`multipart/form-data` upload, validates it (size, declared type, and what
+the bytes actually decode to), reads it with Tesseract OCR, and runs the
+existing pipeline over the recovered text. The graph gained an IMAGE input
+path, persistence gained an `image_metadata` column, and the frontend gained
+a working Screenshot mode. (This section was left unchecked by the Phase 13
+commit and is corrected here.)
 
-- [ ] PDF upload → PyMuPDF text extraction → standard pipeline
-- [ ] Scanned-PDF (no text layer) handling
-- [ ] Extraction failure → `PDF_EXTRACTION_FAILED`
+## Phase 14 — PDF Analysis `[x]`
+
+- [x] PDF upload → PyMuPDF text extraction → standard pipeline
+- [x] Scanned-PDF (no text layer) handling
+- [x] Extraction failure → `PDF_EXTRACTION_FAILED`
+- [x] File size / type validation
+- [x] Page limit (`pdf_max_pages`) and character budget (`pdf_extraction_max_chars`)
+- [x] `pdf_source` provenance on every response
+
+**Status:** complete. Implemented in
+`backend/app/services/pdf_guards.py`, `pdf_service.py`,
+`backend/app/schemas/pdf.py`, the PDF input path in
+`backend/app/graph/nodes.py`, `POST /api/investigations/pdf`,
+a `pdf_metadata` persistence column, and the frontend's PDF input
+mode. Full suite: **2966 passed, 4 deselected, 0 failed**;
+frontend `typecheck` / `lint` / `build` all pass.
+
+**What was built:** an allowlist-only upload policy (byte budget,
+declared media type — `application/pdf` only — with the parsed
+document's `is_pdf` as the authority), a lazy `pymupdf` extraction
+that reads the first `pdf_max_pages` (100) pages under a
+`pdf_extraction_max_chars` (20,000) character budget, and a fault
+taxonomy that answers `422` for caller faults (oversized, wrong type,
+unparseable, empty), `503` for a disabled PDF capability
+(`PDF_INPUT_UNAVAILABLE`), and `200 PARTIAL` with a recorded
+limitation for every degradation the run survives — `PDF_UNAVAILABLE`
+(no library), `PDF_TEXT_NOT_RETRIEVED` (a parseable PDF with no
+readable text, e.g. a scan), `PDF_EXTRACTION_FAILED` (the engine ran
+and failed), `PDF_CONTENT_TRUNCATED` (over-budget text) and
+`PDF_PAGE_LIMIT_REACHED` (later pages skipped). No text is ever
+fabricated, and no message carries a path or engine detail.
 
 ## Phase 15 — Multilingual Reports `[ ]`
 

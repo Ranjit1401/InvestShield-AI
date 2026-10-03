@@ -42,6 +42,7 @@ from app.schemas.entities import Entity
 from app.schemas.evidence import EvidenceResponse
 from app.schemas.extraction import ClaimEntityLink, ExtractionMode, ExtractionResult
 from app.schemas.ocr import ImageSource, ImageUpload
+from app.schemas.pdf import PdfSource, PdfUpload
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment
 from app.schemas.url import UrlSource
@@ -220,6 +221,13 @@ class InvestigationState(TypedDict, total=False):
             to recognise the screenshot; it is never persisted, never
             serialised, and never carried into the analysis the way
             `raw_input` is.
+        pdf_source: Phase 14 provenance for a PDF submission — the file
+            that was uploaded, what it parsed to, and what the extraction
+            engine recovered. Absent for every other input kind.
+        pdf_upload: Phase 14 transport for the submitted PDF bytes, present
+            only while the input stage is running. It is what the input stage
+            reads to extract the document's text; it is never persisted,
+            never serialised, and never carried into the analysis.
         extracted_text: The text Phase 2 worked from, which may be a normalized
             form of `raw_input`. Kept for traceability of Phase 2's own work.
         investigation_id: Deterministic digest of the submitted input. Derived,
@@ -253,6 +261,8 @@ class InvestigationState(TypedDict, total=False):
     url_source: UrlSource | None
     image_source: ImageSource | None
     upload: ImageUpload | None
+    pdf_source: PdfSource | None
+    pdf_upload: PdfUpload | None
     extracted_text: str
     investigation_id: str
     started_at: datetime

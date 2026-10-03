@@ -244,6 +244,10 @@ export interface InvestigationLimits {
   allowed_image_types?: string[];
   /** Phase 13: the OCR language pack the engine is asked to use. */
   ocr_languages?: string;
+  /** Phase 14: the media types the PDF endpoint accepts. */
+  allowed_pdf_types?: string[];
+  /** Phase 14: how many pages of a PDF are read. */
+  pdf_max_pages?: number;
   [key: string]: JsonValue | undefined;
 }
 
@@ -509,6 +513,34 @@ export interface ImageSource {
   processed_at: string;
 }
 
+/**
+ * Phase 14 provenance for a PDF investigation: the file that was
+ * uploaded, what it parsed to, and what the extraction engine
+ * recovered. Null for every other input kind. The parse-dependent
+ * fields (`detected_content_type`, `format`, `page_count`,
+ * `pages_processed`) are `null` when the PDF was never parsed, which
+ * is the normal state of a run whose PDF library is absent.
+ */
+export interface PdfSource {
+  filename: string | null;
+  content_type: string;
+  detected_content_type: string | null;
+  format: string | null;
+  byte_size: number;
+  /** Total pages in the document, or `null` when it was never parsed. */
+  page_count: number | null;
+  /**
+   * Pages text was actually read from. Below `page_count` when the
+   * page limit skipped the later pages of a long document.
+   */
+  pages_processed: number | null;
+  /** A fact about the extraction run, not a statement about the document's content. */
+  text_recovered: boolean;
+  truncated: boolean;
+  truncated_at: number | null;
+  processed_at: string;
+}
+
 export interface InvestigationResponse {
   investigation_id: string;
   status: InvestigationStatus;
@@ -519,6 +551,8 @@ export interface InvestigationResponse {
   url_source?: UrlSource | null;
   /** Phase 13 provenance for a screenshot run; `null` otherwise. */
   image_source?: ImageSource | null;
+  /** Phase 14 provenance for a PDF run; `null` otherwise. */
+  pdf_source?: PdfSource | null;
   claims: Claim[];
   entities: Entity[];
   red_flags: RedFlag[];

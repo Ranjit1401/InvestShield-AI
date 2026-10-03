@@ -113,6 +113,10 @@ def test_every_documented_response_field_exists() -> None:
         # Phase 13: null unless the input was a screenshot, whose recovered
         # text and decoded shape are reported so the analysis is checkable.
         "image_source",
+        # Phase 14: null unless the input was a PDF, whose parsed
+        # shape, page count and recovered text are reported so the
+        # analysis is checkable.
+        "pdf_source",
     }
 
 

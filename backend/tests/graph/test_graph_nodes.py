@@ -81,24 +81,19 @@ class TestInputNode:
         result = input_node({"raw_input": "   \n\t ", "input_type": "TEXT"}, context_with())
         assert [error.code for error in result["errors"]] == ["INPUT_EMPTY"]
 
-    @pytest.mark.parametrize("kind", ["PDF"])
+    @pytest.mark.parametrize("kind", ["SPREADSHEET"])
     def test_an_unimplemented_input_type_is_refused(self, kind: str) -> None:
-        """Recognised but not analysed, and it says so rather than pretending.
+        """A kind this version does not analyse is refused, not guessed at.
 
         `URL` was in this list until Phase 12 and `IMAGE` until Phase 13,
-        which implemented them. They are excluded here rather than deleted
-        from the product's vocabulary: the input kinds the product commits
-        to are unchanged, and only the subset this version analyses has grown.
+        and `PDF` until Phase 14, which implemented them. The list is empty
+        now — every kind the product's vocabulary carries is analysed — so a
+        kind outside the vocabulary stands in for the one shape of submission
+        left that no stage may touch.
         """
         result = input_node({"raw_input": "x", "input_type": kind}, context_with())
         assert [error.code for error in result["errors"]] == [
             "INPUT_TYPE_NOT_SUPPORTED"
-        ]
-
-    def test_an_unimplemented_input_type_warns_as_well_as_erroring(self) -> None:
-        result = input_node({"raw_input": "x", "input_type": "PDF"}, context_with())
-        assert [warning.code for warning in result["warnings"]] == [
-            "INPUT_TYPE_NOT_ANALYSED"
         ]
 
     def test_an_unknown_input_type_is_rejected(self) -> None:

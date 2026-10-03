@@ -459,13 +459,14 @@ class TestInvalidInput:
         state = run_investigation("   ", context=offline_context(fake_dependencies()))
         assert state.get("risk_assessment") is None
 
-    @pytest.mark.parametrize("kind", ["PDF"])
+    @pytest.mark.parametrize("kind", ["SPREADSHEET"])
     def test_an_unimplemented_input_kind_produces_no_analysis(self, kind: str) -> None:
-        """Recognised, refused, and never silently analysed as text.
+        """Refused, and never silently analysed as text.
 
-        `URL` left this list in Phase 12 and `IMAGE` in Phase 13, when
-        they stopped being unimplemented. Each is covered by its own
-        execution tests instead.
+        `URL` left this list in Phase 12 and `IMAGE` in Phase 13, and
+        `PDF` in Phase 14, when they stopped being unimplemented. Each
+        is covered by its own execution tests instead, and the list is
+        empty now, so a kind outside the vocabulary stands in.
         """
         state = run_investigation("some content", input_type=kind,
                                   context=offline_context(fake_dependencies()))

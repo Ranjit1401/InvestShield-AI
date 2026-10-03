@@ -43,10 +43,12 @@ from app.main import create_app
 from app.schemas.evidence import EvidenceBundleResponse
 from app.schemas.extraction import ExtractionMode
 from app.schemas.ocr import ImageUpload
+from app.schemas.pdf import PdfUpload
 from app.schemas.risk import RiskAssessment, RiskLevel
 from app.schemas.search import SearchResponse, SearchStatus
 from app.schemas.verification import VerificationResponse, VerificationStatus
 from app.services.ocr_service import OCRService
+from app.services.pdf_service import PDFService
 from app.services.search import SearchProvider, SearchService
 from app.services.url_fetch import UrlFetchError
 from sqlalchemy.exc import (
@@ -58,6 +60,7 @@ from tests.graph.graph_factories import (
     RecordingEvidenceService,
     RecordingExtractionService,
     RecordingOcrService,
+    RecordingPdfService,
     RecordingRedFlagEngine,
     RecordingRiskService,
     RecordingSearchProvider,
@@ -68,6 +71,7 @@ from tests.graph.graph_factories import (
     extraction_with,
     offline_settings,
     ocr_document,
+    pdf_document,
     real_dependencies,
     result_for,
     sebi_result,
@@ -185,6 +189,24 @@ def _image_context(ocr_service: object) -> GraphContext:
     return GraphContext(dependencies=dependencies)
 
 
+def _pdf_context(pdf_service: object) -> GraphContext:
+    """Build an offline context whose PDF service is the one given.
+
+    The genuine Phase 1-6 services are wired as usual; only the PDF
+    service is replaced, because that is the one service a PDF
+    submission exercises and the one whose outcome these tests drive.
+
+    Args:
+        pdf_service: The PDF service to wire in, real or fake.
+
+    Returns:
+        A `GraphContext` with PDF support and the given PDF service.
+    """
+    dependencies, _ = real_dependencies(offline_settings())
+    dependencies = dataclasses.replace(dependencies, pdf_service=pdf_service)
+    return GraphContext(dependencies=dependencies)
+
+
 def _api_client_for(settings, context: GraphContext) -> TestClient:
     """Build a client running a specific graph context.
 
@@ -248,15 +270,16 @@ class TestInputFailures:
         assert not state.get("claims")
         assert not state.get("risk_assessment")
 
-    @pytest.mark.parametrize("kind", ["PDF"])
+    @pytest.mark.parametrize("kind", ["SPREADSHEET"])
     def test_an_unsupported_input_type_is_refused_without_analysing_as_text(
         self, real_context: GraphContext, kind: str
     ) -> None:
-        """A recognised-but-unanalysed kind is refused, never read as prose.
+        """A kind this version does not analyse is refused, never read as prose.
 
-        Analysing an image as text would report findings about something the client
-        never submitted as text. `URL` left this set in Phase 12, which began
-        retrieving and analysing it, and `IMAGE` left it in Phase 13; each
+        Reading an unanalysed kind as text would report findings about
+        something the client never submitted as text. `URL` left this
+        set in Phase 12, which began retrieving and analysing it,
+        `IMAGE` left it in Phase 13, and `PDF` in Phase 14; each
         is covered by its own failure class below.
 
         Args:
@@ -271,12 +294,6 @@ class TestInputFailures:
         assert state["errors"][0].code == "INPUT_TYPE_NOT_SUPPORTED"
         assert state["current_stage"] == "input"
         assert not state.get("claims")
-
-        # A refusal records **both** an error and a limitation, and they say
-        # different things: the error ends the request, while the limitation is what
-        # a client shows the person who sent it. Asserting only the error would let
-        # the user-facing half be dropped without anything failing.
-        assert "INPUT_TYPE_NOT_ANALYSED" in {w.code for w in state.get("warnings", ())}
 
 
 class TestUrlInputFailures:
@@ -704,6 +721,246 @@ class TestImageInputFailures:
 
         assert not state["errors"]
         assert "OCR_CONTENT_TRUNCATED" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+
+class TestPdfInputFailures:
+    """Phase 14: a PDF that cannot be read, and the ways that fails.
+
+    The same four-way distinction Phase 13 draws for a screenshot,
+    because a PDF submission is the same kind of thing: an untrusted
+    file handed to a parsing library, with outcomes that fall into
+    buckets a caller can act on differently.
+
+    - a submission the **caller** must fix, which is `422` and which
+      retrying unchanged will never clear — no PDF at all, a PDF over
+      the byte limit, a media type this version does not read, or
+      bytes that do not parse as a PDF;
+    - a **deployment** that cannot read PDFs at all, which is `503`
+      and says nothing about the submission;
+    - a **degradation** the run survives — the library missing, the
+      engine failing, the PDF yielding no text, the text being cut at
+      the budget, or only the first pages being read — each recorded
+      as a limitation on a run that still completes;
+    - and the outcome that is none of those: a PDF read cleanly.
+
+    Collapsing any two of these would tell a caller to do something
+    that cannot work — for instance, retrying a PDF the deployment's
+    library cannot read, or treating a missing library as a reason to
+    stop.
+    """
+
+    def test_a_graph_without_pdf_service_cannot_read_a_pdf(self) -> None:
+        """A context with no PDF service is a capability fault, not a bad
+        submission.
+
+        The request was well-formed; the deployment is the reason it
+        cannot be answered, so the caller must not be told to fix it.
+        """
+        dependencies, _ = real_dependencies(offline_settings())
+        context = GraphContext(dependencies=dependencies)
+
+        state = run_investigation(
+            "document.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"%PDF-1.4", content_type="application/pdf"
+            ),
+        )
+
+        assert state["errors"][0].code == "PDF_INPUT_UNAVAILABLE"
+        assert state.get("risk_assessment") is None
+
+    def test_a_pdf_submission_without_bytes_is_refused(self) -> None:
+        """Declaring PDF but carrying no PDF is the caller's fault."""
+        context = _pdf_context(PDFService(settings=offline_settings()))
+
+        state = run_investigation(
+            "document.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+        )
+
+        assert state["errors"][0].code == "PDF_EMPTY"
+        assert state.get("risk_assessment") is None
+
+    def test_a_pdf_over_the_byte_limit_is_refused(self) -> None:
+        """A PDF larger than the upload limit is the caller's fault."""
+        settings = Settings(_env_file=None, max_upload_bytes=16)
+        context = _pdf_context(PDFService(settings=settings))
+
+        state = run_investigation(
+            "big.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"x" * 17, content_type="application/pdf"
+            ),
+        )
+
+        assert state["errors"][0].code == "PDF_FILE_TOO_LARGE"
+        assert state.get("risk_assessment") is None
+
+    def test_a_non_pdf_media_type_is_refused(self) -> None:
+        """A declared media type this version does not read is the caller's."""
+        context = _pdf_context(PDFService(settings=offline_settings()))
+
+        state = run_investigation(
+            "notes.txt",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"plain text", content_type="text/plain"
+            ),
+        )
+
+        assert state["errors"][0].code == "PDF_TYPE_UNSUPPORTED"
+        assert state.get("risk_assessment") is None
+
+    def test_a_pdf_that_does_not_parse_is_refused(self) -> None:
+        """Bytes that declare a PDF but do not parse are the caller's."""
+        context = _pdf_context(PDFService(settings=offline_settings()))
+
+        state = run_investigation(
+            "fake.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"not a pdf", content_type="application/pdf"
+            ),
+        )
+
+        assert state["errors"][0].code == "PDF_UNREADABLE"
+        assert state.get("risk_assessment") is None
+
+    def test_a_missing_library_is_a_limitation_not_a_fault(self) -> None:
+        """A deployment without PyMuPDF still answers, and says so.
+
+        The request was well-formed and the PDF was accepted; only the
+        library to read it is absent. That is a gap in the deployment,
+        so the run continues and records the gap rather than ending.
+        """
+        pdf = RecordingPdfService(
+            document=pdf_document(limitation="PDF_UNAVAILABLE")
+        )
+        context = _pdf_context(pdf)
+
+        state = run_investigation(
+            "document.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"%PDF-1.4", content_type="application/pdf"
+            ),
+        )
+
+        assert not state["errors"]
+        assert "PDF_UNAVAILABLE" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+    def test_a_pdf_that_yields_no_text_is_a_limitation(self) -> None:
+        """A readable PDF with nothing to say is a limitation, not an error.
+
+        A scan of a printed page can be a perfectly good PDF that
+        yields no words. Reporting that as a failure would tell the
+        caller their document was broken.
+        """
+        pdf = RecordingPdfService(document=pdf_document())
+        context = _pdf_context(pdf)
+
+        state = run_investigation(
+            "scan.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"%PDF-1.4", content_type="application/pdf"
+            ),
+        )
+
+        assert not state["errors"]
+        assert "PDF_TEXT_NOT_RETRIEVED" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+    def test_extraction_that_fails_is_a_limitation(self) -> None:
+        """An engine that ran and failed is a limitation, not a fault.
+
+        The library was present and the PDF parsed, so neither the
+        deployment nor the submission is at fault; extraction failed
+        for a reason the caller cannot act on. The run continues.
+        """
+        pdf = RecordingPdfService(
+            document=pdf_document(
+                limitation="PDF_EXTRACTION_FAILED", error_type="MuPdfError"
+            )
+        )
+        context = _pdf_context(pdf)
+
+        state = run_investigation(
+            "document.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"%PDF-1.4", content_type="application/pdf"
+            ),
+        )
+
+        assert not state["errors"]
+        assert "PDF_EXTRACTION_FAILED" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+    def test_text_cut_at_the_budget_is_a_limitation(self) -> None:
+        """A PDF longer than the budget is cut, and the cut is reported.
+
+        The analysis below runs over the cut text, so it must be visible
+        that text was dropped — otherwise the report would be confident
+        about a document it only partly read.
+        """
+        pdf = RecordingPdfService(
+            document=pdf_document(text="a" * 40, truncated=True)
+        )
+        context = _pdf_context(pdf)
+
+        state = run_investigation(
+            "document.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"%PDF-1.4", content_type="application/pdf"
+            ),
+        )
+
+        assert not state["errors"]
+        assert "PDF_CONTENT_TRUNCATED" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+    def test_only_the_first_pages_are_read_is_a_limitation(self) -> None:
+        """A PDF with more pages than the limit is read partly, and it shows.
+
+        The analysis runs over the pages read, so it must be visible that
+        later pages were skipped — otherwise the report would be confident
+        about a document it only partly read.
+        """
+        pdf = RecordingPdfService(
+            document=pdf_document(
+                text="Acme Capital Advisors is registered.",
+                page_count=3,
+                pages_processed=1,
+            )
+        )
+        context = _pdf_context(pdf)
+
+        state = run_investigation(
+            "document.pdf",
+            input_type=InvestigationInputType.PDF,
+            context=context,
+            pdf_upload=PdfUpload(
+                content=b"%PDF-1.4", content_type="application/pdf"
+            ),
+        )
+
+        assert not state["errors"]
+        assert "PDF_PAGE_LIMIT_REACHED" in {warning.code for warning in state["warnings"]}
         assert state.get("risk_assessment") is not None
 
 

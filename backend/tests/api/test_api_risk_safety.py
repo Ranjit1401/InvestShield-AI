@@ -252,7 +252,7 @@ class TestNoVerdictInAnyApiResponse:
         """
         for path, method, payload in (
             ("/api/investigations/text", "post", {"text": ""}),
-            ("/api/investigations", "post", {"input_type": "PDF", "text": "x"}),
+            ("/api/investigations", "post", {"input_type": "PODCAST", "text": "x"}),
         ):
             response = api_client.request(method.upper(), path, json=payload)
             assert response.status_code == 422
@@ -567,6 +567,10 @@ class TestTheAssessmentIsForwardedNotRestated:
             # may be are named, and the OCR language is discoverable too.
             "max_upload_bytes",
             "allowed_image_types",
+            # Phase 14: a PDF is bounded in pages, and the one
+            # document type it may be is named too.
+            "allowed_pdf_types",
+            "pdf_max_pages",
             "ocr_languages",
             "languages",
             "translation_enabled",

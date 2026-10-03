@@ -7,8 +7,8 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 13 — Screenshot / OCR — **COMPLETE**
-**Current Subphase:** Phase 14 — PDF analysis — **NOT STARTED**
+**Current Phase:** Phase 14 — PDF analysis — **COMPLETE**
+**Current Subphase:** none — the planned roadmap is complete
 
 > **Phase 10 naming, reconciled.** Two project documents disagreed about what
 > Phase 10 is. `IMPLEMENTATION_PLAN.md` has always called it "Backend Test Suite";
@@ -20,48 +20,47 @@
 > premature decision `DATABASE_SCHEMA.md` was careful to avoid when it declined to
 > create the `reports` table.
 
-**Last Completed Task:** Phase 13 — Screenshot / OCR. A new `POST
-/api/investigations/image` endpoint accepts a `multipart/form-data`
+**Last Completed Task:** Phase 14 — PDF analysis. A new `POST
+/api/investigations/pdf` endpoint accepts a `multipart/form-data`
 upload, validates it (size, declared type, and what the bytes actually
-decode to), reads it locally with Tesseract OCR, and runs the existing
-pipeline over the recovered text. The backend gained three new modules
-(`ocr_guards`, `ocr_service`, `schemas/ocr.py`), the graph gained an
-IMAGE input path, persistence gained an `image_metadata` column, and the
-frontend gained a working Screenshot input mode.
+parse to), reads the text out of its pages locally with PyMuPDF, and
+runs the existing pipeline over the extracted text. The backend gained
+three new modules (`pdf_guards`, `pdf_service`, `schemas/pdf.py`), the
+graph gained a PDF input path, persistence gained a `pdf_metadata`
+column, and the frontend gained a working PDF input mode.
 
-- **Real image validation** — the declared media type is only a first
-  filter; the image library decodes the bytes and the decoded format is
-  the authority. A GIF wearing a PNG label is refused, as are bytes that
-  do not decode at all.
-- **Local OCR** — `pytesseract` over a lazily-imported Pillow decode.
-  The Tesseract executable is resolved in one place (settings, then
-  `PATH`, then the well-known Windows locations) and its location is
-  configurable; recognition carries a native timeout and a character
-  budget, and over-budget text is truncated with a recorded limitation.
+- **Real PDF validation** — the declared media type is only a first
+  filter; the PDF library parses the bytes and `is_pdf` is the
+  authority. A non-PDF wearing a PDF label is refused, as are bytes
+  that do not parse at all.
+- **Local extraction** — `pymupdf` opens the document in memory and
+  reads the text out of the first `pdf_max_pages` (100) pages. The
+  recovered text carries a character budget (20,000), and over-budget
+  text is truncated with a recorded limitation; a document longer than
+  the page limit is read to the limit and recorded as such.
 - **Honest degradation** — a wired graph with no engine is not a failure:
-  the run continues and answers `200 PARTIAL` with an `OCR_UNAVAILABLE`
-  limitation and `text_recovered: false`. No text is ever fabricated.
-- **The same pipeline, unchanged** — the graph's input node accepts IMAGE
-  input, recognises it, and feeds the recovered text to extraction as
-  untrusted data. Caller faults (oversized, wrong type, undecodable) are
-  `422`; a disabled OCR capability is `503`.
-- **Frontend Screenshot mode** — the Screenshot tab on `/investigate` is
-  now a working file picker with client-side size and type checks; its
-  availability is still read from `GET /api/investigations/limits`.
-- **`image_source` on every response** — `null` for non-image runs; for
-  image runs a frozen record of the submission and the OCR run: filename,
-  declared and detected media types, decoded format, byte size, dimensions,
-  OCR language, whether text was recovered, truncation facts and the
+  the run continues and answers `200 PARTIAL` with a `PDF_UNAVAILABLE`
+  limitation and `text_recovered: false`. No text is ever fabricated. A
+  PDF that parses but yields no readable text (a scan) is a real, if
+  thin, result with a `PDF_TEXT_NOT_RETRIEVED` limitation.
+- **The same pipeline, unchanged** — the graph's input node accepts PDF
+  input, extracts it, and feeds the recovered text to extraction as
+  untrusted data. Caller faults (oversized, wrong type, unparseable) are
+  `422`; a disabled PDF capability is `503`.
+- **Frontend PDF mode** — the PDF tab on `/investigate` is now a working
+  file picker with client-side size and type checks; its availability is
+  still read from `GET /api/investigations/limits`.
+- **`pdf_source` on every response** — `null` for non-PDF runs; for PDF
+  runs a frozen record of the submission and the extraction run: filename,
+  declared and detected media types, format, byte size, page count, pages
+  processed, whether text was recovered, truncation facts and the
   processing time. Every field is a measurement or a submission fact —
-  none is a judgement about the image.
-- **Verified end to end** against the running backend: a real screenshot is
-  read by OCR, its recovered text is confirmed to reach the pipeline (a
-  red flag matched the recovered text), and the run persists with
-  `image_source` intact. Full suite: **2890 passed, 4 deselected, 0
-  failed**.
+  none is a judgement about the document.
+- **Verified end to end** — the full backend suite passes (**2966 passed,
+  4 deselected, 0 failed**) and the frontend typechecks, lints and builds.
 
-**Latest Commit:** `feat: implement screenshot OCR analysis` (Phase 13)
-**Working Tree:** see `git status`.
+**Latest Commit:** `feat: implement PDF analysis` (Phase 14)
+**Working Tree:** clean.
 
 ### Phase Status Summary
 
@@ -81,15 +80,16 @@ frontend gained a working Screenshot input mode.
 | Phase 11 | React frontend | **COMPLETE** |
 | Phase 12 | URL analysis | **COMPLETE** |
 | Phase 13 | Screenshot / OCR | **COMPLETE** |
-| Phase 14 | PDF analysis | **NEXT** |
+| Phase 14 | PDF analysis | **COMPLETE** |
 
 > Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
 > Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is
 > **not** a numbered project phase and is not started.
 >
-> **Phase 13 does not implement Phase 14.** The PDF input
-> surface exists in the UI and is explicitly marked unavailable, because its
-> backend processing does not exist. The UI marks it rather than faking it.
+> **Phase 14 completes the planned roadmap.** The PDF input
+> surface is now fully operational end to end — the backend parses the
+> document and the frontend offers a working PDF mode. Every input type
+> the UI discloses is backed by a real endpoint.
 
 ### Phase 11 — React frontend
 
@@ -112,8 +112,9 @@ The frontend therefore implemented only the endpoints that existed, which
 is why the input-mode tabs were a planned-surface disclosure rather than a
 working multi-upload form. **Phase 12 has since added
 `POST /api/investigations/url`** and **Phase 13 has added
-`POST /api/investigations/image`**, so the URL and Screenshot tabs are
-now operational; the PDF tab remains disclosed-but-disabled.
+`POST /api/investigations/image`** and **Phase 14 has added
+`POST /api/investigations/pdf`**, so the URL, Screenshot and PDF tabs
+are all operational.
 
 **Charting.** Recharts is used in exactly one place: risk contribution by severity, built
 from `risk_assessment.factors[].contribution`. No chart is rendered where the API provides
@@ -311,6 +312,81 @@ the truncation is recorded; a blank or text-free image yields no text
 Phase 14); and in this deployment the LLM is unavailable, so extraction
 runs in fallback mode and the run reports `PARTIAL`.
 
+### Phase 14 — PDF analysis
+
+**Location:** `backend/app/services/pdf_service.py`,
+`pdf_guards.py`, `backend/app/schemas/pdf.py`, the PDF input path in
+`backend/app/graph/nodes.py`, and `frontend/src/hooks/use-pdf-investigation.ts`.
+
+| Concern | Where |
+| --- | --- |
+| PDF request contract | `app/schemas/pdf.py` — `PdfUpload` (bytes, declared type, filename), frozen `PdfSource` and `PdfDocument` |
+| Upload guards | `app/services/pdf_guards.py` — byte budget, declared-media-type allow-list (`application/pdf`) |
+| Extraction | `app/services/pdf_service.py` — lazy `pymupdf` open, first `pdf_max_pages` pages, character budget |
+| Graph input | `app/graph/nodes.py::_pdf_input` — extracts, records `pdf_source` on the state, feeds extracted text to extraction |
+| API surface | `app/api/routes/investigations.py::investigate_pdf` — `POST /api/investigations/pdf` (multipart) |
+| Response record | `app/schemas/pdf.py::PdfSource` — the submission and extraction facts; `PdfDocument` — recovered text, truncation, limitation |
+| Fault taxonomy | `app/api/errors.py` — caller faults `422`, disabled capability `503` |
+| Persistence | `pdf_metadata` JSON column on `investigations`, written by the repository |
+| Frontend | PDF mode on `/investigate`, availability read from `GET /api/investigations/limits` |
+
+**What it does.** The endpoint accepts a `multipart/form-data` upload,
+validates it, parses the PDF locally with PyMuPDF, reads the text out of
+its pages, and runs the *existing* pipeline (red flags → extraction →
+verification → evidence → risk) over the extracted text. The response is
+the standard `InvestigationResponse` plus a `pdf_source` object describing
+what was uploaded and read: filename, declared and detected media types,
+format, byte size, page count, pages processed, whether text was
+recovered, truncation facts and the processing time.
+
+**Fault taxonomy — whose fault is it?**
+
+| Fault | Status | Code |
+| --- | --- | --- |
+| Oversized upload, non-PDF declared type, a format this version does not read, unparseable bytes, no file | 422 | `PDF_FILE_TOO_LARGE`, `PDF_TYPE_UNSUPPORTED`, `PDF_UNREADABLE`, `PDF_EMPTY` |
+| PDF capability disabled by configuration (no PyMuPDF) | 503 | `PDF_INPUT_UNAVAILABLE` (capability not wired); `PDF_UNAVAILABLE` is a *limitation*, not an error |
+
+No message ever contains a filesystem path, a provider text or an engine
+detail — wording comes from the fixed `PDF_MESSAGES` / `ENGINE_MESSAGES`
+tables, and tests assert none of that detail reaches a response.
+
+**Degradation, not failure.** A wired graph with no PyMuPDF is not a
+failure: the run continues and answers `200 PARTIAL` with a
+`PDF_UNAVAILABLE` limitation and `text_recovered: false`. A PDF that
+parses but yields no readable text (a scan) returns `200 PARTIAL` with a
+`PDF_TEXT_NOT_RETRIEVED` limitation — the pipeline still runs over the
+document's own facts. An engine that runs and fails on one document
+returns `200 PARTIAL` with a `PDF_EXTRACTION_FAILED` limitation. Truncated
+recovered text is recorded as a `PDF_CONTENT_TRUNCATED` limitation, and a
+document read only to the page limit as a `PDF_PAGE_LIMIT_REACHED`
+limitation.
+
+### Phase 14 verification
+
+All checks below were executed against the **running** backend.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full backend suite | `cd backend && python -m pytest` | **2966 passed, 4 deselected, 0 failed** |
+| PDF guards | `pytest tests/test_pdf_guards.py` | pass |
+| PDF service | `pytest tests/test_pdf_service.py` | pass |
+| PDF endpoint tests | `pytest tests/api/test_pdf_investigation.py` | pass |
+| PDF unavailable | wired graph, engine path that does not exist | `200 PARTIAL`, `PDF_UNAVAILABLE` limitation, `text_recovered: false`, no fabricated text, no path leakage |
+| PDF investigation round-trip | `POST /api/investigations/pdf` then `GET /api/investigations/{id}` | `200`, `input_type=PDF`, `pdf_source` persisted and returned |
+| TEXT regression | `POST /api/investigations/text` | unchanged: `input_type=TEXT`, `pdf_source: null` |
+| URL regression | `POST /api/investigations/url` (loopback) | unchanged: 422 `URL_ADDRESS_BLOCKED` (SSRF guard intact) |
+| Upload validation via API | non-PDF, oversized, garbage bytes, empty file | 422 `PDF_TYPE_UNSUPPORTED` / `PDF_FILE_TOO_LARGE` / `PDF_UNREADABLE` / `PDF_EMPTY` |
+| OpenAPI contract | `/openapi.json` | `/api/investigations/pdf` present; `PdfSource` on the response; 422/503 responses |
+| Frontend | `npm run typecheck` / `lint` / `build` | pass, pass, pass |
+
+**Known limitations of the phase** (recorded, not hidden): extraction
+depends on the PyMuPDF library being installed; only the first
+`pdf_max_pages` (100) pages are read and the skip is recorded; recovered
+text is truncated at the character budget and the truncation is recorded;
+a text-free PDF (a scan) yields no text (`PDF_TEXT_NOT_RETRIEVED`); and
+in this deployment the LLM is unavailable, so extraction runs in fallback
+mode and the run reports `PARTIAL`.
+
 ### Files Recently Changed
 
 **Phase 12 — URL analysis:**
@@ -376,6 +452,37 @@ frontend/src/types/api.ts                         (+ ImageSource, url_source, im
 frontend/src/pages/InvestigatePage.tsx            (Screenshot mode file picker)
 frontend/scripts/verify-api-client.mjs            (+ image wiring checks)
 docs/*                                            (Phase 13 documentation)
+```
+
+**Phase 14 — PDF analysis:**
+
+```
+backend/app/schemas/pdf.py                          (new — PDF upload/response contracts)
+backend/app/services/pdf_guards.py                  (new — upload size/type guards)
+backend/app/services/pdf_service.py                 (new — lazy pymupdf parse + text extraction)
+backend/tests/pdf_factories.py                      (new — shared PDF test builders)
+backend/tests/test_pdf_guards.py                    (new)
+backend/tests/test_pdf_service.py                   (new)
+backend/tests/api/test_pdf_investigation.py         (new — endpoint contract, degradation, round-trip)
+backend/app/graph/nodes.py                          (+ PDF input node, PDF fault codes)
+backend/app/graph/state.py                          (+ pdf_source, pdf_upload)
+backend/app/graph/context.py                        (+ pdf_service, supports_pdf)
+backend/app/graph/investigation_graph.py            (+ pdf_upload parameter)
+backend/app/schemas/api.py                          (+ PdfSource on the response)
+backend/app/api/routes/investigations.py            (+ POST /api/investigations/pdf)
+backend/app/api/errors.py                           (+ PDF error classes and code sets)
+backend/app/api/adapters.py                         (serialize pdf_source)
+backend/app/core/config.py                          (+ PDF settings)
+backend/app/models/investigation.py                 (+ pdf_metadata column)
+backend/app/db/session.py                           (additive DDL for pdf_metadata)
+backend/app/repositories/investigations.py          (persist pdf_source)
+backend/tests/api/*.py, backend/tests/graph/*.py    (+ PDF contract, error, safety, persistence and graph cases)
+backend/tests/test_failure_injection.py             (+ the PDF failure matrix)
+frontend/src/hooks/use-pdf-investigation.ts         (new)
+frontend/src/services/api-client.ts                 (+ createPdfInvestigation, multipart)
+frontend/src/types/api.ts                           (+ PdfSource, pdf_source, PDF limits)
+frontend/src/pages/InvestigatePage.tsx              (PDF mode file picker)
+docs/*                                              (Phase 14 documentation)
 ```
 
 **Phase 10 — testing and quality hardening:**
@@ -687,10 +794,11 @@ Carried forward from Phase 9, unchanged:
 - **`limitations` is still a flat code array** with no per-claim attribution, so a
   limitation cannot be joined back to the claim it affected.
 - **`completed_at` is always `NULL`** — see Known Bugs 1.
-- **Only `TEXT` and `URL` inputs are analysed.** `IMAGE` and `PDF` are
-  recognised and refused with `422`. URL fetching depends on the network,
-  yields no text from JavaScript-only pages, and truncates over-budget
-  content — each recorded as a limitation, never hidden.
+- **URL fetching depends on the network, yields no text from
+  JavaScript-only pages, and truncates over-budget content — each
+  recorded as a limitation, never hidden.** All four input kinds
+  (`TEXT`, `URL`, `IMAGE`, `PDF`) are analysed; the gap that once
+  refused `IMAGE` and `PDF` with `422` was closed by Phases 12–14.
 
 Identified in Phase 10, recorded rather than fixed, because fixing any of them means
 redesigning something Phase 10 was explicitly not scoped to redesign:

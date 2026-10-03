@@ -100,6 +100,7 @@ One row per run.
 | `verification_warnings` | JSON | not null | Phase 4's batch-level `VerifiedResponse.warnings`. |
 | `source_metadata` | JSON | not null | Phase 12 `UrlSource.as_metadata()` for URL runs; `{}` for text runs. |
 | `image_metadata` | JSON | nullable | Phase 13 `ImageSource.as_metadata()` for image runs; `NULL` for every other run. |
+| `pdf_metadata` | JSON | nullable | Phase 14 `PdfSource.as_metadata()` for PDF runs; `NULL` for every other run. |
 | `claim_count` … `factor_count` | Integer | not null | Seven denormalised counts, default 0. |
 | `started_at` | DateTime | not null | Run start. |
 | `completed_at` | DateTime | nullable | Run finish, if recorded. |
@@ -190,6 +191,21 @@ disambiguate. Non-image runs store `NULL`.
 
 The column is added by the same additive `ALTER TABLE … ADD COLUMN`
 in `app/db/session.py`, so a database created before Phase 13 gains
+the column at startup.
+
+### `pdf_metadata` holds PDF provenance, in its own column
+
+Phase 14 stores the `PdfSource` record — filename, declared and
+detected media types, parsed format, byte size, page count, pages
+actually read, whether text was recovered, truncation facts and the
+processing time — as a single JSON blob. It is a column of its own
+for the same reason `image_metadata` is: the three provenance records
+(`source_metadata`, `image_metadata`, `pdf_metadata`) are different
+models with no common shape, and a run is one input kind, never two.
+Non-PDF runs store `NULL`.
+
+The column is added by the same additive `ALTER TABLE … ADD COLUMN`
+in `app/db/session.py`, so a database created before Phase 14 gains
 the column at startup.
 
 ---

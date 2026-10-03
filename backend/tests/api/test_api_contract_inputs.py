@@ -311,29 +311,32 @@ class TestInvalidSubmissions:
     def test_an_unsupported_input_type_is_refused_by_the_typed_endpoint(
         self, api_client: TestClient
     ) -> None:
-        """Each recognised-but-unanalysed kind is refused with a `422` naming what works.
+        """A kind the vocabulary does not carry is refused by the schema.
 
-        `URL` left this set in Phase 12 and `IMAGE` in Phase 13, which began
-        analysing them. They are excluded rather than deleted from the
-        product's vocabulary.
+        `URL` left this set in Phase 12, `IMAGE` in Phase 13, and
+        `PDF` in Phase 14, which began analysing them. Every kind
+        the vocabulary carries is analysed now, so a kind outside
+        the vocabulary is refused by the request schema before the
+        graph runs, and the accepted kinds are named in the detail.
 
         Args:
             api_client: A client running the real graph, offline.
         """
-        for kind in ("PDF",):
+        for kind in ("PODCAST",):
             response = api_client.post(
                 TYPED_URL, json={"input_type": kind, "text": "some content"}
             )
 
             assert response.status_code == 422, f"{kind}: {response.text}"
             error = _error_body(response)
-            assert error["code"] == "INPUT_TYPE_NOT_SUPPORTED"
-            assert error["detail"]["supported_input_types"] == [
-                "TEXT",
-                "URL",
-                "IMAGE",
-            ]
-            assert error["detail"]["submitted_input_type"] == kind
+            assert error["code"] == "VALIDATION_ERROR"
+            # The validation detail names every accepted kind, so
+            # the refusal tells the caller what to send instead.
+            detail = " ".join(
+                str(item.get("msg", "")) for item in error["detail"]
+            )
+            for accepted in ("TEXT", "URL", "IMAGE", "PDF"):
+                assert accepted in detail
 
     def test_an_invented_input_type_is_refused(self, api_client: TestClient) -> None:
         """A kind that was never declared is refused by the schema, not guessed at.
@@ -498,7 +501,7 @@ class TestDiscoveryEndpoints:
 
         assert response.status_code == 200
         body = response.json()
-        assert body["supported_input_types"] == ["TEXT", "URL", "IMAGE"]
+        assert body["supported_input_types"] == ["TEXT", "URL", "IMAGE", "PDF"]
         assert body["max_text_length"] == 20_000
         assert body["max_url_length"] == 2048
         # Phase 13: a screenshot is bounded in bytes, the image formats it
@@ -659,6 +662,10 @@ _DOCUMENTED_RESPONSE_KEYS = frozenset(
         # Phase 13: null unless the input was a screenshot, whose decoded
         # shape and recovered text are reported so the analysis is checkable.
         "image_source",
+        # Phase 14: null unless the input was a PDF, whose parsed
+        # shape, page count and recovered text are reported so the
+        # analysis is checkable.
+        "pdf_source",
     }
 )
 

@@ -66,7 +66,7 @@ frontend:
 | 11 | React frontend | complete |
 | 12 | URL analysis | complete |
 | 13 | screenshot/OCR | complete |
-| 14 | PDF analysis | not started |
+| 14 | PDF analysis | complete |
 
 Live endpoints:
 
@@ -77,32 +77,33 @@ POST /api/investigations
 POST /api/investigations/text
 POST /api/investigations/url
 POST /api/investigations/image
+POST /api/investigations/pdf
 GET  /api/investigations
 GET  /api/investigations/{id}
 ```
 
-`POST /api/investigations/text`, `POST /api/investigations/url` and
-`POST /api/investigations/image` return the complete investigation
-synchronously — claims, entities, red flags, verification results,
-evidence with sources, the risk assessment, a stage timeline, and a
-`limitations` array of machine-readable codes. The URL endpoint fetches
-the submitted page under an SSRF guard (http/https only, private/loopback
-and metadata addresses refused, redirects re-validated, size and time
-budgets) and runs the same pipeline over the extracted page text. The
-image endpoint validates a PNG/JPEG/WebP upload, decodes it locally,
-reads it with Tesseract OCR, and runs the same pipeline over the
-recovered text.
+`POST /api/investigations/text`, `POST /api/investigations/url`,
+`POST /api/investigations/image` and `POST /api/investigations/pdf`
+return the complete investigation synchronously — claims, entities, red
+flags, verification results, evidence with sources, the risk assessment,
+a stage timeline, and a `limitations` array of machine-readable codes. The
+URL endpoint fetches the submitted page under an SSRF guard (http/https
+only, private/loopback and metadata addresses refused, redirects
+re-validated, size and time budgets) and runs the same pipeline over the
+extracted page text. The image endpoint validates a PNG/JPEG/WebP upload,
+decodes it locally, reads it with Tesseract OCR, and runs the same
+pipeline over the recovered text. The PDF endpoint validates a PDF upload,
+parses it locally with PyMuPDF, reads the text out of its pages, and runs
+the same pipeline over the extracted text.
 
 A **partial** run is a `200`, not an error. If search or the LLM is unavailable the
 response carries `status: PARTIAL` and names exactly which check did not happen.
 Only a malformed submission or a broken internal contract produces a `4xx`/`5xx`.
 
-`TEXT`, `URL` and `IMAGE` inputs are analysed. The PDF endpoint is not
-implemented yet — that input type is recognised and refused with a
-`422` that lists what this version does analyse. The frontend shows the
-PDF mode as disabled and labels it with the phase that will implement it
-(14); the Screenshot mode is live. It does not pretend anything works
-that does not.
+`TEXT`, `URL`, `IMAGE` and `PDF` inputs are analysed. The frontend
+reads which input types the backend accepts from
+`GET /api/investigations/limits` and enables exactly those — all four
+are live today. It does not pretend anything works that does not.
 
 See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for the full
 roadmap and [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for exactly where

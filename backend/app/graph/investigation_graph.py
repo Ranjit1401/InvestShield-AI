@@ -47,6 +47,7 @@ from app.graph.nodes import (
 )
 from app.graph.state import InvestigationInputType, InvestigationState, semantic_view
 from app.schemas.ocr import ImageUpload
+from app.schemas.pdf import PdfUpload
 
 logger = get_logger(__name__)
 
@@ -149,6 +150,7 @@ def run_investigation(
     context: GraphContext | None = None,
     dependencies: GraphDependencies | None = None,
     upload: ImageUpload | None = None,
+    pdf_upload: PdfUpload | None = None,
 ) -> InvestigationState:
     """Run one investigation end to end.
 
@@ -161,9 +163,9 @@ def run_investigation(
         raw_input: The content to investigate, exactly as submitted. For an
             `IMAGE` submission this is a descriptive reference (the filename);
             the bytes the pipeline recognises travel in `upload`.
-        input_type: The declared input kind. `TEXT`, `URL` and `IMAGE` are
-            analysed; `PDF` and any other kind are recognised and refused with
-            a typed reason.
+        input_type: The declared input kind. `TEXT`, `URL`, `IMAGE` and
+            `PDF` are analysed; any other kind is recognised and refused
+            with a typed reason.
         context: A fully built context. Mutually exclusive with `dependencies`.
         dependencies: Dependencies to wrap in a fresh context, keeping the
             default clock. Mutually exclusive with `context`.
@@ -172,6 +174,9 @@ def run_investigation(
             context is built once per process and shared by every request, while
             an upload belongs to the one run that received it. Ignored for
             every other input kind.
+        pdf_upload: The submitted PDF, for a `PDF` input. Carried to the input
+            stage through the state for the same reason as `upload`. Ignored
+            for every other input kind.
 
     Returns:
         The final `InvestigationState`. On success it carries a
@@ -211,6 +216,8 @@ def run_investigation(
     seed: dict[str, Any] = {"raw_input": raw_input or "", "input_type": kind}
     if upload is not None:
         seed["upload"] = upload
+    if pdf_upload is not None:
+        seed["pdf_upload"] = pdf_upload
 
     graph = build_investigation_graph()
     final = graph.invoke(

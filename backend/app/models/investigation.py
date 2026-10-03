@@ -135,6 +135,14 @@ class InvestigationRow(Base):
     # nothing to disambiguate.
     image_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Phase 14's `PdfSource` for a PDF submission, as JSON, and
+    # `None` for every other input kind. A column of its own for the
+    # same reason as `image_metadata`: the provenance records are
+    # different models with no common shape, a run carries at most one
+    # of them, and one column each means the loader validates each blob
+    # against the model it came from, with nothing to disambiguate.
+    pdf_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     current_stage: Mapped[str] = mapped_column(String(32), nullable=False, default="")
 

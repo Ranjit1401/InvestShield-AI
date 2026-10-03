@@ -1612,3 +1612,85 @@ disabled capability `503` (`IMAGE_INPUT_UNAVAILABLE`) — follows
 D-054's "whose mistake is it" rule.
 
 **Date:** 2026-10-03
+
+---
+
+## D-057 — A PDF is evidence, not a verdict; PDF text extraction is a local, optional capability
+
+**Decision:** `POST /api/investigations/pdf` accepts a
+PDF upload, validates it, opens it locally with PyMuPDF
+(`pymupdf`, lazily imported), reads the text out of its
+pages, and feeds the recovered text to the *unchanged*
+pipeline. Four rules govern it:
+
+- **The parsed document is the authority, not the declared
+  media type.** PyMuPDF opens the bytes; `document.is_pdf`
+  is the gate, because the library opens a non-PDF as a
+  document that is not a PDF rather than raising. A file
+  wearing a PDF label, or bytes that do not open at all,
+  are refused. The declared type is only a first, cheap
+  filter.
+- **`PdfSource` fields are chosen so a value cannot be read
+  as a finding.** `text_recovered` is a fact about the
+  extraction run, `detected_content_type` is what the bytes
+  parse as, and neither implies anything about legitimacy.
+  The pipeline analyses claims *in* the recovered text and
+  never scores the document (D-006, D-020).
+- **The document is data, never a program.** It is read in
+  memory — nothing is written to a temporary path — and its
+  links and embedded actions are never followed or executed.
+  A hostile PDF can do no more than supply text to be
+  analysed.
+- **Extraction is a budget, not a blank cheque.** A 100-page
+  read limit and a 20,000-character extracted-text budget;
+  over-budget text is truncated and the later pages skipped,
+  both recorded as limitations (`PDF_CONTENT_TRUNCATED`,
+  `PDF_PAGE_LIMIT_REACHED`), so the pipeline never claims to
+  have read text it did not see.
+
+**Context:** Phase 14's input is bytes, not text, so it needs
+an ingestion seam the way Phase 12 needed a fetch seam and
+Phase 13 a decode seam. The same discipline applies: recovered
+text is untrusted *data* (D-055), the investigation id is
+derived from the PDF content rather than the recovered text
+(two submissions of one document share an id no matter what the
+engine returned), and the whole output is "claims a PDF makes".
+PyMuPDF is deliberately local and optional — no network, no
+external service — so the guard surface is a byte budget, a
+media-type allowlist, and a parse, not an SSRF surface. A
+scanned PDF legitimately carries no text layer; that is a
+limitation (`PDF_TEXT_NOT_RETRIEVED`), reported as `200 PARTIAL`
+with a note to try OCR.
+
+**Alternatives:**
+
+- *Trust the declared media type.* Rejected: it is
+  caller-controlled and trivially spoofed; only the parsed
+  document is authoritative.
+- *Run PDF parsing as a remote service.* Rejected: it would
+  add a credential, a network hop and a provider-text leakage
+  surface for a capability the local stack covers.
+- *Treat "no text layer" as a failure.* Rejected: a scanned
+  PDF legitimately carries no text. It is a limitation
+  (`PDF_TEXT_NOT_RETRIEVED`), reported as `200 PARTIAL`, not
+  an error.
+- *Fabricate text when the library is absent.* Rejected
+  outright (D-009): a wired graph with no library returns
+  `200 PARTIAL` with a `PDF_UNAVAILABLE` limitation and
+  `text_recovered: false`.
+- *Execute or follow the document's content.* Rejected
+  outright: links, embedded actions and JavaScript are never
+  run; the parse is read-only and in-memory.
+
+**Reason:** A caller needs to know exactly what was read from a
+PDF and what was not. Making the parse authoritative, the
+provenance descriptive, and every degradation a recorded
+limitation keeps the guarantee that a hostile or empty document
+can do no more than supply content to be analysed — the same
+guarantee as text (D-046), fetched pages (D-055) and
+screenshots (D-056). The fault split — caller faults `422`
+(`PDF_FILE_TOO_LARGE`, `PDF_TYPE_UNSUPPORTED`, `PDF_UNREADABLE`)
+versus a disabled capability `503` (`PDF_INPUT_UNAVAILABLE`) —
+follows D-054's "whose mistake is it" rule.
+
+**Date:** 2026-10-03

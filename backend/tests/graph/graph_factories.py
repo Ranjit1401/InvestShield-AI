@@ -28,6 +28,7 @@ from app.schemas.entities import Entity, EntityType, normalize_entity_name
 from app.schemas.evidence import EvidenceBundleResponse
 from app.schemas.extraction import ExtractionMode, ExtractionResult
 from app.schemas.ocr import ImageDocument, ImageSource, ImageUpload
+from app.schemas.pdf import PdfDocument, PdfSource, PdfUpload
 from app.schemas.red_flags import RedFlag, RedFlagCode
 from app.schemas.risk import RiskAssessment, RiskLevel
 from app.schemas.search import SearchResponse, SearchResult, SearchStatus
@@ -312,6 +313,89 @@ class RecordingOcrService:
         return self.document
 
 
+def pdf_document(
+    text: str = "",
+    *,
+    limitation: str | None = None,
+    error_type: str | None = None,
+    truncated: bool = False,
+    filename: str | None = "document.pdf",
+    content_type: str = "application/pdf",
+    page_count: int | None = 1,
+    pages_processed: int | None = 1,
+) -> PdfDocument:
+    """Build a `PdfDocument` a fake PDF service can return.
+
+    The genuine service parses the PDF and reads its text, so a
+    test that needs a particular extraction outcome — unavailable,
+    failed, empty, truncated, page-capped — would need a document
+    to cooperate. This builder produces the document directly, so
+    each outcome is a deliberate input rather than a coincidence of
+    the environment.
+
+    Args:
+        text: The recovered text. Empty by default, which the graph
+            reads as "nothing readable was recovered".
+        limitation: The degradation code, when extraction could not
+            run at all (`PDF_UNAVAILABLE` or `PDF_EXTRACTION_FAILED`).
+        error_type: The exception class, carried only with the
+            `PDF_EXTRACTION_FAILED` limitation.
+        truncated: Whether `text` was cut at the character budget.
+        filename: The submitted filename, for the provenance record.
+        content_type: The declared media type.
+        page_count: The number of pages in the document, for the
+            provenance record.
+        pages_processed: The number of pages text was read from, for
+            the provenance record. A value below `page_count` is how
+            the graph records that later pages were skipped.
+
+    Returns:
+        A `PdfDocument` for a fake to return.
+    """
+    return PdfDocument(
+        source=PdfSource(
+            filename=filename,
+            content_type=content_type,
+            detected_content_type="application/pdf",
+            format="PDF",
+            byte_size=0,
+            page_count=page_count,
+            pages_processed=pages_processed,
+            text_recovered=bool(text.strip()),
+            processed_at=FIXED_INSTANT,
+        ),
+        text=text,
+        truncated=truncated,
+        limitation=limitation,
+        error_type=error_type,
+    )
+
+
+@dataclass
+class RecordingPdfService:
+    """Stands in for Phase 14's PDF service and remembers every call.
+
+    The genuine service owns parsing the PDF and reading its text.
+    This fake returns one fixed document, so a test can drive each
+    extraction outcome the graph maps — unavailable, failed, empty,
+    truncated, page-capped — without a PDF library, and can assert
+    that the input stage handed the service exactly the submitted
+    bytes.
+
+    Attributes:
+        document: What `extract` returns.
+        calls: Every `PdfUpload` the node passed, in order.
+    """
+
+    document: PdfDocument = field(default_factory=pdf_document)
+    calls: list[PdfUpload] = field(default_factory=list)
+
+    def extract(self, upload: PdfUpload) -> PdfDocument:
+        """Record the argument and return the configured document."""
+        self.calls.append(upload)
+        return self.document
+
+
 # -- builders ------------------------------------------------------------
 
 
@@ -567,6 +651,7 @@ __all__ = [
     "RecordingEvidenceService",
     "RecordingExtractionService",
     "RecordingOcrService",
+    "RecordingPdfService",
     "RecordingRedFlagEngine",
     "RecordingRiskService",
     "RecordingSearchProvider",
@@ -581,6 +666,7 @@ __all__ = [
     "ocr_document",
     "offline_context",
     "offline_settings",
+    "pdf_document",
     "real_dependencies",
     "result_for",
     "sebi_result",

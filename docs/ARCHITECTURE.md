@@ -146,9 +146,10 @@ Single-responsibility services, each independently constructible and testable:
 `VerificationService`, `EvidenceService`, `RiskService`, `UrlGuardService`,
 `UrlFetchService`, `WebsiteExtractor`.
 
-**Deferred:** `EmbeddingService`, `VectorStore`, `OCRService` and `PDFService`
-belong to image and PDF ingestion (Phases 13–14); embeddings are off by default and
-Phase 5 falls back to lexical similarity.
+**Deferred:** `EmbeddingService` and `VectorStore` remain
+deferred — embeddings are off by default and Phase 5 falls back to
+lexical similarity. `OCRService` and `PDFService` are **built**
+(Phases 13–14): image and PDF ingestion are operational.
 
 **Superseded:** `InvestigationService` is the façade originally sketched to
 orchestrate the pipeline. Phases 2-6 exist and Phases 4 and 5 do not line up
@@ -822,8 +823,11 @@ URL host blocked     → URL_ADDRESS_BLOCKED        → 422 (caller's destinatio
 URL site fault       → URL_DNS_FAILED/…/URL_HTTP_ERROR → 502 (the site failed)
 URL fetch disabled   → URL_FETCH_UNAVAILABLE      → 503 (capability off)
 Page text empty      → PAGE_TEXT_NOT_RETRIEVED    → PARTIAL limitation, 200
-OCR unavailable      → OCR_UNAVAILABLE            → 503 (Phase 13; 422 in Phase 8)
-PDF extraction fails → PDF_EXTRACTION_FAILED      → 503 (Phase 14; 422 in Phase 8)
+OCR engine absent    → OCR_UNAVAILABLE            → PARTIAL limitation, 200
+Image capability off → IMAGE_INPUT_UNAVAILABLE    → 503 (Phase 13)
+PDF engine absent    → PDF_UNAVAILABLE            → PARTIAL limitation, 200
+PDF extraction fails → PDF_EXTRACTION_FAILED      → PARTIAL limitation, 200
+PDF capability off   → PDF_INPUT_UNAVAILABLE      → 503 (Phase 14)
 Empty text           → INPUT_EMPTY                → 422
 Unanalysed input type→ INPUT_TYPE_NOT_SUPPORTED   → 422
 Stage contract broken→ *_FAILED                   → 500

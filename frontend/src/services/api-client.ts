@@ -407,6 +407,34 @@ export function createImageInvestigation(
 }
 
 /**
+ * `POST /api/investigations/pdf` — submit a PDF for investigation.
+ *
+ * The document travels as `multipart/form-data`: the file is
+ * one part and the language another, so the request is not JSON
+ * and the browser sets the Content-Type with the boundary. The
+ * PDF is parsed and read on the server; the extracted text is
+ * what the pipeline analyses.
+ *
+ * @param file The PDF to investigate.
+ * @param language The content language, recorded with the investigation.
+ * @param signal Abort signal for the request.
+ */
+export function createPdfInvestigation(
+  file: File,
+  language?: Language,
+  signal?: AbortSignal,
+): Promise<InvestigationResponse> {
+  const form = new FormData();
+  form.append("file", file, file.name || "document.pdf");
+  if (language !== undefined) form.append("language", language);
+  return request<InvestigationResponse>("/api/investigations/pdf", {
+    method: "POST",
+    body: form,
+    signal,
+  });
+}
+
+/**
  * `POST /api/investigations/text` — submit text for investigation.
  */
 export function createTextInvestigation(

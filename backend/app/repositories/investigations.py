@@ -75,6 +75,7 @@ from app.schemas.evidence import (
 )
 from app.schemas.extraction import ClaimEntityLink, ExtractionResult
 from app.schemas.ocr import ImageSource
+from app.schemas.pdf import PdfSource
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment, RiskFactor
 from app.schemas.url import UrlSource
@@ -202,6 +203,32 @@ def _image_metadata_for(state: InvestigationState) -> dict[str, Any] | None:
     return _model_fields(type(source), payload)
 
 
+def _pdf_metadata_for(state: InvestigationState) -> dict[str, Any] | None:
+    """Render a PDF submission's provenance for storage, or `None`.
+
+    The PDF modality's answer to :func:`_image_metadata_for`, for
+    the same reason and in the same form: one JSON blob, because
+    nothing joins to it, filters on it or aggregates it. It lives in
+    its own `pdf_metadata` column rather than sharing
+    `source_metadata`, because the provenance records are different
+    models and a run carries at most one of them.
+
+    Args:
+        state: The finished state.
+
+    Returns:
+        The `PdfSource` rendered in JSON mode, or `None` for a run
+        that had no PDF. Absent is stored as SQL `NULL` rather than
+        an empty object, so a `TEXT` or URL run is distinguishable
+        from a PDF run that somehow had none.
+    """
+    source = state.get("pdf_source")
+    if source is None:
+        return None
+    payload = source.model_dump(mode="json")
+    return _model_fields(type(source), payload)
+
+
 def _model_fields(model: type, payload: dict[str, Any]) -> dict[str, Any]:
     """Drop keys a Pydantic model does not declare.
 
@@ -296,6 +323,7 @@ class InvestigationRepository:
             language="en",
             source_metadata=_source_metadata_for(state),
             image_metadata=_image_metadata_for(state),
+            pdf_metadata=_pdf_metadata_for(state),
             status=investigation_status(
                 _as_tuple(state.get("errors")), _as_tuple(state.get("timeline"))
             ).value,
@@ -759,6 +787,12 @@ class InvestigationRepository:
         if image_source is not None:
             state["image_source"] = image_source
 
+        # And for the PDF modality: only a reloaded PDF run carries a
+        # `pdf_source`, for the same reason.
+        pdf_source = _pdf_source_from_row(row)
+        if pdf_source is not None:
+            state["pdf_source"] = pdf_source
+
         return state
 
     def list_page(self, limit: int, offset: int = 0) -> tuple[list[InvestigationSummary], int]:
@@ -994,6 +1028,41 @@ def _image_source_from_row(row: InvestigationRow) -> ImageSource | None:
     except ValidationError as exc:
         logger.warning(
             "Stored image provenance did not match the current schema",
+            extra={"public_id": row.public_id, "reason": type(exc).__name__},
+        )
+        return None
+
+
+def _pdf_source_from_row(row: InvestigationRow) -> PdfSource | None:
+    """Rebuild a PDF submission's provenance from its stored JSON.
+
+    The PDF modality's answer to :func:`_image_source_from_row`, with
+    the same contract and the same three normal `None` cases: a run of
+    any other input kind, which never had one; a run stored before
+    Phase 14, whose row predates the column; and a row whose JSON no
+    longer validates against the current `PdfSource`.
+
+    Provenance describes how a PDF was read, not what the investigation
+    found, so a row written by an older schema must still reload and
+    still serve its claims, evidence and risk assessment. Failing the
+    whole retrieval because one descriptive field drifted would turn a
+    cosmetic schema change into losing access to a stored investigation.
+
+    Args:
+        row: The stored run.
+
+    Returns:
+        The `PdfSource`, or `None` when the run carries none this
+        version can read.
+    """
+    payload = getattr(row, "pdf_metadata", None)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return PdfSource.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Stored PDF provenance did not match the current schema",
             extra={"public_id": row.public_id, "reason": type(exc).__name__},
         )
         return None

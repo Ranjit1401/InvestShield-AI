@@ -75,8 +75,9 @@ not have an `InputProcessor` of its own — the graph's input node
 address policy at every address the connection would reach), fetches
 through `UrlFetchService`, and normalises the extracted text through
 the same `normalize_text` every other input uses, so red-flag spans
-still index the original submitted string. IMAGE and PDF validation
-remains a Phase 13–14 seam.
+still index the original submitted string. IMAGE (Phase 13) and
+PDF (Phase 14) validation are implemented as graph nodes too
+(`_image_input`, `_pdf_input`).
 
 ### Stage 1 — Text Extraction
 
@@ -763,7 +764,7 @@ rule on top: **a recorded error ends the run, a recorded limitation does not.**
 | Condition | Reported by | Graph behaviour |
 | --- | --- | --- |
 | Empty submission | `INPUT_EMPTY` | Stop at `input` |
-| `URL` / `IMAGE` / `PDF` submitted | `INPUT_TYPE_NOT_SUPPORTED` | Stop at `input`; not analysed in Phase 7 (D-035) |
+| Unrecognised input type | `INPUT_TYPE_NOT_SUPPORTED` | Stop at `input`; `TEXT`, `URL`, `IMAGE` and `PDF` are all analysed (D-035) |
 | No claims extracted | `NO_CLAIMS_EXTRACTED` | Continue; verification and evidence report `SKIPPED`; Phase 1 still runs and risk still scores |
 | Search unavailable | `SEARCH_UNAVAILABLE`, `PARTIAL_VERIFICATION` | Continue; no accusation, no score contribution |
 | Extraction fell back to patterns | `EXTRACTION_FALLBACK` | Continue; reported as weaker extraction |

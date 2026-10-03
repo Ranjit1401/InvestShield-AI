@@ -14,7 +14,9 @@ document is the contract; the frontend client mirrors it.
 > disagree, the generated types and the code are authoritative. The frontend
 > adapts to the API; it does not redefine it. Phase 11 changed no contract;
 > Phase 12 changed it additively (a new endpoint, a new `url_source` field, a
-> new limits field), which is why the mirror still holds.
+> new limits field), as did Phase 13 (the image endpoint, `image_source` and
+> the image limits fields) and Phase 14 (the PDF endpoint, `pdf_source` and
+> the PDF limits fields), which is why the mirror still holds.
 
 ---
 
@@ -27,12 +29,12 @@ document is the contract; the frontend client mirrors it.
 | 202 | Investigation accepted and processing | **withdrawn**, see below |
 | 400 | Malformed request | not used |
 | 404 | Investigation not found | Phase 9 |
-| 413 | Upload exceeds size limit | not used — an oversized upload is a `422` validation error (`OCR_IMAGE_TOO_LARGE`, Phase 13) |
-| 422 | Validation error (empty text, over-length, unanalysed input type, SSRF-blocked URL) | yes (URL in Phase 12) |
+| 413 | Upload exceeds size limit | not used — an oversized upload is a `422` validation error (`OCR_IMAGE_TOO_LARGE`, Phase 13; `PDF_FILE_TOO_LARGE`, Phase 14) |
+| 422 | Validation error (empty text, over-length, a bad upload, SSRF-blocked URL) | yes (URL in Phase 12; image in Phase 13; PDF in Phase 14) |
 | 429 | Upstream provider rate limit | not used — a rate limit is a degradation, not a client error (D-009) |
 | 500 | A stage broke its documented contract | yes |
 | 502 | The submitted site itself failed (DNS, TLS, timeout, HTTP error, wrong content type) | Phase 12 |
-| 503 | A required service is unavailable (or a capability is disabled by configuration) | Phase 12 for `URL_FETCH_UNAVAILABLE`; see below for the general rule |
+| 503 | A required service is unavailable (or a capability is disabled by configuration) | Phase 12 for `URL_FETCH_UNAVAILABLE`; Phases 13–14 for `IMAGE_INPUT_UNAVAILABLE` / `PDF_INPUT_UNAVAILABLE`; see below for the general rule |
 
 Error body shape:
 
@@ -53,13 +55,13 @@ investigation failures it is a `FailureDetail`:
 {
   "error": {
     "code": "INPUT_TYPE_NOT_SUPPORTED",
-    "message": "This version analyses text, URL and image input. The submitted input type was recognised but is not analysed, so no investigation was performed.",
+    "message": "This version analyses text, URL, image and PDF input. The submitted input type was recognised but is not analysed, so no investigation was performed.",
     "detail": {
       "errors": [
         { "code": "INPUT_TYPE_NOT_SUPPORTED", "stage": "input", "error_type": null }
       ],
-      "submitted_input_type": "PDF",
-      "supported_input_types": ["TEXT", "URL", "IMAGE"]
+      "submitted_input_type": "PODCAST",
+      "supported_input_types": ["TEXT", "URL", "IMAGE", "PDF"]
     }
   }
 }
@@ -215,12 +217,14 @@ than after being refused. Needs no investigation and never fails.
 
 ```json
 {
-  "supported_input_types": ["TEXT", "URL", "IMAGE"],
+  "supported_input_types": ["TEXT", "URL", "IMAGE", "PDF"],
   "max_text_length": 20000,
   "max_url_length": 2048,
   "max_upload_bytes": 10485760,
   "allowed_image_types": ["image/png", "image/jpeg", "image/webp"],
+  "allowed_pdf_types": ["application/pdf"],
   "ocr_languages": "eng",
+  "pdf_max_pages": 100,
   "languages": ["en", "hi", "mr"],
   "translation_enabled": false
 }
@@ -280,15 +284,19 @@ The shape both `POST` endpoints return. Generated from
   "errors": [],
 
   "url_source": null,
+  "image_source": null,
+  "pdf_source": null,
 
   "started_at": "2026-10-01T00:00:00Z",
   "completed_at": "2026-10-01T00:00:04Z"
 }
 ```
 
-`url_source` is present on every response and is `null` for `TEXT`
-investigations. For a URL investigation it describes what was fetched
-(Phase 12):
+`url_source`, `image_source` and `pdf_source` are present on every
+response and are `null` for every other kind. Each describes the
+submission it belongs to: what was fetched for a URL (Phase 12), what
+was decoded and read for a screenshot (Phase 13), and what was parsed
+and read for a PDF (Phase 14):
 
 ### Fields the API layer owns
 
@@ -306,7 +314,9 @@ than a type error (D-038).
 | `limitations` | Deduplicated warning **codes**, first-seen order. Branch on these |
 | `warnings` | The same limitations, human-readable, with the stage that recorded each |
 | `errors` | Recorded failures. Any entry means `status: FAILED` |
-| `url_source` | URL investigations only: what was fetched (submitted/normalized/final URL, hostname, resolved addresses, redirect facts, status, content type, TLS, charset, byte size, page title, meta description, fetch time). `null` for `TEXT` |
+| `url_source` | URL investigations only: what was fetched (submitted/normalized/final URL, hostname, resolved addresses, redirect facts, status, content type, TLS, charset, byte size, page title, meta description, fetch time). `null` otherwise |
+| `image_source` | Screenshot investigations only: what was decoded and read (filename, declared/detected media type, decoded format, byte size, dimensions, OCR language, whether text was recovered, truncation). `null` otherwise |
+| `pdf_source` | PDF investigations only: what was parsed and read (filename, declared/detected media type, format, byte size, page count, pages processed, whether text was recovered, truncation). `null` otherwise |
 | `started_at` / `completed_at` | Wall-clock metadata |
 | `language` | Echo of the request. No message is translated |
 
@@ -326,10 +336,13 @@ collapsing them into one list would force every client to re-derive half of it.
 
 Stable codes, from `app/graph/nodes.py`:
 
-`INPUT_TYPE_NOT_ANALYSED`, `EXTRACTION_FALLBACK`, `EXTRACTION_PARTIAL`,
+`EXTRACTION_FALLBACK`, `EXTRACTION_PARTIAL`,
 `NO_CLAIMS_EXTRACTED`, `NO_RED_FLAGS_DETECTED`, `SEARCH_UNAVAILABLE`,
 `PARTIAL_VERIFICATION`, `EVIDENCE_UNAVAILABLE`, `SEARCH_RESULTS_NOT_RECORDED`,
-`URL_CONTENT_TRUNCATED`, `PAGE_TEXT_NOT_RETRIEVED`.
+`URL_CONTENT_TRUNCATED`, `PAGE_TEXT_NOT_RETRIEVED`,
+`OCR_UNAVAILABLE`, `OCR_TEXT_NOT_RETRIEVED`, `OCR_CONTENT_TRUNCATED`,
+`OCR_FAILED`, `PDF_UNAVAILABLE`, `PDF_TEXT_NOT_RETRIEVED`,
+`PDF_CONTENT_TRUNCATED`, `PDF_PAGE_LIMIT_REACHED`, `PDF_EXTRACTION_FAILED`.
 
 Stable failure codes:
 
@@ -346,6 +359,16 @@ Caller faults — `422`: `URL_EMPTY`, `URL_INVALID`, `URL_TOO_LONG`,
 `URL_TOO_MANY_REDIRECTS`, `URL_HTTP_ERROR`, `URL_CONTENT_TOO_LARGE`,
 `URL_CONTENT_TYPE_UNSUPPORTED`. Capability faults — `503`:
 `URL_FETCH_DISABLED`, `URL_FETCH_UNAVAILABLE`.
+
+Stable image fault codes (Phase 13), answered before the graph
+runs. Caller faults — `422`: `OCR_IMAGE_EMPTY`, `OCR_IMAGE_TOO_LARGE`,
+`OCR_IMAGE_TYPE_UNSUPPORTED`, `OCR_IMAGE_UNREADABLE`. Capability
+faults — `503`: `IMAGE_INPUT_UNAVAILABLE`.
+
+Stable PDF fault codes (Phase 14), answered before the graph
+runs. Caller faults — `422`: `PDF_EMPTY`, `PDF_FILE_TOO_LARGE`,
+`PDF_TYPE_UNSUPPORTED`, `PDF_UNREADABLE`. Capability faults —
+`503`: `PDF_INPUT_UNAVAILABLE`.
 
 ### `status` is derived from the timeline, not the warnings
 
@@ -526,12 +549,95 @@ failures to assert it.
 
 ---
 
-## POST /api/investigations/upload — *not implemented*
+## POST /api/investigations/pdf
 
-PDF upload. **Phase 14.** The image half of this surface is
-implemented as `POST /api/investigations/image` (Phase 13, above);
-PDF remains refused with `422` `INPUT_TYPE_NOT_SUPPORTED` up front,
-because there is no PDF ingestion path to be unavailable.
+Shorthand for `input_type = PDF`. **Implemented in Phase 14;
+stores its result like the text endpoint.** The server
+validates the upload, parses the PDF locally with PyMuPDF,
+reads the text out of its pages, and runs the standard
+pipeline over the recovered text.
+
+**Request** — `multipart/form-data`
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `file` | binary | yes | a PDF document |
+| `language` | string | no | form field, default `en` |
+
+**Guards, in order.** Byte budget (10 MiB) → declared media
+type (`application/pdf`, the only type this version reads) →
+parse (the PDF library opens the bytes; `is_pdf` is the
+authority, so a file wearing a PDF label but parsing to
+something else is refused) → extraction (the first
+`pdf_max_pages` pages, 100 by default).
+
+**Extraction budget.** Recovered text is cut at a 20,000-character
+budget; the cut is recorded in `pdf_source.truncated` and
+`pdf_source.truncated_at`, and surfaced as a `PDF_CONTENT_TRUNCATED`
+limitation, so the pipeline never claims to have read text it did not
+see. A document longer than the page limit is read to the limit and
+surfaced as a `PDF_PAGE_LIMIT_REACHED` limitation, with
+`pdf_source.pages_processed` below `pdf_source.page_count`.
+
+**200 Response** — the standard `InvestigationResponse`, with
+`input_type: "PDF"` and `pdf_source` describing the submission
+and the extraction run:
+
+```json
+{
+  "investigation_id": "inv_7a1c2e9f4b8d3e01",
+  "status": "PARTIAL",
+  "input_type": "PDF",
+  "pdf_source": {
+    "filename": "offer.pdf",
+    "content_type": "application/pdf",
+    "detected_content_type": "application/pdf",
+    "format": "PDF",
+    "byte_size": 28193,
+    "page_count": 4,
+    "pages_processed": 4,
+    "text_recovered": true,
+    "truncated": false,
+    "truncated_at": null,
+    "processed_at": "2026-10-03T00:00:04Z"
+  },
+  …the rest of the response, unchanged…
+}
+```
+
+Every `pdf_source` field is either a fact about the submission,
+a measurement of the parse, or a fact about the extraction run.
+None is a judgement: `text_recovered` says the engine produced
+text, not that the document is legitimate, and
+`detected_content_type` is what the bytes parse as. The
+parse-dependent fields — `detected_content_type`, `format`,
+`page_count` and `pages_processed` — are `null` when the
+document was never opened, which is the normal state of a run
+whose PDF library is absent.
+
+**Degradation, not failure.** A PDF that parses but yields no
+readable text still returns `200`: the pipeline runs over the
+document's own facts (its name, type, size and page count), so
+the run is a real, if thin, result with `text_recovered: false`
+and a `PDF_TEXT_NOT_RETRIEVED` limitation. A wired graph whose
+engine is not installed returns `200` with `status: PARTIAL` and
+a `PDF_UNAVAILABLE` limitation and `text_recovered: false` — no
+text is fabricated (D-009). An engine that runs and fails on one
+document returns `200` with a `PDF_EXTRACTION_FAILED` limitation.
+
+**422** for caller faults: an oversized upload (`PDF_FILE_TOO_LARGE`),
+a declared type this version does not read (`PDF_TYPE_UNSUPPORTED`),
+bytes that do not parse as a PDF (`PDF_UNREADABLE`), and a
+submission that declares PDF but carries no file (`PDF_EMPTY`).
+**503** `PDF_INPUT_UNAVAILABLE` when the graph is built without a
+PDF service at all — a capability refusal, distinct from the
+`PDF_UNAVAILABLE` *limitation* a wired graph reports when the
+engine is merely absent.
+
+No `message` or `detail` ever carries a filesystem path, an engine
+diagnostic or provider text; wording comes from the fixed
+`PDF_MESSAGES` / `ENGINE_MESSAGES` tables, and tests plant
+real-shaped failures to assert it.
 
 ---
 
@@ -729,7 +835,7 @@ Guarantees a client may rely on:
 | `GET /api/investigations` | 9 | Implemented |
 | `POST /api/investigations/url` | 12 | Implemented |
 | `POST /api/investigations/image` | 13 | Implemented |
-| `POST /api/investigations/upload` | 13 / 14 | Planned |
+| `POST /api/investigations/pdf` | 14 | Implemented |
 
 Phase 8 built the two POST endpoints and answered them from memory. Phase 9 added
 the store; both POSTs now persist what they return, and the response shape is
@@ -1143,7 +1249,7 @@ reading `ARCHITECTURE.md` §2.3d and `app/graph/state.py` alongside this section
 | `GET /api/investigations/limits` | implemented |
 | `POST /api/investigations/url` | implemented (Phase 12) |
 | `POST /api/investigations/image` | implemented (Phase 13) |
-| `POST /api/investigations/upload` | **not implemented** — PDF only, `422` (Phase 14); the image half is `/investigations/image` above |
+| `POST /api/investigations/pdf` | implemented (Phase 14) |
 | `GET /api/investigations/{id}` | implemented (Phase 9) |
 | `GET /api/investigations` | implemented (Phase 9) |
 

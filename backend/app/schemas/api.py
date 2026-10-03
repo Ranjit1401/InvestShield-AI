@@ -42,6 +42,7 @@ from app.schemas.entities import Entity
 from app.schemas.url import MAX_URL_LENGTH, UrlSource
 from app.schemas.evidence import EvidenceResponse
 from app.schemas.ocr import ImageSource
+from app.schemas.pdf import PdfSource
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment
 from app.schemas.verification import VerificationResult
@@ -280,6 +281,15 @@ class InvestigationResponse(BaseModel):
             "Phase 13 provenance for an image investigation: the submitted file, "
             "what it decoded to, and what the recognition engine recovered. Null "
             "for every non-IMAGE input kind."
+        ),
+    )
+
+    pdf_source: PdfSource | None = Field(
+        default=None,
+        description=(
+            "Phase 14 provenance for a PDF investigation: the submitted file, "
+            "what it parsed to, how many pages it has, and what the extraction "
+            "engine recovered. Null for every non-PDF input kind."
         ),
     )
 

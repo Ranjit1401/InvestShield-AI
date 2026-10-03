@@ -206,7 +206,7 @@ field and warning the engine can produce, not by review.
 | Embeddings | sentence-transformers `all-MiniLM-L6-v2` (optional) |
 | Vector store | NumPy cosine similarity by default, replaceable |
 | OCR | pytesseract + Tesseract binary |
-| PDF | PyMuPDF (`fitz`) |
+| PDF | PyMuPDF (`pymupdf`) |
 
 ## 6.2 How the investigation runs
 
@@ -297,10 +297,10 @@ TEXT | URL | IMAGE | PDF
 Every input type normalizes into one common investigation representation so the
 downstream pipeline is input-agnostic and language-independent.
 
-**Implemented:** `TEXT` (Phase 8) and `URL` (Phase 12 — SSRF-guarded
-fetch, visible-text extraction, `url_source` provenance). `IMAGE` and
-`PDF` are recognised and refused with `422 INPUT_TYPE_NOT_SUPPORTED`
-until Phases 13–14.
+**Implemented:** all four — `TEXT` (Phase 8), `URL` (Phase 12 —
+SSRF-guarded fetch, visible-text extraction, `url_source` provenance),
+`IMAGE` (Phase 13 — OCR, `image_source` provenance) and `PDF`
+(Phase 14 — PyMuPDF text extraction, `pdf_source` provenance).
 
 ## 10. Current Architecture (summary)
 

@@ -1661,3 +1661,154 @@ and assert none of that detail reaches a response.
   `UrlSource` record.
 - **No new runtime dependency.** Fetching and extraction use the
   standard library only.
+
+---
+
+## Phase 14 — PDF Analysis
+
+**Date:** 2026-10-03
+**Phase:** 14 — PDF Analysis
+
+### What was implemented
+
+- `app/schemas/pdf.py` — `PdfUpload` (the submitted bytes,
+  declared media type and filename), `PdfSource` (the provenance
+  record: filename, declared and detected media types, parsed
+  format, byte size, page count, pages actually read, whether text
+  was recovered, truncation facts, processing time) and
+  `PdfDocument` (the extraction result: source, recovered text,
+  truncation, and a `limitation`/`error_type` pair that says why
+  text is missing without raising). `PdfSource.as_metadata()`
+  renders the provenance as a JSON blob for persistence.
+- `app/services/pdf_service.py` — `PDFService`: opens the bytes
+  with PyMuPDF (`import pymupdf`, lazily imported so a deployment
+  without the library still starts), reads text from the pages, and
+  returns a `PdfDocument`. The library's absence is the
+  `PDF_UNAVAILABLE` limitation; a parse that runs and fails is
+  `PDF_EXTRACTION_FAILED`. Only a submission that is itself the
+  problem raises `PDFError`.
+- `app/services/pdf_guards.py` — the submission gate: the
+  `application/pdf` content-type allowlist, the byte-size check
+  against `max_upload_bytes`, and the fixed wording for the three
+  caller-fault refusals (`PDF_EMPTY`, `PDF_FILE_TOO_LARGE`,
+  `PDF_TYPE_UNSUPPORTED`, `PDF_UNREADABLE`).
+- `app/graph/nodes.py` — `_pdf_input`, called from the existing
+  `input_node` (not a new node), so everything downstream is the
+  *existing* machinery. Five new warning codes: `PDF_UNAVAILABLE`,
+  `PDF_TEXT_NOT_RETRIEVED`, `PDF_CONTENT_TRUNCATED`,
+  `PDF_PAGE_LIMIT_REACHED`, `PDF_EXTRACTION_FAILED`.
+  `ERROR_CODES`/`WARNING_MESSAGES` absorb the PDF vocabulary from
+  the services, so wording is defined where the decision is made
+  and merged, never retyped.
+- `app/graph/state.py` — `pdf_source` on `InvestigationState`.
+- `app/graph/context.py` — `pdf_service`, `supports_pdf` on
+  `GraphDependencies`; wired in `GraphContext`.
+- `app/api/routes/investigations.py` — the `POST
+  /api/investigations/pdf` route (multipart upload).
+- `app/api/errors.py` — the PDF guard refusals map to `422`;
+  a disabled capability maps to `503` (`PDF_INPUT_UNAVAILABLE`).
+  The code sets are imported from `app.graph.nodes` so the graph's
+  classification and the API's status mapping cannot disagree.
+- `app/db/session.py`, `app/models/investigation.py`,
+  `app/repositories/investigations.py` — additive `pdf_metadata`
+  column (JSON, `NULL` for non-PDF runs), written on every PDF run.
+- Frontend — `use-pdf-investigation.ts`, `createPdfInvestigation`
+  in the API client, `PdfSource` in the types, and the PDF mode on
+  `/investigate`. Availability is read from `GET
+  /api/investigations/limits`, which now reports
+  `supported_input_types: ["TEXT", "URL", "IMAGE", "PDF"]`,
+  `allowed_pdf_types`, `pdf_max_pages` and `max_upload_bytes`.
+
+### Files created
+
+```
+backend/app/schemas/pdf.py
+backend/app/services/pdf_service.py
+backend/app/services/pdf_guards.py
+backend/tests/pdf_factories.py
+backend/tests/test_pdf_guards.py
+backend/tests/test_pdf_service.py
+backend/tests/api/test_pdf_investigation.py
+frontend/src/hooks/use-pdf-investigation.ts
+```
+
+### The fault taxonomy
+
+Every failure is classified **by whose fault it is**, and the
+status code says so (the D-054 rule, applied to PDF):
+
+| Fault | Status | Codes |
+| --- | --- | --- |
+| Caller's bad submission | 422 | `PDF_EMPTY`, `PDF_FILE_TOO_LARGE`, `PDF_TYPE_UNSUPPORTED`, `PDF_UNREADABLE` |
+| Capability switched off | 503 | `PDF_INPUT_UNAVAILABLE` |
+| Degradation, run continues | 200 PARTIAL | `PDF_UNAVAILABLE`, `PDF_EXTRACTION_FAILED`, `PDF_TEXT_NOT_RETRIEVED`, `PDF_CONTENT_TRUNCATED`, `PDF_PAGE_LIMIT_REACHED` |
+
+A bad submission is the caller's mistake; a missing library is not,
+and answering either with `500` would claim a defect that does not
+exist. A PDF that opens but yields no text (a scan of a printed page)
+is the opposite case: the run proceeds and `PDF_TEXT_NOT_RETRIEVED`
+is recorded, because an unreadable document is a limitation, not a
+failure (D-009, D-032).
+
+No `message` or `detail` carries a provider diagnostic or a resolved
+parse detail. Wording comes from the fixed `PDF_MESSAGES` table.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `cd backend && python -m pytest` | **2966 passed, 4 deselected, 0 failed** (39 new PDF tests: guards, service, API, and the failure-matrix additions) |
+| PDF extraction | valid single-page PDF, multi-page PDF, Unicode text, character budget (truncation recorded) |
+| PDF validation | garbage bytes, empty bytes, oversized upload, unsupported MIME, wrong MIME, unreadable PDF |
+| PDF API | `200 PARTIAL` degradation, `503` capability-off, persistence round-trip (`GET /api/investigations/{id}` returns the same `pdf_source`), TEXT regression, red-flag propagation (`GUARANTEED_RETURN` from recovered text) |
+| PyMuPDF | `import pymupdf` (not `fitz`); `document.is_pdf` is the authoritative format gate, checked after opening |
+| OpenAPI | `/api/investigations/pdf` in paths; `PdfSource` documented; 422/503 responses documented |
+| Frontend | `npm run typecheck`, `npm run lint`, `npm run build` — all pass |
+
+### Security review
+
+- **The document is data, never a program.** The PDF is parsed
+  in memory — nothing is written to a temporary path — and its
+  links, embedded actions and JavaScript are never followed or
+  executed. A hostile PDF can do no more than supply text to be
+  analysed.
+- **Bounded on three axes.** Byte budget (`max_upload_bytes`,
+  10 MiB), page budget (`pdf_max_pages`, 100) and character budget
+  (`pdf_extraction_max_chars`, 20,000); no unbounded PDF is read.
+- **No secrets anywhere in the frontend.** `VITE_API_BASE_URL` is
+  the only environment variable read.
+- **Error messages are fixed tables.** The failure-injection
+  meta-test asserts every new code appears literally in a test, so
+  the vocabulary cannot drift.
+- **`.env` files are gitignored** (root and `backend/`); only
+  `.env.example` is committed.
+
+### Known limitations (recorded, not hidden)
+
+- **Scanned PDFs** carry no text layer; the run reports
+  `PDF_TEXT_NOT_RETRIEVED` and analyses the document's own facts
+  (filename, type, size, page count) only. OCR (Phase 13) is the
+  remedy, but the two modalities are not chained.
+- **Optional dependency.** PyMuPDF is an extra, not a core
+  dependency; a deployment without it reports `PDF_UNAVAILABLE`
+  and every run is `200 PARTIAL`.
+- **Truncation.** Over-budget text is cut (`PDF_CONTENT_TRUNCATED`)
+  and later pages are skipped (`PDF_PAGE_LIMIT_REACHED`); both are
+  recorded.
+- **No translation** (`translation_enabled: false`), as before.
+- **LLM-less deployment.** In this environment the LLM is
+  unavailable, so extraction runs in fallback mode and every run
+  reports `PARTIAL` with `EXTRACTION_PARTIAL`/`EXTRACTION_FALLBACK`
+  — the same behaviour the text path has always had.
+
+### Not done, deliberately
+
+- **No PDF→OCR chaining.** A scanned PDF is reported, not
+  automatically re-read through OCR.
+- **No domain reputation scoring.** The pipeline analyses claims
+  *in* the recovered text; it never scores the document (D-006,
+  D-020, D-055).
+- **No raw PDF is persisted** — only the extracted text and the
+  `PdfSource` record.
+- **No external resources are fetched.** The parse is local and
+  read-only; embedded files and remote links are not followed.

@@ -87,12 +87,12 @@ def test_unsupported_type_names_the_supported_kinds() -> None:
     with pytest.raises(UnsupportedInputType) as caught:
         raise_for_graph_errors(
             (_error("INPUT_TYPE_NOT_SUPPORTED"),),
-            submitted_input_type="PDF",
+            submitted_input_type="PODCAST",
         )
 
     detail = caught.value.detail
-    assert detail["submitted_input_type"] == "PDF"
-    assert detail["supported_input_types"] == ["TEXT", "URL", "IMAGE"]
+    assert detail["submitted_input_type"] == "PODCAST"
+    assert detail["supported_input_types"] == ["TEXT", "URL", "IMAGE", "PDF"]
 
 
 def test_contract_violation_raises_500() -> None:

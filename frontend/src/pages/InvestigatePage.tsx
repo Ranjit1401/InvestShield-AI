@@ -33,6 +33,10 @@ import {
   ALLOWED_IMAGE_TYPES,
   useImageInvestigation,
 } from "@/hooks/use-image-investigation";
+import {
+  ALLOWED_PDF_TYPES,
+  usePdfInvestigation,
+} from "@/hooks/use-pdf-investigation";
 import { useLimits } from "@/hooks/use-investigations";
 import {
   LANGUAGES,
@@ -71,18 +75,31 @@ export function InvestigatePage() {
   const textApi = useTextInvestigation();
   const urlApi = useUrlInvestigation();
   const imageApi = useImageInvestigation();
+  const pdfApi = usePdfInvestigation();
 
-  // The three submission hooks share every field except `submit`,
+  // The four submission hooks share every field except `submit`,
   // whose parameter is a string for text and a URL but a `File`
-  // for a screenshot. The shared fields are read off the union
-  // here; the one field that differs is called through
+  // for a screenshot or a PDF. The shared fields are read off the
+  // union here; the one field that differs is called through
   // `submitCurrent`, which narrows to the right hook for the
   // active mode.
-  const api = mode === "URL" ? urlApi : mode === "IMAGE" ? imageApi : textApi;
+  const api =
+    mode === "URL"
+      ? urlApi
+      : mode === "IMAGE"
+        ? imageApi
+        : mode === "PDF"
+          ? pdfApi
+          : textApi;
   const { isSubmitting, error } = api;
 
   const isUrl = mode === "URL";
   const isImage = mode === "IMAGE";
+  const isPdf = mode === "PDF";
+  // Screenshot and PDF are both file-upload modes: they share the
+  // one file input, the upload byte limit and the file-based
+  // validation, differing only in the media types they accept.
+  const isFile = isImage || isPdf;
 
   /**
    * Which modes the backend says it accepts. `GET /api/investigations/limits`
@@ -115,40 +132,52 @@ export function InvestigatePage() {
       ),
     [limits.data?.allowed_image_types],
   );
-  const allowedImageTypesList = Array.from(allowedImageTypes).join(", ");
+  const allowedPdfTypes = useMemo(
+    () =>
+      new Set<string>(
+        Array.isArray(limits.data?.allowed_pdf_types) &&
+          limits.data.allowed_pdf_types.length > 0
+          ? limits.data.allowed_pdf_types
+          : ALLOWED_PDF_TYPES,
+      ),
+    [limits.data?.allowed_pdf_types],
+  );
 
-  const activeMode = INPUT_MODES.find((item) => item.id === mode);
+  // The media types the active file mode accepts. Only read for
+  // a file mode; the non-file branches below never consult it.
+  const allowedFileTypes = isPdf ? allowedPdfTypes : allowedImageTypes;
+  const allowedFileTypesList = Array.from(allowedFileTypes).join(", ");
 
   const value = isUrl ? url : text;
   const trimmed = value.trim();
 
-  const isEmpty = isImage ? file === null : trimmed.length === 0;
-  const maxLength = isImage
+  const isEmpty = isFile ? file === null : trimmed.length === 0;
+  const maxLength = isFile
     ? maxUploadBytes
     : isUrl
       ? maxUrlLength
       : maxTextLength;
-  const isTooLong = isImage
+  const isTooLong = isFile
     ? file !== null && file.size > maxUploadBytes
     : value.length > maxLength;
   // The declared media type is a hint, not a verdict — the server
-  // re-checks what the bytes actually decode to — but catching an
+  // re-checks what the bytes actually parse to — but catching an
   // obvious mismatch here saves an upload.
   const isWrongType =
-    isImage && file !== null && !allowedImageTypes.has(file.type);
+    isFile && file !== null && !allowedFileTypes.has(file.type);
   const canSubmit = !isEmpty && !isTooLong && !isWrongType && !isSubmitting;
 
   // Client-side guidance only. The backend re-validates and its error is what
   // the user ultimately sees.
-  const validationMessage = isImage
+  const validationMessage = isFile
     ? file === null
-      ? "Choose the screenshot you want investigated."
+      ? `Choose the ${isPdf ? "PDF" : "screenshot"} you want investigated.`
       : isTooLong
-        ? `The screenshot is ${file.size.toLocaleString()} bytes. The limit is ${maxUploadBytes.toLocaleString()} bytes.`
+        ? `The ${isPdf ? "PDF" : "screenshot"} is ${file.size.toLocaleString()} bytes. The limit is ${maxUploadBytes.toLocaleString()} bytes.`
         : isWrongType
           ? `"${file.name}" is reported as ${
               file.type || "an unknown type"
-            }. The API accepts ${allowedImageTypesList}.`
+            }. The API accepts ${allowedFileTypesList}.`
           : null
     : isEmpty
       ? isUrl
@@ -161,6 +190,9 @@ export function InvestigatePage() {
   function submitCurrent(): Promise<InvestigationResponse | null> {
     if (isImage && file !== null) {
       return imageApi.submit(file, language);
+    }
+    if (isPdf && file !== null) {
+      return pdfApi.submit(file, language);
     }
     return isUrl ? urlApi.submit(value, language) : textApi.submit(value, language);
   }
@@ -196,7 +228,7 @@ export function InvestigatePage() {
   }
 
   function clear() {
-    if (isImage) {
+    if (isFile) {
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       fileInputRef.current?.focus();
@@ -300,19 +332,6 @@ export function InvestigatePage() {
           aria-labelledby={`mode-tab-${mode}`}
           className="space-y-4"
         >
-          {mode === "PDF" ? (
-            <Alert
-              tone="info"
-              title={`${activeMode?.label ?? "This"} input is not available yet`}
-            >
-              <p>
-                {activeMode?.label ?? "This"} investigation is scheduled for{" "}
-                {activeMode?.phase ?? "a later phase"}. The API does not expose an endpoint for it
-                yet, so this screen sends no request. Text, URL and Screenshot are fully operational.
-              </p>
-            </Alert>
-          ) : null}
-
           <form onSubmit={handleSubmit} noValidate>
             <Card>
               <CardHeader>
@@ -321,36 +340,42 @@ export function InvestigatePage() {
                     ? "Web page to investigate"
                     : isImage
                       ? "Screenshot to investigate"
-                      : "Investment content"}
+                      : isPdf
+                        ? "PDF to investigate"
+                        : "Investment content"}
                 </CardTitle>
                 <CardDescription>
                   {isUrl
                     ? "Paste the public URL of the page, post or promotion. The page is fetched and its readable text is investigated; the URL itself is checked against the red-flag rules too."
                     : isImage
                       ? "Upload a screenshot of the offer. It is decoded and read by OCR on the server, and the recovered text is investigated as the content it contains."
-                      : "Paste the message, post or promotion exactly as you received it. Verbatim text lets the pipeline match the claims and red flags it finds back to your content."}
+                      : isPdf
+                        ? "Upload a PDF of the offer. It is parsed and read on the server, and the extracted text is investigated as the content it contains."
+                        : "Paste the message, post or promotion exactly as you received it. Verbatim text lets the pipeline match the claims and red flags it finds back to your content."}
                 </CardDescription>
               </CardHeader>
 
               <CardContent className="space-y-4">
-                {isImage ? (
+                {isFile ? (
                   <div className="space-y-2">
-                    <Label htmlFor="investigation-image">Screenshot to investigate</Label>
+                    <Label htmlFor="investigation-file">
+                      {isPdf ? "PDF to investigate" : "Screenshot to investigate"}
+                    </Label>
                     <Input
-                      id="investigation-image"
+                      id="investigation-file"
                       ref={fileInputRef}
                       type="file"
-                      accept={allowedImageTypesList}
+                      accept={allowedFileTypesList}
                       onChange={handleFileChange}
                       onBlur={() => setTouched(true)}
                       invalid={touched && (isTooLong || isWrongType)}
-                      aria-describedby="investigation-image-hint investigation-image-count"
+                      aria-describedby="investigation-file-hint investigation-file-count"
                       disabled={isSubmitting}
                     />
-                    <p id="investigation-image-hint" className="text-xs text-ink-faint">
-                      A PNG, JPEG or WebP file up to {maxUploadBytes.toLocaleString()} bytes. The
-                      screenshot is decoded and read by OCR on the server; the recovered text is
-                      what the pipeline investigates.
+                    <p id="investigation-file-hint" className="text-xs text-ink-faint">
+                      {isPdf
+                        ? `A PDF file up to ${maxUploadBytes.toLocaleString()} bytes. The document is parsed and read on the server; the extracted text is what the pipeline investigates.`
+                        : `A PNG, JPEG or WebP file up to ${maxUploadBytes.toLocaleString()} bytes. The screenshot is decoded and read by OCR on the server; the recovered text is what the pipeline investigates.`}
                     </p>
                     {file ? (
                       <p className="font-mono text-xs text-ink-muted" aria-live="polite">
@@ -407,8 +432,8 @@ export function InvestigatePage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p
                     id={
-                      isImage
-                        ? "investigation-image-count"
+                      isFile
+                        ? "investigation-file-count"
                         : isUrl
                           ? "investigation-url-count"
                           : "investigation-text-count"
@@ -418,11 +443,11 @@ export function InvestigatePage() {
                       isTooLong ? "text-tone-danger" : "text-ink-faint",
                     )}
                   >
-                    {isImage
+                    {isFile
                       ? file
                         ? `${file.size.toLocaleString()} / ${maxUploadBytes.toLocaleString()} bytes`
                         : `No file chosen (limit ${maxUploadBytes.toLocaleString()} bytes)`
-                      : `${value.length.toLocaleString()} / ${maxLength.toLocaleString()} characters`}
+                        : `${value.length.toLocaleString()} / ${maxLength.toLocaleString()} characters`}
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2">
@@ -441,7 +466,7 @@ export function InvestigatePage() {
                       variant="ghost"
                       size="sm"
                       onClick={clear}
-                      disabled={(isImage ? file === null : value.length === 0) || isSubmitting}
+                      disabled={(isFile ? file === null : value.length === 0) || isSubmitting}
                     >
                       <Eraser aria-hidden="true" />
                       Clear
@@ -449,7 +474,7 @@ export function InvestigatePage() {
                   </div>
                 </div>
 
-                {!isImage ? (
+                {!isFile ? (
                   <details className="rounded-md border border-hairline bg-surface px-3 py-2">
                     <summary className="cursor-pointer text-sm text-ink-muted">
                       {isUrl ? "Example URL" : "Example investment message"}
@@ -502,7 +527,7 @@ export function InvestigatePage() {
                   <Button
                     type="submit"
                     size="lg"
-                    disabled={!canSubmit || mode === "PDF"}
+                    disabled={!canSubmit}
                     aria-busy={isSubmitting}
                   >
                     {isSubmitting ? (

@@ -75,7 +75,17 @@ class Settings(BaseSettings):
     ocr_timeout_seconds: int = 30
 
     # ---------- PDF ----------
+    # Upper bound on the number of pages a single PDF is read
+    # from, so a pathological document cannot make one
+    # investigation read an unbounded number of pages.
     pdf_max_pages: int = 100
+    # Upper bound on the text handed to extraction. Longer
+    # recovered text is truncated with a recorded limitation, so
+    # the pipeline never claims to have read a PDF it only saw
+    # part of. Distinct from `ocr_extraction_max_chars`, which
+    # bounds the image modality, for the same reason a URL bound
+    # is distinct from both.
+    pdf_extraction_max_chars: int = 20_000
 
     # ---------- Uploads ----------
     max_upload_bytes: int = 10 * 1024 * 1024

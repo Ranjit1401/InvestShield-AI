@@ -94,6 +94,11 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # `source_metadata`, because the two provenance records are different
     # models with no common shape and a run carries at most one of them.
     ("investigations", "image_metadata", "JSON"),
+    # Phase 14: provenance for a PDF submission, `NULL` for every
+    # other run. A column of its own for the same reason as
+    # `image_metadata`: the provenance records are different models
+    # and a run carries at most one of them.
+    ("investigations", "pdf_metadata", "JSON"),
 )
 
 

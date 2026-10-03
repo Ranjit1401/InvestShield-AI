@@ -60,12 +60,19 @@ from app.graph.state import (
 )
 from app.schemas.extraction import ExtractionMode, ExtractionResult
 from app.schemas.ocr import content_digest
+from app.schemas.pdf import content_digest as pdf_content_digest
 from app.schemas.verification import VerificationResponse, VerificationStatus
 from app.services.ocr_guards import SYNTAX_MESSAGES
 from app.services.ocr_service import (
     ENGINE_MESSAGES,
     OCRError,
     build_image_analysis_text,
+)
+from app.services.pdf_guards import SYNTAX_MESSAGES as PDF_GUARD_MESSAGES
+from app.services.pdf_service import (
+    ENGINE_MESSAGES as PDF_ENGINE_MESSAGES,
+    PDFError,
+    build_pdf_analysis_text,
 )
 from app.services.url_fetch import FETCH_MESSAGES, URL_MESSAGES, UrlFetchError
 from app.services.website_extractor import build_analysis_text
@@ -89,7 +96,6 @@ __all__ = [
 #: Stable limitation codes. A caller branches on these rather than parsing
 #: English, so wording can change without breaking anyone (D-009).
 WARNING_CODES: tuple[str, ...] = (
-    "INPUT_TYPE_NOT_ANALYSED",
     "EXTRACTION_FALLBACK",
     "EXTRACTION_PARTIAL",
     "NO_CLAIMS_EXTRACTED",
@@ -104,6 +110,11 @@ WARNING_CODES: tuple[str, ...] = (
     "OCR_TEXT_NOT_RETRIEVED",
     "OCR_CONTENT_TRUNCATED",
     "OCR_FAILED",
+    "PDF_UNAVAILABLE",
+    "PDF_TEXT_NOT_RETRIEVED",
+    "PDF_CONTENT_TRUNCATED",
+    "PDF_PAGE_LIMIT_REACHED",
+    "PDF_EXTRACTION_FAILED",
 )
 
 #: Stable failure codes. Any of these ends the run.
@@ -116,8 +127,10 @@ ERROR_CODES: tuple[str, ...] = (
     "RISK_ASSESSMENT_FAILED",
     "URL_FETCH_UNAVAILABLE",
     "IMAGE_INPUT_UNAVAILABLE",
+    "PDF_INPUT_UNAVAILABLE",
     *URL_MESSAGES,
     *SYNTAX_MESSAGES,
+    *PDF_GUARD_MESSAGES,
 )
 
 #: URL failures the **caller** must fix. The submission itself is the problem: a
@@ -188,13 +201,29 @@ IMAGE_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = frozenset(
     {"IMAGE_INPUT_UNAVAILABLE"}
 )
 
+#: PDF refusals the **caller** must fix. The submission itself is
+#: the problem: no PDF was sent, a file larger than the upload
+#: limit, a file that is not a PDF, or a PDF this version does
+#: not read. Retrying the same file unchanged fails identically,
+#: so the API answers `422`.
+#:
+#: These are the PDF modality's `SYNTAX_MESSAGES`, worded where
+#: the refusal is decided and imported here so the graph and the
+#: API classify them identically.
+PDF_CLIENT_FAULT_CODES: frozenset[str] = frozenset(PDF_GUARD_MESSAGES)
+
+#: PDF analysis is not offered by this deployment, so nothing was
+#: attempted. The graph was built without a PDF service — a
+#: configuration, not a defect and not the caller's fault — so
+#: the API answers `503 Service Unavailable`, the status that says
+#: "this deployment does not do this right now".
+PDF_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = frozenset(
+    {"PDF_INPUT_UNAVAILABLE"}
+)
+
 #: Fixed wording per limitation. Each says what did not happen, never what it
 #: means about the content or anyone named in it.
 WARNING_MESSAGES: dict[str, str] = {
-    "INPUT_TYPE_NOT_ANALYSED": (
-        "This investigation analysed only text input. The submitted input type is "
-        "not analysed by this version, so no analysis of its content was performed."
-    ),
     "EXTRACTION_FALLBACK": (
         "Claims and entities were extracted without the language model, using "
         "deterministic patterns only, so the extraction is weaker than a "
@@ -258,6 +287,28 @@ WARNING_MESSAGES: dict[str, str] = {
         "version reads, so only its earlier content was analysed. Text later "
         "in the image was not."
     ),
+    "PDF_UNAVAILABLE": (
+        "PDF text extraction is not available in this deployment, so "
+        "the submitted PDF's text was not read. The PDF itself was "
+        "received, and the analysis below covers the PDF's own facts "
+        "only and not its text content."
+    ),
+    "PDF_TEXT_NOT_RETRIEVED": (
+        "The submitted PDF was read but no text was found in it. A "
+        "scan of a printed page often appears this way, so the "
+        "analysis below covers the PDF's own facts only and not any "
+        "text it may contain."
+    ),
+    "PDF_CONTENT_TRUNCATED": (
+        "The text recovered from the submitted PDF is larger than this "
+        "version reads, so only its earlier content was analysed. Text "
+        "later in the PDF was not."
+    ),
+    "PDF_PAGE_LIMIT_REACHED": (
+        "The submitted PDF has more pages than this version reads, so "
+        "only its earlier pages were analysed. Pages later in the PDF "
+        "were not."
+    ),
 }
 
 #: Fixed wording per failure. Safe to surface: it describes the pipeline, never
@@ -267,8 +318,8 @@ ERROR_MESSAGES: dict[str, str] = {
         "No content was submitted, so there was nothing to investigate."
     ),
     "INPUT_TYPE_NOT_SUPPORTED": (
-        "This version analyses text, URL and image input. The submitted "
-        "input type was recognised but is not analysed, so no "
+        "This version analyses text, URL, image and PDF input. The "
+        "submitted input type was recognised but is not analysed, so no "
         "investigation was performed."
     ),
     "EXTRACTION_FAILED": (
@@ -295,6 +346,11 @@ ERROR_MESSAGES: dict[str, str] = {
     "IMAGE_INPUT_UNAVAILABLE": (
         "Screenshot investigation is not available in this deployment, "
         "so the submitted image was not recognised and no "
+        "investigation was performed."
+    ),
+    "PDF_INPUT_UNAVAILABLE": (
+        "PDF investigation is not available in this deployment, "
+        "so the submitted PDF was not read and no "
         "investigation was performed."
     ),
 }
@@ -324,6 +380,20 @@ ERROR_MESSAGES.update(URL_MESSAGES)
 # the two tables stay disjoint, which a test relies on.
 ERROR_MESSAGES.update(SYNTAX_MESSAGES)
 WARNING_MESSAGES.update(ENGINE_MESSAGES)
+
+# Phase 14's PDF refusals are worded where the decision is
+# made — the PDF policy and the extraction service — and merged
+# in for the same reason: the graph's promise holds for the
+# PDF modality too, with no second copy of these sentences.
+#
+# As with the image modality, the caller-fault refusals
+# (`PDF_GUARD_MESSAGES`) end the run and belong in
+# `ERROR_MESSAGES`, while the engine's own failure
+# (`PDF_ENGINE_MESSAGES`, `PDF_EXTRACTION_FAILED`) is a
+# limitation the run continues past and belongs in
+# `WARNING_MESSAGES`. The two tables stay disjoint.
+ERROR_MESSAGES.update(PDF_GUARD_MESSAGES)
+WARNING_MESSAGES.update(PDF_ENGINE_MESSAGES)
 
 
 # -- helpers -------------------------------------------------------------
@@ -771,6 +841,223 @@ def _image_input(
     }
 
 
+def _pdf_input(
+    state: InvestigationState,
+    context: GraphContext,
+) -> dict[str, Any]:
+    """Extract a submitted PDF's text and turn it into analysis text.
+
+    This is Phase 14's contribution to the graph, and it mirrors
+    `_image_input` and `_url_input`: it runs inside `input_node` so
+    everything downstream — extraction, pattern detection,
+    verification, evidence, risk — is the *existing* machinery
+    operating on the resulting text. A PDF submission therefore
+    produces an investigation of exactly the same shape as a text
+    one, and no downstream stage needs to know where the text came
+    from.
+
+    The node stays free of business logic by delegating every
+    decision: the extraction service owns parsing the PDF and
+    reading its text, and this function only maps its typed
+    outcomes onto graph vocabulary.
+
+    Args:
+        state: The incoming state. Requires `input_type`, and
+            carries the submitted PDF in `pdf_upload`.
+        context: Services and clock.
+
+    Returns:
+        Partial state. On success it carries the composed analysis
+        text as `raw_input`, the `PdfSource` provenance, and any
+        limitation. On refusal it carries an `errors` entry and no
+        analysis text.
+    """
+    stage = GraphStage.INPUT
+    dependencies = context.dependencies
+    raw_input = state.get("raw_input") or ""
+    pdf_upload = state.get("pdf_upload")
+
+    # A PDF submission is identified by its content, so a re-run
+    # of the same document shares an id no matter what the caller
+    # named the file. When no PDF was submitted there is no
+    # content to digest, and the seed text stands in.
+    identity = (
+        pdf_content_digest(pdf_upload) if pdf_upload is not None else raw_input
+    )
+
+    # One capability, checked once. A graph built without a PDF
+    # service cannot read a PDF at all, which is a deployment
+    # configuration rather than a defect.
+    if not dependencies.supports_pdf:
+        logger.info("PDF submission received by a graph without PDF support")
+        return {
+            "input_type": InvestigationInputType.PDF.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.PDF, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (_error(stage, "PDF_INPUT_UNAVAILABLE", None),),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "PDF investigation is not available in this "
+                    "deployment.",
+                ),
+            ),
+        }
+
+    # The typed endpoint declares PDF but carries no PDF bytes:
+    # there is nothing to read, and the caller is told so rather
+    # than the run pretending an empty submission was a document.
+    if pdf_upload is None:
+        logger.info("PDF input type submitted without a PDF")
+        return {
+            "input_type": InvestigationInputType.PDF.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.PDF, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (_error(stage, "PDF_EMPTY", None),),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "No PDF was submitted.",
+                ),
+            ),
+        }
+
+    pdf_service = dependencies.pdf_service
+    assert pdf_service is not None  # supports_pdf
+
+    try:
+        document = pdf_service.extract(pdf_upload)
+    except PDFError as exc:
+        # A typed refusal is a normal outcome, not a defect: the
+        # submission was understood and the answer is "no". Its
+        # message is fixed per code by the layer that raised it and
+        # carries no engine detail, so it is safe to surface here
+        # rather than restating it in this module.
+        logger.info("PDF submission refused", extra={"reason": exc.code})
+        return {
+            "input_type": InvestigationInputType.PDF.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.PDF, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (
+                GraphError(
+                    code=exc.code,
+                    stage=stage,
+                    message=exc.message,
+                    error_type=None,
+                ),
+            ),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "The submitted PDF could not be accepted.",
+                ),
+            ),
+        }
+    except Exception as exc:
+        # The PDF service documents that it raises only `PDFError`
+        # for every condition it can anticipate. Anything else
+        # escaping is a contract violation below this layer, so it
+        # ends the run rather than being reported as though the
+        # PDF were merely unreadable.
+        logger.exception("PDF service violated its typed-failure contract")
+        return {
+            "input_type": InvestigationInputType.PDF.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.PDF, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (
+                _error(stage, "PDF_INPUT_UNAVAILABLE", type(exc).__name__),
+            ),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "PDF text extraction did not complete as expected.",
+                ),
+            ),
+        }
+
+    # The extraction outcome is mapped onto graph vocabulary here,
+    # the same place a fetch outcome is mapped for a URL, so no
+    # downstream stage learns where the text came from. Every
+    # outcome below keeps the run going: a PDF that cannot be
+    # read is a limitation to record, not a reason to stop, because
+    # the PDF's own facts are still evidence.
+    warnings: list[GraphWarning] = []
+
+    if document.limitation == "PDF_UNAVAILABLE":
+        warnings.append(_warning(stage, "PDF_UNAVAILABLE"))
+    elif document.limitation == "PDF_EXTRACTION_FAILED":
+        warnings.append(
+            _warning(stage, "PDF_EXTRACTION_FAILED", error_type=document.error_type)
+        )
+    elif not document.text.strip():
+        # Extraction ran and produced nothing. This is the
+        # characteristic outcome for a scan of a printed page, and
+        # reporting it as a complete reading of the PDF would
+        # overstate what was read.
+        warnings.append(_warning(stage, "PDF_TEXT_NOT_RETRIEVED"))
+
+    if document.truncated:
+        warnings.append(_warning(stage, "PDF_CONTENT_TRUNCATED"))
+
+    source = document.source
+    if (
+        source.page_count is not None
+        and source.pages_processed is not None
+        and source.pages_processed < source.page_count
+    ):
+        # Only the first `pdf_max_pages` pages were read; the rest
+        # were skipped by the page limit. Recorded separately from
+        # `PDF_CONTENT_TRUNCATED`, which is about the character
+        # budget on the recovered text, not the page budget on the
+        # document.
+        warnings.append(_warning(stage, "PDF_PAGE_LIMIT_REACHED"))
+
+    analysis_text = build_pdf_analysis_text(document)
+
+    return {
+        "input_type": InvestigationInputType.PDF.value,
+        "raw_input": analysis_text,
+        "extracted_text": analysis_text,
+        "pdf_source": document.source,
+        "investigation_id": investigation_id_for(
+            InvestigationInputType.PDF, identity
+        ),
+        "started_at": context.clock(),
+        "current_stage": stage.value,
+        "warnings": tuple(warnings),
+        "timeline": (
+            _event(
+                context,
+                stage,
+                TimelineStatus.PARTIAL if warnings else TimelineStatus.STARTED,
+                "PDF text extracted."
+                if not warnings
+                else "PDF text extracted, with limitations.",
+            ),
+        ),
+    }
+
+
 def input_node(state: InvestigationState, context: GraphContext) -> dict[str, Any]:
     """Validate the submission and open the investigation record.
 
@@ -793,9 +1080,18 @@ def input_node(state: InvestigationState, context: GraphContext) -> dict[str, An
     content rather than from the recovered text, so two submissions of the
     same screenshot share an id no matter what the engine returned that day.
 
+    A `PDF` submission is the same kind of exception again: the submitted
+    bytes are not text, so `_pdf_input` extracts the document's text and
+    the pipeline analyses the recovered text. The PDF's own facts are
+    preserved in `pdf_source`, and the investigation id is derived from the
+    PDF content rather than from the recovered text, so two submissions of
+    the same document share an id no matter what the engine returned that
+    day.
+
     Args:
         state: The incoming state. Requires `raw_input` and `input_type`,
-            and carries a submitted image in `upload` for an `IMAGE` input.
+            and carries a submitted image in `upload` for an `IMAGE` input
+            and a submitted PDF in `pdf_upload` for a `PDF` input.
         context: Services and clock.
 
     Returns:
@@ -833,6 +1129,14 @@ def input_node(state: InvestigationState, context: GraphContext) -> dict[str, An
     if input_type is InvestigationInputType.IMAGE:
         return _image_input(state, context)
 
+    if input_type is InvestigationInputType.PDF:
+        return _pdf_input(state, context)
+
+    # Guard for a kind the vocabulary declares but this version has
+    # not wired up yet. Every kind it carries is analysed today, so
+    # this is unreachable now; it exists so that adding a kind to the
+    # enum without the ingestion work is refused here — ending the run
+    # — rather than quietly read as text.
     if input_type is not InvestigationInputType.TEXT:
         logger.info(
             "Input type recognised but not analysed by this version",
@@ -843,9 +1147,6 @@ def input_node(state: InvestigationState, context: GraphContext) -> dict[str, An
             "investigation_id": investigation_id_for(input_type, raw_input),
             "current_stage": GraphStage.INPUT.value,
             "started_at": context.clock(),
-            "warnings": (
-                _warning(GraphStage.INPUT, "INPUT_TYPE_NOT_ANALYSED"),
-            ),
             "errors": (
                 _error(GraphStage.INPUT, "INPUT_TYPE_NOT_SUPPORTED", None),
             ),

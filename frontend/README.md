@@ -46,7 +46,7 @@ or any other backend credential.
 | --------------------- | ------------------------- | ------------------------------------ |
 | `/`                   | Landing                   | none (static content only)           |
 | `/dashboard`          | Dashboard                 | `GET /api/health`, `GET /api/investigations` |
-| `/investigate`        | New investigation         | `GET /api/investigations/limits`, `POST /api/investigations/text`, `POST /api/investigations/url` |
+| `/investigate`        | New investigation         | `GET /api/investigations/limits`, `POST /api/investigations/text`, `POST /api/investigations/url`, `POST /api/investigations/image`, `POST /api/investigations/pdf` |
 | `/investigation/:id`  | Investigation report      | `GET /api/investigations/{id}`       |
 | `/history`            | History                   | `GET /api/investigations`            |
 
@@ -62,14 +62,17 @@ modes, and the availability of each is driven by
 | ---------- | ---------- | ------------- |
 | Text       | Available  | —             |
 | URL        | Available  | 12            |
-| Screenshot | Unavailable, "Coming in Phase 13" | Phase 13 |
-| PDF        | Unavailable, "Coming in Phase 14" | Phase 14 |
+| Screenshot | Available  | 13            |
+| PDF        | Available  | 14            |
 
-Unavailable modes are disabled and are not in the tab order. No request is ever sent for
-them — the upload endpoint does not exist. The URL mode submits through
-`createUrlInvestigation` (`POST /api/investigations/url`), holds an in-flight
-guard against double submission like the text mode, and surfaces the API's
-error envelope verbatim (`URL_ADDRESS_BLOCKED`, `URL_HTTP_ERROR`, …).
+The URL mode submits through `createUrlInvestigation`
+(`POST /api/investigations/url`), the Screenshot mode through
+`createImageInvestigation` and the PDF mode through
+`createPdfInvestigation` — both `multipart/form-data` uploads to
+`POST /api/investigations/image` and `POST /api/investigations/pdf` —
+and each mode holds an in-flight guard against double submission like the
+text mode, and surfaces the API's error envelope verbatim
+(`URL_ADDRESS_BLOCKED`, `OCR_IMAGE_UNREADABLE`, `PDF_UNREADABLE`, …).
 
 ## Architecture
 
@@ -83,7 +86,8 @@ src/
 │   ├── evidence/       claim → evidence → source panels
 │   └── risk/           risk score, factor breakdown chart, factor list
 ├── hooks/              use-async-resource, use-investigations, use-text-investigation,
-│                       use-url-investigation
+│                       use-url-investigation, use-image-investigation,
+│                       use-pdf-investigation
 ├── lib/                class-name helper, display formatting, colour intent
 ├── pages/              one file per route
 ├── services/           api-client.ts — the only module that calls fetch
@@ -156,4 +160,4 @@ investigation payload to prove the populated and empty states both render.
 ## Scope
 
 Authentication, portfolios, trading, recommendations and payment flows are deliberately absent.
-Phases 13–14 (screenshot/OCR, PDF) are surfaced in the UI as planned but unimplemented.
+Phases 13–14 (screenshot/OCR, PDF) are implemented: all four input modes are operational.

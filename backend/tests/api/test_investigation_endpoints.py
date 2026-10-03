@@ -200,7 +200,7 @@ def test_unknown_body_field_is_refused(api_client: TestClient) -> None:
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("input_type", ["PDF"])
+@pytest.mark.parametrize("input_type", ["PODCAST"])
 def test_unsupported_input_types_are_refused_with_422(
     api_client: TestClient, input_type: str
 ) -> None:
@@ -213,21 +213,31 @@ def test_unsupported_input_types_are_refused_with_422(
 
 
 def test_unsupported_input_type_names_what_is_supported(api_client: TestClient) -> None:
-    """A refused kind is refused with the list of kinds that do work.
+    """A kind the vocabulary does not carry is refused, naming the kinds that do.
 
-    `PDF` stands in for the refusal: `URL` left this set in Phase 12
-    and `IMAGE` in Phase 13, when they stopped being unsupported.
+    `URL` left this set in Phase 12, `IMAGE` in Phase 13, and
+    `PDF` in Phase 14, when they stopped being unsupported. Every
+    kind the vocabulary carries is analysed now, so the one shape
+    of submission left that no stage may touch is a kind the
+    vocabulary does not carry — refused by the request schema
+    before the graph runs, with the accepted kinds named in the
+    validation detail.
     """
     body = api_client.post(
         "/api/investigations",
-        json={"input_type": "PDF", "text": "some content"},
+        json={"input_type": "PODCAST", "text": "some content"},
     ).json()
 
-    detail = body["error"]["detail"]
-    assert body["error"]["code"] == "INPUT_TYPE_NOT_SUPPORTED"
-    assert detail["submitted_input_type"] == "PDF"
-    assert detail["supported_input_types"] == ["TEXT", "URL", "IMAGE"]
-    assert detail["errors"][0]["stage"] == "input"
+    error = body["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    # The validation detail names every kind the vocabulary
+    # carries, so a client can correct itself without a second
+    # round trip to the limits endpoint.
+    detail = " ".join(
+        str(item.get("msg", "")) for item in error["detail"]
+    )
+    for kind in ("TEXT", "URL", "IMAGE", "PDF"):
+        assert kind in detail
 
 
 def test_unrecognised_input_type_is_refused(api_client: TestClient) -> None:
@@ -252,7 +262,7 @@ def test_unsupported_type_does_not_analysed_text_as_prose(
     """An unanalysed kind must be refused, never quietly read as words."""
     response = api_client.post(
         "/api/investigations",
-        json={"input_type": "PDF", "text": MESSY_CONTENT},
+        json={"input_type": "PODCAST", "text": MESSY_CONTENT},
     )
 
     assert response.status_code == 422
@@ -430,7 +440,7 @@ def test_run_is_reproducible_through_the_api(api_client: TestClient) -> None:
 def test_limits_endpoint_reports_supported_inputs(api_client: TestClient) -> None:
     body = api_client.get("/api/investigations/limits").json()
 
-    assert body["supported_input_types"] == ["TEXT", "URL", "IMAGE"]
+    assert body["supported_input_types"] == ["TEXT", "URL", "IMAGE", "PDF"]
     assert body["max_text_length"] == 20_000
     assert body["translation_enabled"] is False
 

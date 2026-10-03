@@ -214,6 +214,7 @@ class TestRoutesDoNotBypassTheGraph:
             "SUPPORTED_INPUT_TYPES",
             "ErrorEnvelope",
             "ImageUpload",
+            "PdfUpload",
             "InvestigationCreateRequest",
             "InvestigationListResponse",
             "InvestigationResponse",
@@ -221,6 +222,7 @@ class TestRoutesDoNotBypassTheGraph:
             "InvestigationSummaryResponse",
             "Language",
             "OCR_IMAGE_FORMATS",
+            "PDF_CONTENT_TYPES",
             "Settings",
             "TextInvestigationRequest",
             "UrlInvestigationRequest",
@@ -434,7 +436,7 @@ class TestTheRequestTravelsThroughTheGraph:
 
         response = client.post(
             "/api/investigations",
-            json={"input_type": "PDF", "text": "anything"},
+            json={"input_type": "PODCAST", "text": "anything"},
         )
 
         assert response.status_code == 422
@@ -616,10 +618,14 @@ class TestGraphAndApiAgreeOnTheStages:
             # Phase 13: provenance for a screenshot investigation. Null for
             # this `TEXT` submission, and likewise forwarded, not computed.
             "image_source",
+            # Phase 14: provenance for a PDF investigation. Null for
+            # this `TEXT` submission, and likewise forwarded, not computed.
+            "pdf_source",
         }
         assert body["investigation_id"].startswith("inv_")
         assert body["url_source"] is None
         assert body["image_source"] is None
+        assert body["pdf_source"] is None
 
     def test_the_investigation_id_is_derived_from_the_submitted_content(
         self, api_client: TestClient
