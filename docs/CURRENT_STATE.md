@@ -44,8 +44,8 @@
   and passes `verify:api` (74 checks), live `verify:flow` (17 checks)
   and `verify-render.mjs` (69 checks).
 
-**Latest Commit:** `feat: implement full integration` (Phase 16) — Phase 17 changes are in the working tree, awaiting commit
-**Working Tree:** Phase 17 frontend and documentation changes (uncommitted).
+**Latest Commit:** `c6807cf` — `feat: implement demo / hackathon polish` (Phase 17)
+**Working Tree:** clean.
 
 ### Phase Status Summary
 
