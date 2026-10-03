@@ -7,10 +7,10 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 15 — Multilingual reports — **COMPLETE**
-**Current Subphase:** none — Phase 15 roadmap complete
+**Current Phase:** Phase 16 — Full Integration — **COMPLETE**
+**Current Subphase:** none — Phase 16 roadmap complete
 
-**Last Completed Task:** Phase 15 — Multilingual reports. Added English (`en`), Hindi (`hi`), and Marathi (`mr`) presentation localization layers. The backend gained `app/locales/` (`en.py`, `hi.py`, `mr.py`) and `report_localization_service.py`, while `GET /api/investigations/{id}?language=` now returns a localized `report` presentation layer with deterministic titles, labels, summaries, safety guidance, and disclaimers. The frontend gained `LocalizedReport` types, dynamic `language` selection in `api-client.ts` and `useInvestigation`, a UI Language Selector on `InvestigationResultPage`, localized summary rendering, and updated safety disclaimer integration. All 3007 backend tests pass (0 failures) and frontend typecheck, lint, and build pass cleanly.
+**Last Completed Task:** Phase 16 — Full Integration. Proved the product works as one pipeline, not four disconnected phases. A consolidated end-to-end test (`backend/tests/api/test_full_integration.py`) runs TEXT, SCREENSHOT and PDF through HTTP input, the real graph, every stage, persistence and retrieval, then retrieves each stored investigation in `en`/`hi`/`mr` with byte-identical canonical fields — only the presentation layer may differ. The URL input is exercised through its documented offline `503 URL_FETCH_UNAVAILABLE` refusal (no network, no SSRF bypass; the SSRF guard itself is pinned by `tests/test_url_guards.py`). The error-handling sweep was confirmed green — `TestTheFailureMatrixIsComplete` passes and the full failure-injection matrix (LLM, search, OCR, PDF, URL, persistence failures) needed no new cases. Added `backend/scripts/performance_check.py`, a deterministic offline performance check that reports min/median/max wall-clock per input type with no timing threshold. Also corrected a stale runtime, not a stale code path: the backend process serving `127.0.0.1:8000` predated Phase 14, which is why the UI showed "PDF Unavailable / Coming in Phase 14"; restarted against the committed source, `GET /api/investigations/limits` advertises all four input types and the frontend shows every mode as Available. All 3008 backend tests pass (0 failures) and frontend typecheck, lint, build and `verify:api` (71 checks) pass.
 
 - **Real PDF validation** — the declared media type is only a first
   filter; the PDF library parses the bytes and `is_pdf` is the
@@ -39,10 +39,11 @@
   processed, whether text was recovered, truncation facts and the
   processing time. Every field is a measurement or a submission fact —
   none is a judgement about the document.
-- **Verified end to end** — the full backend suite passes (**2966 passed,
-  4 deselected, 0 failed**) and the frontend typechecks, lints and builds.
+- **Verified end to end** — the full backend suite passes (**3008 passed,
+  4 deselected, 0 failed**) and the frontend typechecks, lints, builds
+  and passes `verify:api` (71 checks).
 
-**Latest Commit:** `feat: implement multilingual reports` (Phase 15)
+**Latest Commit:** `feat: implement full integration` (Phase 16)
 **Working Tree:** clean.
 
 ### Phase Status Summary
@@ -65,15 +66,16 @@
 | Phase 13 | Screenshot / OCR | **COMPLETE** |
 | Phase 14 | PDF analysis | **COMPLETE** |
 | Phase 15 | Multilingual reports | **COMPLETE** |
+| Phase 16 | Full integration | **COMPLETE** |
 
 > Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
 > Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is
 > **not** a numbered project phase and is not started.
 >
-> **Phase 14 completes the planned roadmap.** The PDF input
-> surface is now fully operational end to end — the backend parses the
-> document and the frontend offers a working PDF mode. Every input type
-> the UI discloses is backed by a real endpoint.
+> **Phase 16 completes the planned roadmap.** Every input type the UI
+> discloses is backed by a real endpoint, every endpoint has been run
+> end to end through the whole chain, the failure matrix is fully
+> injected, and the pipeline's cost on realistic inputs is measured.
 
 ### Phase 11 — React frontend
 
@@ -371,6 +373,84 @@ a text-free PDF (a scan) yields no text (`PDF_TEXT_NOT_RETRIEVED`); and
 in this deployment the LLM is unavailable, so extraction runs in fallback
 mode and the run reports `PARTIAL`.
 
+### Phase 16 — Full Integration
+
+**Location:** `backend/tests/api/test_full_integration.py` (new),
+`backend/scripts/performance_check.py` (new), and the verification
+of every earlier phase against the running services.
+
+**What it does.** Phase 16 changed no product behaviour — it
+proves the behaviour Phases 1–15 already shipped, as one pipeline:
+
+- **Consolidated end-to-end test** — one sweep per input type:
+  TEXT, SCREENSHOT and PDF are submitted through the real HTTP
+  endpoints, run through the real graph (deterministic extraction,
+  real verification and risk, fixture search), persisted, and
+  retrieved. Each stored investigation is then retrieved in
+  `en`, `hi` and `mr`; the canonical fields must be
+  value-for-value identical across the three languages, because a
+  localized report that changed a claim, a flag or a score would
+  be a different investigation, not a different rendering. The
+  legs that need an engine are skipped where the engine is not
+  installed, rather than faked.
+- **URL leg** — exercised through its documented offline refusal
+  (`503 URL_FETCH_UNAVAILABLE`): a live URL needs the network,
+  which the suite is forbidden to touch, and the SSRF guard that
+  rejects a non-public address is already pinned by
+  `tests/test_url_guards.py`. No guard was bypassed to make the
+  sweep prettier.
+- **Error-handling sweep** — confirmed, not duplicated:
+  `tests/test_failure_injection.py` (~2,080 lines) already
+  injects every graph error and warning code, including the
+  LLM, search, OCR, PDF, URL and persistence failures, and
+  `TestTheFailureMatrixIsComplete` fails the suite if a code
+  appears without an injection test. It passes.
+- **Performance check** — `backend/scripts/performance_check.py`
+  runs every input type through the same offline graph the API
+  serves, on deterministic locally generated inputs, and reports
+  iterations, successes and min/median/max wall-clock per input
+  type. There is deliberately no timing threshold: a fixed bound
+  would be a fragile assertion that fails on a loaded machine
+  while saying nothing about correctness. A run that raises or
+  returns a FAILED state is a real failure and exits non-zero.
+- **Stale-runtime correction** — the "PDF Unavailable / Coming
+  in Phase 14" display was not a code defect: the backend
+  process serving `127.0.0.1:8000` had been started before the
+  Phase 14 commit and still answered
+  `supported_input_types: ["TEXT","URL","IMAGE"]`. The source
+  and the built frontend bundle were already correct. Restarting
+  the server against the committed source fixed the display;
+  nothing was relabelled cosmetically.
+
+**Performance numbers** (5 iterations each, this machine, offline
+deterministic inputs; informational only):
+
+| Input | min | median | max |
+| --- | --- | --- | --- |
+| TEXT | 0.029s | 0.031s | 0.043s |
+| SCREENSHOT | 0.275s | 0.317s | 2.411s (first run includes engine warm-up) |
+| PDF | 0.033s | 0.035s | 0.523s |
+
+### Phase 16 verification
+
+All checks below were executed against the **running** backend.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full backend suite | `cd backend && python -m pytest tests/` | **3008 passed, 4 deselected, 0 failed, exit 0** |
+| Consolidated E2E | `pytest tests/api/test_full_integration.py` | **5 passed** (TEXT, SCREENSHOT, PDF legs + URL refusal + multilingual retrieval) |
+| Live PDF round-trip | `POST /api/investigations/pdf` then `GET …?language=en\|hi\|mr` | 200, `pdf_source.text_recovered: true`, canonical fields identical across languages, persisted |
+| Limits | `GET /api/investigations/limits` | `["TEXT","URL","IMAGE","PDF"]`, `languages: ["en","hi","mr"]` |
+| Performance | `python scripts/performance_check.py --iterations 5` | all runs ok, no failures |
+| Frontend | `npm run typecheck` / `lint` / `build` / `verify:api` | pass, pass, pass, **71 passed** |
+| Security guards | SSRF loopback, upload validation, network guard | unchanged — no guard modified or bypassed |
+
+**Known limitations of the phase** (recorded, not hidden): the
+performance numbers are machine-specific and informational; the
+URL leg cannot be run live without the network, by design; and
+`completed_at` remains always `NULL` (Known Bug 1, carried from
+Phase 7).
+
 ### Files Recently Changed
 
 **Phase 12 — URL analysis:**
@@ -467,6 +547,14 @@ frontend/src/services/api-client.ts                 (+ createPdfInvestigation, m
 frontend/src/types/api.ts                           (+ PdfSource, pdf_source, PDF limits)
 frontend/src/pages/InvestigatePage.tsx              (PDF mode file picker)
 docs/*                                              (Phase 14 documentation)
+```
+
+**Phase 16 — Full integration:**
+
+```
+backend/tests/api/test_full_integration.py            (new — consolidated end-to-end sweep)
+backend/scripts/performance_check.py                (new — deterministic offline performance check)
+docs/*                                            (Phase 16 documentation)
 ```
 
 **Phase 10 — testing and quality hardening:**
@@ -700,7 +788,7 @@ None.
 | `langgraph` | **installed, 1.2.12** | `requirements.txt`; verified on CPython 3.14 |
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; OCR is verified working end to end |
 | `pytesseract` 0.3.13 / `Pillow` 12.2.0 | installed | the image modality's decode + OCR; `python-multipart` is installed too |
-| PyMuPDF / `sentence-transformers` | **not installed** | PyMuPDF is Phase 14; local embeddings were deferred (search is API-only) |
+| PyMuPDF **1.28.2, installed** / `sentence-transformers` **not installed** | PyMuPDF powers Phase 14 PDF analysis (`import fitz` verified); local embeddings were deferred (search is API-only) |
 
 > A repository-root `.env` exists (gitignored, contains real credentials). It is
 > **not** committed. `tests/graph/graph_factories.py`, `tests/api/conftest.py` and
@@ -844,7 +932,7 @@ current tree is clean — `.env` is gitignored, every settings factory passes
 | `GROQ_API_KEY` | present but rejected by the API | extraction falls back, reports `EXTRACTION_FALLBACK` |
 | `SERPAPI_KEY` | **absent** | `SearchService.available = false` |
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` |
-| `pytesseract` / `Pillow` / PyMuPDF | not installed | deferred |
+| `pytesseract` / `Pillow` / PyMuPDF | not installed *at Phase 10*; all three installed now | pytesseract/Pillow arrived with Phase 13, PyMuPDF with Phase 14 |
 | `sentence-transformers` | not installed | deferred |
 | Repository-root `.env` | **exists, gitignored** | holds real credentials; no longer breaks the suite |
 | `ruff` / `mypy` / `pytest-cov` / `hypothesis` | **not installed, not configured** | this project has no linter, typechecker or coverage step; Phase 10 deliberately did not add them — see Known Limitations |
@@ -886,18 +974,11 @@ the next phase:
 
 ## Next Exact Task
 
-**Phase 13 — Screenshot / OCR**, per `IMPLEMENTATION_PLAN.md`.
+**Phase 17 — Demo / Hackathon Polish**, per `IMPLEMENTATION_PLAN.md`.
 
-1. Image upload → OCR → text → the standard pipeline, reusing the
-   Phase 12 input-node seam (`supports_url` generalises to any
-   extracted-text input).
-2. `OCR_UNAVAILABLE` when Tesseract is absent — the pipeline
-   continues and records the limitation, exactly as URL fetching
-   degrades.
-3. File size / type validation, `multipart/form-data`, `413` on
-   oversize, `422` on a disallowed type.
-4. The frontend's Screenshot tab is already disclosed and disabled;
-   enable it when `POST /api/investigations/upload` exists.
+1. Investigation timeline polish.
+2. Evidence cards + claim/evidence graph visualization.
+3. "Why was this flagged?" experience.
 
 **Phase 12 left the following open,** in priority order:
 
@@ -949,6 +1030,6 @@ If you are reading this in a fresh session:
        URL ingestion) and `docs/DECISIONS.md` (D-030…D-055)
 4. [ ] Read `docs/DATABASE_SCHEMA.md` and the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **2796 passed, 4 deselected,
+6. [ ] Run `cd backend && python -m pytest` — expect **3008 passed, 4 deselected,
        0 failed**
 7. [ ] Execute **Next Exact Task**

@@ -417,11 +417,11 @@ fabricated, and no message carries a path or engine detail.
 - [x] Frontend language selector + localized report rendering
 - [x] Tests (3007 backend tests pass, 0 failures)
 
-## Phase 16 — Full Integration `[ ]`
+## Phase 16 — Full Integration `[x]`
 
-- [ ] End-to-end run of all input types
-- [ ] Error-handling sweep (LLM, search, OCR, PDF, DB failures)
-- [ ] Performance check on realistic inputs
+- [x] End-to-end run of all input types
+- [x] Error-handling sweep (LLM, search, OCR, PDF, DB failures)
+- [x] Performance check on realistic inputs
 
 ## Phase 17 — Demo / Hackathon Polish `[ ]`
 

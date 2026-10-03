@@ -1839,3 +1839,87 @@ parse detail. Wording comes from the fixed `PDF_MESSAGES` table.
 
 - **Investigation is language-independent:** Risk scores, risk levels, claim IDs, entity IDs, red flag codes, verification verdicts, evidence, and timeline events remain byte-for-byte identical across languages.
 - **No advice or investment recommendation added:** Fixed prose across all three languages explicitly disclaims investment advice and maintains transparent heuristic risk score caveats.
+
+## Phase 16 — Full Integration
+
+**Date:** 2026-10-03
+**Phase:** 16 — Full Integration
+**Commit:** `feat: implement full integration`
+
+### What was implemented
+
+Phase 16 changed no product behaviour. It proves the behaviour
+Phases 1–15 shipped, as one pipeline, and adds the two
+artefacts the plan asks for:
+
+- **`backend/tests/api/test_full_integration.py` (new):** the
+  consolidated end-to-end integration test. One sweep per
+  input type — TEXT, SCREENSHOT, PDF — through the real HTTP
+  endpoints, the real graph (deterministic extraction, real
+  verification and risk, fixture search), persistence, and
+  retrieval. Each stored investigation is then retrieved in
+  `en`, `hi` and `mr`; the canonical fields must be
+  value-for-value identical across the three languages,
+  because a localized report that changed a claim, a flag or
+  a score would be a different investigation, not a different
+  rendering. The legs that need an engine are skipped where
+  the engine is not installed, rather than faked. The URL leg
+  is exercised through its documented offline refusal
+  (`503 URL_FETCH_UNAVAILABLE`): a live URL needs the network,
+  which the suite is forbidden to touch, and the SSRF guard is
+  pinned by `tests/test_url_guards.py`.
+- **`backend/scripts/performance_check.py` (new):** the
+  performance check on realistic deterministic inputs. Runs
+  every input type through the same offline graph the API
+  serves and reports iterations, successes and min/median/max
+  wall-clock per input type. No timing threshold — a fixed
+  bound would be a fragile assertion; a run that raises or
+  returns a FAILED state is a real failure and exits non-zero.
+- **Error-handling sweep:** confirmed, not duplicated.
+  `tests/test_failure_injection.py` already injects every
+  graph error and warning code — LLM, search, OCR, PDF, URL
+  and persistence failures — and
+  `TestTheFailureMatrixIsComplete` fails the suite if a code
+  appears without an injection test. It passes; no new cases
+  were needed.
+- **Stale-runtime correction:** the "PDF Unavailable / Coming
+  in Phase 14" display was not a code defect. The backend
+  process serving `127.0.0.1:8000` had been started before
+  the Phase 14 commit and still answered
+  `supported_input_types: ["TEXT","URL","IMAGE"]`. The source
+  and the built frontend bundle were already correct, so the
+  server was restarted against the committed source; nothing
+  was relabelled cosmetically and no capability flag was
+  touched.
+
+### Verification
+
+- **Backend Pytest Suite:** 3008 passed, 4 deselected, 0 failed, exit 0.
+- **Consolidated E2E:** 5 passed (TEXT, SCREENSHOT, PDF legs, URL refusal, multilingual retrieval).
+- **Live PDF round-trip:** `POST /api/investigations/pdf` → 200 with `pdf_source.text_recovered: true`; retrieval in `en`/`hi`/`mr` with identical canonical fields; persisted in `GET /api/investigations`.
+- **Performance (5 iterations, offline, informational):** TEXT 0.029/0.031/0.043s (min/median/max); SCREENSHOT 0.275/0.317/2.411s (first run includes engine warm-up); PDF 0.033/0.035/0.523s.
+- **Frontend Checks:** `npm run typecheck` (0 errors), `npm run lint` (0 errors), `npm run build` (0 errors), `npm run verify:api` (71 passed, 0 failed).
+
+### Safety & Data Integrity Guarantees
+
+- **No guard was modified or bypassed:** the SSRF policy, URL
+  validation, upload limits, PDF validation, OCR guards, the
+  network guard and every safety rule are untouched; the URL
+  leg of the sweep uses the documented capability refusal, not
+  a network call.
+- **Investigation stays language-independent:** the E2E sweep
+  pins canonical-field equality across `en`/`hi`/`mr` over
+  HTTP, for every input type that runs on the machine.
+- **No new architecture:** no authentication, payments, new
+  databases, agents, LLM providers, Redis, Celery, Kubernetes
+  or cloud services were introduced.
+
+### Not done, deliberately
+
+- **No live URL leg in the E2E sweep** — it would need the
+  network the suite is forbidden to touch; the SSRF guard and
+  the URL fault taxonomy are covered by their own tests.
+- **No timing thresholds** — performance numbers are
+  informational and machine-specific by design.
+- **Phase 17 (Demo / Hackathon Polish) is not started.**
+---
