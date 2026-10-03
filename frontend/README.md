@@ -8,7 +8,7 @@ platform.
 > InvestShield does not just detect suspicious investment content. It investigates the claims
 > behind it and shows the evidence.
 
-This app is a read-and-submit client for the Phase 0–15 FastAPI backend. It renders what the
+This app is a read-and-submit client for the Phase 0–17 FastAPI backend. It renders what the
 API returns and never invents findings, counts, sources or evidence.
 
 ## Requirements
@@ -83,12 +83,13 @@ src/
 │   ├── layout/         app shell, navigation, page container
 │   ├── common/         cross-cutting blocks: status badges, loading/error/empty states
 │   ├── investigation/  header, claims, entities, red flags, timeline, limitations, list
-│   ├── evidence/       claim → evidence → source panels
+│   ├── evidence/       claim → evidence → source panels + the relationship graph
 │   └── risk/           risk score, factor breakdown chart, factor list
 ├── hooks/              use-async-resource, use-investigations, use-text-investigation,
 │                       use-url-investigation, use-image-investigation,
 │                       use-pdf-investigation
-├── lib/                class-name helper, display formatting, colour intent
+├── lib/                class-name helper, display formatting, colour intent,
+│                       the README demo investigation text
 ├── pages/              one file per route
 ├── services/           api-client.ts — the only module that calls fetch
 ├── types/api.ts        TypeScript mirror of the backend contract
@@ -155,9 +156,43 @@ RUN_LIVE=1 npm run verify:flow
 ```
 
 `scripts/verify-render.mjs` server-renders the report components against a captured
-investigation payload to prove the populated and empty states both render.
+investigation payload to prove the populated and empty states both render — including
+the localized section headings in all three languages, the why-flagged panel, the
+claim → evidence → source graph (node types, edge types, empty state) and the
+demo/README sync (69 checks):
+
+```bash
+node scripts/verify-render.mjs path/to/investigation.json <investigation-id>
+```
+
+## Report page
+
+Section headings render the localized titles from `report.sections`
+(`en`/`hi`/`mr`), falling back to the backend's English title when a key
+is absent. Only presentation labels are localized; claims, entities,
+URLs, excerpts, codes and ids are canonical data and stay identical in
+every language.
+
+The **claim → evidence → source graph** is a hand-rolled SVG
+(`src/components/evidence/evidence-graph.tsx`) — no graph library. It
+draws the three real relationship types from the investigation payload:
+`claim → entity` (`Claim.entity_ids`), `claim → evidence` (each
+evidence group) and `evidence → source` (`EvidenceItem.source_id`).
+Hovering or tapping a node traces its relationships. When the
+investigation recorded no relationships, the panel says so plainly;
+absence of evidence is never drawn as a contradiction.
+
+The `/investigate` page carries a **Try Demo Investigation** button
+that loads the README's documented demo text verbatim
+(`src/lib/demo.ts`, kept in sync with the README by a render check).
+Loading only fills the field; **Start investigation** submits through
+the normal `POST /api/investigations/text` pipeline.
 
 ## Scope
 
 Authentication, portfolios, trading, recommendations and payment flows are deliberately absent.
 Phases 13–14 (screenshot/OCR, PDF) are implemented: all four input modes are operational.
+Phase 17 (demo polish) added localized section headings, the claim → evidence → source
+graph, the why-flagged panel, the README demo flow and the verification sweep — with no
+backend change, no new dependency and no reversal of any decision (the dashboard's
+risk-distribution placeholder and the embeddings probe are intentionally untouched).

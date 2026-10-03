@@ -802,10 +802,16 @@ reconstruct (D-042).
 - Tailwind CSS design tokens + shadcn/ui primitives.
 - `react-router-dom` for the five routes.
 - Typed API client in `src/services/` generated to mirror `API_SPEC.md`.
-- Input modes: Text and URL are live; Screenshot and PDF are disclosed,
-  disabled, and phase-labelled, with availability read from
+- Input modes: all four — Text, URL, Screenshot and PDF — are
+  live, with availability read from
   `GET /api/investigations/limits`.
 - Recharts for risk contribution by severity.
+- A hand-rolled SVG graph renders the claim → evidence → source
+  relationships from the investigation payload (`Claim.entity_ids`,
+  `EvidenceResponse` groups, `EvidenceItem.source_id`); no graph
+  library is required for three edge types over four node types.
+- Result-page section headings render the localized titles from
+  `report.sections` (en/hi/mr) with the English title as fallback.
 - Design language: dark financial-security "command center" — dense evidence
   panels, explicit risk badges, timeline strip. Deliberately **not** a chat UI.
 

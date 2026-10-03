@@ -15,6 +15,7 @@ import {
   LimitationsPanel,
 } from "@/components/investigation/limitations-panel";
 import { EvidenceSection } from "@/components/evidence/evidence-section";
+import { EvidenceGraph } from "@/components/evidence/evidence-graph";
 import { RiskPanel } from "@/components/risk/risk-panel";
 import { useInvestigation } from "@/hooks/use-investigations";
 import type { Language } from "@/types/api";
@@ -96,6 +97,10 @@ export function InvestigationResultPage() {
     );
   }
 
+  /** Localized section titles, with the backend's English as the fallback. */
+  const sections = data.report?.sections ?? {};
+  const title = (key: string, fallback: string) => sections[key] ?? fallback;
+
   return (
     <PageContainer>
       <div className="space-y-8">
@@ -137,7 +142,7 @@ export function InvestigationResultPage() {
               <Globe className="mt-0.5 size-5 shrink-0 text-accent" aria-hidden="true" />
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold text-ink">
-                  {data.report.sections.summary || "Summary"}
+                  {title("summary", "Summary")}
                 </h3>
                 <p className="text-sm leading-relaxed text-ink-muted">{data.report.summary}</p>
               </div>
@@ -149,23 +154,48 @@ export function InvestigationResultPage() {
           warnings={data.warnings}
           limitations={data.limitations}
           errors={data.errors}
+          title={title("limitations", "Limitations")}
         />
 
-        <RiskPanel assessment={data.risk_assessment} />
+        <RiskPanel
+          assessment={data.risk_assessment}
+          title={title("risk_assessment", "Risk Assessment")}
+        />
 
-        <RedFlagsSection redFlags={data.red_flags} />
+        <RedFlagsSection
+          redFlags={data.red_flags}
+          title={title("why_flagged", "Why This Was Flagged")}
+          factors={data.risk_assessment?.factors ?? []}
+        />
 
         <ClaimsSection
           claims={data.claims}
           verificationResults={data.verification_results}
           evidenceClaimIds={evidenceClaimIds}
+          title={title("claims", "Claims")}
         />
 
-        <EvidenceSection evidence={data.evidence} claims={data.claims} />
+        <EvidenceSection
+          evidence={data.evidence}
+          claims={data.claims}
+          title={title("evidence", "Evidence")}
+        />
 
-        <EntitiesSection entities={data.entities} />
+        <EvidenceGraph
+          claims={data.claims}
+          entities={data.entities}
+          evidence={data.evidence}
+        />
 
-        <TimelineSection timeline={data.timeline} />
+        <EntitiesSection
+          entities={data.entities}
+          title={title("entities", "Entities")}
+        />
+
+        <TimelineSection
+          timeline={data.timeline}
+          title={title("timeline", "Investigation Timeline")}
+        />
 
         <DisclaimerPanel
           disclaimer={data.report?.disclaimer}

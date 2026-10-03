@@ -4,6 +4,9 @@ import { stageLabel, formatTimestamp, humanizeEnum } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { GraphStage, TimelineEventResponse, TimelineStatus } from "@/types/api";
 
+/** English fallback, matching the backend's own English section title. */
+const FALLBACK_TITLE = "Investigation Timeline";
+
 /**
  * The canonical pipeline order.
  *
@@ -37,6 +40,21 @@ const STATUS_COLOR: Record<TimelineStatus, string> = {
   SKIPPED: "text-ink-faint border-hairline",
 };
 
+/**
+ * The connector below a stage. A completed stage is followed by a
+ * success-tinted line so the finished part of the run reads as one
+ * continuous progress; a partial stage is followed by a warning line.
+ * The line is decoration only — the status word next to each stage
+ * remains the authoritative statement.
+ */
+const CONNECTOR_COLOR: Record<TimelineStatus, string> = {
+  COMPLETED: "bg-tone-success/50",
+  PARTIAL: "bg-tone-warning/40",
+  STARTED: "bg-hairline",
+  FAILED: "bg-hairline",
+  SKIPPED: "bg-hairline",
+};
+
 const STATUS_WORD: Record<TimelineStatus, string> = {
   COMPLETED: "Completed",
   PARTIAL: "Partially completed",
@@ -45,7 +63,14 @@ const STATUS_WORD: Record<TimelineStatus, string> = {
   SKIPPED: "Skipped",
 };
 
-export function TimelineSection({ timeline }: { timeline: TimelineEventResponse[] }) {
+export function TimelineSection({
+  timeline,
+  title = FALLBACK_TITLE,
+}: {
+  timeline: TimelineEventResponse[];
+  /** Localized section title, from `report.sections.timeline`. */
+  title?: string;
+}) {
   // Later events for the same stage replace earlier ones, so a stage that was
   // STARTED then COMPLETED is not shown twice.
   const byStage = new Map<GraphStage, TimelineEventResponse>();
@@ -55,9 +80,14 @@ export function TimelineSection({ timeline }: { timeline: TimelineEventResponse[
 
   return (
     <section aria-labelledby="timeline-heading" className="space-y-3">
-      <h2 id="timeline-heading" className="text-base font-semibold text-ink">
-        Investigation timeline
-      </h2>
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <h2 id="timeline-heading" className="text-base font-semibold text-ink">
+          {title}
+        </h2>
+        <p className="text-xs text-ink-faint">
+          {PIPELINE_ORDER.length} stages
+        </p>
+      </div>
 
       <Card>
         <CardContent className="p-4 sm:p-5">
@@ -73,7 +103,10 @@ export function TimelineSection({ timeline }: { timeline: TimelineEventResponse[
                   {!isLast ? (
                     <span
                       aria-hidden="true"
-                      className="absolute top-8 bottom-0 left-[15px] w-px bg-hairline"
+                      className={cn(
+                        "absolute top-8 bottom-0 left-[15px] w-px",
+                        CONNECTOR_COLOR[status],
+                      )}
                     />
                   ) : null}
 
@@ -89,7 +122,12 @@ export function TimelineSection({ timeline }: { timeline: TimelineEventResponse[
 
                   <div className="min-w-0 flex-1 pt-1">
                     <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                      <p className="text-sm font-medium text-ink">{stageLabel(stage)}</p>
+                      <p className="text-sm font-medium text-ink">
+                        <span className="mr-2 font-mono text-xs text-ink-faint">
+                          {index + 1}
+                        </span>
+                        {stageLabel(stage)}
+                      </p>
                       <p className="font-mono text-xs text-ink-faint">
                         {event ? formatTimestamp(event.at) : "Not recorded"}
                       </p>
@@ -130,7 +168,12 @@ export function TimelineSection({ timeline }: { timeline: TimelineEventResponse[
               </span>
               <div className="min-w-0 flex-1 pt-1">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                  <p className="text-sm font-medium text-ink">Investigation complete</p>
+                  <p className="text-sm font-medium text-ink">
+                    <span className="mr-2 font-mono text-xs text-ink-faint">
+                      {PIPELINE_ORDER.length + 1}
+                    </span>
+                    Investigation complete
+                  </p>
                   <p className="font-mono text-xs text-ink-faint">
                     {byStage.has("completed")
                       ? formatTimestamp(byStage.get("completed")?.at ?? null)

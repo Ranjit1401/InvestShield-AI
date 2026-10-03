@@ -17,6 +17,7 @@ import {
   Loader2,
   Send,
   Sparkles,
+  Telescope,
 } from "lucide-react";
 import { PageContainer } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
 import { ErrorState } from "@/components/common/state-blocks";
 import { cn } from "@/lib/utils";
+import { DEMO_INVESTIGATION_TEXT, DEMO_INVESTIGATION_LABEL } from "@/lib/demo";
 import { EXAMPLE_TEXT, MAX_TEXT_LENGTH, useTextInvestigation } from "@/hooks/use-text-investigation";
 import { MAX_URL_LENGTH, useUrlInvestigation } from "@/hooks/use-url-investigation";
 import {
@@ -224,6 +226,19 @@ export function InvestigatePage() {
       setText(EXAMPLE_TEXT);
       textareaRef.current?.focus();
     }
+    setTouched(false);
+  }
+
+  /**
+   * Loads the documented demo investigation (the "Demo input"
+   * section of README.md) into the text field. It only fills
+   * the field — nothing is submitted until the user presses
+   * "Start investigation", which runs the normal pipeline.
+   */
+  function useDemo() {
+    setMode("TEXT");
+    setText(DEMO_INVESTIGATION_TEXT);
+    textareaRef.current?.focus();
     setTouched(false);
   }
 
@@ -455,6 +470,16 @@ export function InvestigatePage() {
                       type="button"
                       variant="ghost"
                       size="sm"
+                      onClick={useDemo}
+                      disabled={isSubmitting}
+                    >
+                      <Telescope aria-hidden="true" />
+                      Try Demo Investigation
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
                       onClick={useExample}
                       disabled={isSubmitting || (mode !== "TEXT" && mode !== "URL")}
                     >
@@ -477,14 +502,15 @@ export function InvestigatePage() {
                 {!isFile ? (
                   <details className="rounded-md border border-hairline bg-surface px-3 py-2">
                     <summary className="cursor-pointer text-sm text-ink-muted">
-                      {isUrl ? "Example URL" : "Example investment message"}
+                      {isUrl ? "Example URL" : DEMO_INVESTIGATION_LABEL}
                     </summary>
                     <p className="mt-2 rounded border border-hairline bg-surface-raised px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink-muted">
-                      {isUrl ? EXAMPLE_URL : EXAMPLE_TEXT}
+                      {isUrl ? EXAMPLE_URL : DEMO_INVESTIGATION_TEXT}
                     </p>
                     <p className="mt-1.5 text-xs text-ink-faint">
-                      Nothing is submitted until you press the button. Use “Use example” to place
-                      this {isUrl ? "URL" : "text"} in the field.
+                      Nothing is submitted until you press the button. Use{" "}
+                      {isUrl ? "“Use example”" : "“Try Demo Investigation”"} to
+                      place this {isUrl ? "URL" : "text"} in the field.
                     </p>
                   </details>
                 ) : null}

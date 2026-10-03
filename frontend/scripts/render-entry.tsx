@@ -15,6 +15,7 @@ import {
   LimitationsPanel,
 } from "@/components/investigation/limitations-panel";
 import { EvidenceSection } from "@/components/evidence/evidence-section";
+import { EvidenceGraph } from "@/components/evidence/evidence-graph";
 import { RiskPanel } from "@/components/risk/risk-panel";
 import { InvestigationList } from "@/components/investigation/investigation-list";
 import type { InvestigationResponse, InvestigationSummaryResponse } from "@/types/api";
@@ -33,6 +34,8 @@ export function renderReport({
   const evidenceClaimIds = new Set(
     data.evidence.filter((group) => group.evidence.length > 0).map((g) => g.claim_id),
   );
+  const sections = data.report?.sections ?? {};
+  const title = (key: string, fallback: string) => sections[key] ?? fallback;
 
   return renderToString(
     <Router>
@@ -42,18 +45,47 @@ export function renderReport({
           warnings={data.warnings}
           limitations={data.limitations}
           errors={data.errors}
+          title={title("limitations", "Limitations")}
         />
-        <RiskPanel assessment={data.risk_assessment} />
-        <RedFlagsSection redFlags={data.red_flags} />
+        <RiskPanel
+          assessment={data.risk_assessment}
+          title={title("risk_assessment", "Risk Assessment")}
+        />
+        <RedFlagsSection
+          redFlags={data.red_flags}
+          title={title("why_flagged", "Why This Was Flagged")}
+          factors={data.risk_assessment?.factors ?? []}
+        />
         <ClaimsSection
           claims={data.claims}
           verificationResults={data.verification_results}
           evidenceClaimIds={evidenceClaimIds}
+          title={title("claims", "Claims")}
         />
-        <EvidenceSection evidence={data.evidence} claims={data.claims} />
-        <EntitiesSection entities={data.entities} />
-        <TimelineSection timeline={data.timeline} />
-        <DisclaimerPanel />
+        <EvidenceSection
+          evidence={data.evidence}
+          claims={data.claims}
+          title={title("evidence", "Evidence")}
+        />
+        <EvidenceGraph
+          claims={data.claims}
+          entities={data.entities}
+          evidence={data.evidence}
+        />
+        <EntitiesSection
+          entities={data.entities}
+          title={title("entities", "Entities")}
+        />
+        <TimelineSection
+          timeline={data.timeline}
+          title={title("timeline", "Investigation Timeline")}
+        />
+        <DisclaimerPanel
+          disclaimer={data.report?.disclaimer}
+          safetyGuidance={data.report?.safety_guidance}
+          riskCaveat={data.report?.risk_caveat}
+          title={title("disclaimer", "What this report is, and is not")}
+        />
       </div>
     </Router>,
   );
@@ -118,6 +150,7 @@ export function renderEmptyReport({ router: Router }: { router: RouterLike }): s
           evidenceClaimIds={new Set()}
         />
         <EvidenceSection evidence={[]} claims={[]} />
+        <EvidenceGraph claims={[]} entities={[]} evidence={[]} />
         <EntitiesSection entities={[]} />
         <TimelineSection timeline={[]} />
       </div>

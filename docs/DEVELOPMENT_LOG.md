@@ -1923,3 +1923,137 @@ artefacts the plan asks for:
   informational and machine-specific by design.
 - **Phase 17 (Demo / Hackathon Polish) is not started.**
 ---
+
+## Phase 17 — Demo / Hackathon Polish
+
+**Date:** 2026-10-04
+**Phase:** 17 — Demo / Hackathon Polish
+
+### What was implemented
+
+A frontend-only polish phase. No backend file changed
+(`git diff --stat -- backend/` is empty), no backend
+contract moved, and no decision was reversed.
+
+- **Stale dashboard copy fixed**
+  (`frontend/src/pages/DashboardPage.tsx`): the system
+  status panel claimed "Text investigation still works;
+  screenshot and PDF analysis do not" — false since
+  Phases 13–14. The panel now states that unavailable
+  providers reduce coverage and that the report's
+  Limitations section names every check that could not
+  happen. The health/capability system remains the
+  authority; no backend probe was touched.
+- **Localized result-page headings**
+  (`InvestigationResultPage.tsx` + every section
+  component): section headings now render
+  `report.sections` titles (`risk_assessment`,
+  `why_flagged`, `claims`, `evidence`, `entities`,
+  `timeline`, `limitations`, `disclaimer`) with the
+  backend's English title as the fallback when a key is
+  absent. Only presentation labels are localized; claims,
+  entities, URLs, excerpts, codes and ids stay
+  canonical in every language.
+- **"Why was this flagged?" experience**
+  (`red-flags-section.tsx`): each red-flag card is
+  restructured into the four questions a reader actually
+  asks — what was detected, why the rule triggered,
+  which text caused it, and how it contributed. The last
+  block is real data, not decoration: the card is linked
+  to its risk factor (`origin === "RED_FLAG"`,
+  `factor_type === flag.code`) and shows the factor's
+  score contribution, evidence backing and linked claims.
+- **Claim / evidence / source graph**
+  (`evidence-graph.tsx`, new): a hand-rolled,
+  dependency-free SVG graph with three columns (claims;
+  entities and evidence; sources) and the three real
+  edge types — `claim → entity` (from
+  `Claim.entity_ids`), `claim → evidence` (from each
+  evidence group), `evidence → source` (from
+  `EvidenceItem.source_id`). Nodes are typed
+  CLAIM / ENTITY / EVIDENCE / SOURCE, edges are
+  coloured by relationship (supports / contradicts /
+  other), hovering or tapping a node traces its
+  relationships, and a legend explains the vocabulary.
+  Layout is deterministic. When the investigation
+  recorded no relationships, the panel says so plainly
+  and never implies a contradiction.
+- **Evidence cards polished**
+  (`evidence-section.tsx`): the claim → evidence →
+  source chain inside each card now carries explicit
+  level labels and connectors matching the graph's
+  vocabulary. All previous content (relationship,
+  relevance, evidence type, proof flag, excerpt,
+  excerpt origin, source tier, domain, retrieval time)
+  is preserved.
+- **Timeline polished** (`timeline-section.tsx`):
+  stage numbers, and the connector between stages is
+  tinted by the recorded status (completed stages read
+  as one continuous progress line). Timestamps,
+  messages and PARTIAL/FAILED/SKIPPED states remain
+  exactly as the backend reported them; `completed_at`
+  is still intentionally `null`.
+- **Demo flow** (`lib/demo.ts` new,
+  `InvestigatePage.tsx`): the README's documented demo
+  investigation is kept verbatim in one module (a
+  render check asserts it still matches the README
+  line for line) and a **Try Demo Investigation**
+  button loads it into the text field. Loading only
+  fills the field — submission goes through the normal
+  `POST /api/investigations/text` pipeline and the
+  normal result flow. No demo-only backend path, no
+  fake result.
+- **Verification extended**
+  (`verify-render.mjs`, `render-entry.tsx`): the
+  render check now covers localized headings in all
+  three languages (hi and mr fixtures), the why-flagged
+  explanation labels, the graph's node and edge types,
+  the graph's empty state, the dashboard copy fix, and
+  the demo wiring — 69 checks, all passing.
+
+### Verification
+
+- **Backend Pytest Suite:** 3012 passed, 4 deselected,
+  0 failed, exit 0 — the backend tree is byte-identical
+  to the Phase 16 commit. (The previously recorded
+  "3008" was a stale figure: Phase 15's documented
+  3007 plus Phase 16's 5 new tests is 3012.)
+- **Consolidated E2E:** 5 passed (unchanged).
+- **Frontend Checks:** `npm run typecheck` (0 errors),
+  `npm run lint` (0 errors), `npm run build` (0 errors),
+  `npm run verify:api` (74 passed, 0 failed),
+  `RUN_LIVE=1 npm run verify:flow` (17 passed, 0 failed
+  — a real TEXT investigation round-trip),
+  `verify-render.mjs` (69 passed, 0 failed against a
+  live-captured demo investigation: 5 claims, 2
+  entities, 8 red flags, 12 evidence items, 12
+  sources, CRITICAL).
+- **Safety vocabulary:** `tests/api/test_api_risk_safety.py`
+  passes; the new UI copy introduces no verdict,
+  absolution or advice vocabulary (the only matches in
+  the touched files are pre-existing negated usages and
+  the README's own synthetic demo text).
+
+### Safety & Data Integrity Guarantees
+
+- **No backend change:** no endpoint, schema, service or
+  test was modified; the risk-distribution placeholder
+  (D-051) and the embeddings probe are untouched, and
+  `risk_level`/`risk_score` were not added to the list
+  endpoint.
+- **No fabricated data:** the graph, the contribution
+  figures and the demo all render what the API returned;
+  the demo input is the README's documented synthetic
+  text and is investigated by the ordinary pipeline.
+- **No new dependency:** the graph is hand-rolled SVG;
+  `package.json` is unchanged.
+
+### Not done, deliberately
+
+- **No embeddings, vector store or sentence-transformers**
+  — deferred, with no consumer in the pipeline.
+- **No dashboard risk-distribution chart** — D-051 stands;
+  the list endpoint carries no risk level.
+- **No new graph library** — three edge types over four
+  node types do not justify a dependency.
+---

@@ -182,7 +182,14 @@ function FactorRow({ factor }: { factor: RiskFactor }) {
  * caveat is always shown, verbatim, and is never reworded into a stronger
  * claim.
  */
-export function RiskPanel({ assessment }: { assessment: RiskAssessment | null }) {
+export function RiskPanel({
+  assessment,
+  title = "Risk Assessment",
+}: {
+  assessment: RiskAssessment | null;
+  /** Localized section title, from `report.sections.risk_assessment`. */
+  title?: string;
+}) {
   if (!assessment) {
     return (
       <Card>
@@ -204,7 +211,7 @@ export function RiskPanel({ assessment }: { assessment: RiskAssessment | null })
     <section aria-labelledby="risk-heading" className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
         <h2 id="risk-heading" className="text-base font-semibold text-ink">
-          Risk assessment
+          {title}
         </h2>
         <RiskLevelBadge level={assessment.risk_level} score={assessment.risk_score} />
       </div>

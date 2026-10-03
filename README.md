@@ -50,7 +50,7 @@ CLAIM  →  EVIDENCE  →  SOURCE
 
 ## Status
 
-**Phases 0–15 are complete.** The full investigation pipeline runs, is exposed
+**Phases 0–17 are complete.** The full investigation pipeline runs, is exposed
 over HTTP, is persisted, is covered by an offline test suite, has a React
 frontend, supports text/URL/image/PDF inputs, and provides multilingual reports:
 
@@ -68,6 +68,8 @@ frontend, supports text/URL/image/PDF inputs, and provides multilingual reports:
 | 13 | Screenshot / OCR | complete |
 | 14 | PDF analysis | complete |
 | 15 | Multilingual reports (en, hi, mr) | complete |
+| 16 | Full integration | complete |
+| 17 | Demo / hackathon polish | complete |
 
 Live endpoints:
 
@@ -124,10 +126,10 @@ investshield-ai/
 │   │   ├── models/     # ORM models
 │   │   ├── schemas/    # Pydantic API contracts
 │   │   ├── services/   # domain + external services
-│   │   ├── agents/     # ClaimEntity, ScamIntelligence, Verification,
-│   │   │               # Evidence, Report agents
+│   │   ├── agents/     # reserved directory (empty — the graph nodes
+│   │   │               # and services do the work; no agent layer)
 │   │   ├── graph/      # LangGraph state + nodes + builder
-│   │   ├── tools/      # deterministic helpers
+│   │   ├── tools/      # reserved directory (empty)
 │   │   └── main.py
 │   ├── tests/
 │   ├── requirements.txt
@@ -217,7 +219,7 @@ cd backend
 python -m pytest
 ```
 
-Expected: `2796 passed, 4 deselected`. The suite is fully offline — it clears the
+Expected: `3012 passed, 4 deselected`. The suite is fully offline — it clears the
 API keys and the `DATABASE_URL` environment variable, so it never reaches a
 network service even when a real `.env` is present.
 
@@ -283,7 +285,10 @@ architecture to be re-explained — it is already written down.
 > Minimum investment ₹25,000.
 > Pay directly to our account to activate your trading account.
 
-Expected investigation: split into 6 atomic claims, 8 red flags
+The frontend loads exactly this text into the input field via the
+**Try Demo Investigation** button on `/investigate` — nothing is
+submitted until you press **Start investigation**, which runs the
+normal pipeline. Expected investigation: split into 6 atomic claims, 8 red flags
 (guaranteed return, unrealistic return, urgency, unverified regulatory claim,
 Telegram group, direct payment, activation fee, …), targeted regulatory
 verification, claim → evidence → source links, and an explainable

@@ -203,8 +203,8 @@ field and warning the engine can produce, not by review.
 | Orchestration | LangGraph |
 | LLM | Groq (primary), abstracted behind `LLMService` |
 | Search | SerpAPI, abstracted behind `SearchService` |
-| Embeddings | sentence-transformers `all-MiniLM-L6-v2` (optional) |
-| Vector store | NumPy cosine similarity by default, replaceable |
+| Embeddings | deferred — not implemented; no embedding consumer exists in the pipeline (D-003) |
+| Vector store | deferred — not implemented (D-003); the dashboard probe reports the honest `Unavailable` state |
 | OCR | pytesseract + Tesseract binary |
 | PDF | PyMuPDF (`pymupdf`) |
 
@@ -306,15 +306,19 @@ SSRF-guarded fetch, visible-text extraction, `url_source` provenance),
 
 ```
 React SPA  ──HTTP──>  FastAPI API layer
-                          │
-                     Service layer (InvestigationService)
-                          │
-                     Investigation engine (LangGraph)
-                          │
-             Agents + deterministic tools
-                          │
-        DB / Search / OCR / PDF / LLM / Embeddings
+                           │
+                      Service layer (app/services/*)
+                           │
+                      Investigation graph (LangGraph)
+                           │
+          DB / Search / OCR / PDF / LLM
 ```
+
+There is no agent layer and no `InvestigationService` façade: the
+graph nodes call the single-responsibility services directly, and the
+reserved `app/agents/` and `app/tools/` directories are empty.
+Embeddings and a vector store are decided-but-not-implemented (D-003)
+and have no consumer in the pipeline.
 
 Full detail in `ARCHITECTURE.md`.
 

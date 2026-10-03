@@ -7,10 +7,10 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 16 — Full Integration — **COMPLETE**
-**Current Subphase:** none — Phase 16 roadmap complete
+**Current Phase:** Phase 17 — Demo / Hackathon Polish — **COMPLETE**
+**Current Subphase:** none — the planned roadmap (Phases 0–17) is complete
 
-**Last Completed Task:** Phase 16 — Full Integration. Proved the product works as one pipeline, not four disconnected phases. A consolidated end-to-end test (`backend/tests/api/test_full_integration.py`) runs TEXT, SCREENSHOT and PDF through HTTP input, the real graph, every stage, persistence and retrieval, then retrieves each stored investigation in `en`/`hi`/`mr` with byte-identical canonical fields — only the presentation layer may differ. The URL input is exercised through its documented offline `503 URL_FETCH_UNAVAILABLE` refusal (no network, no SSRF bypass; the SSRF guard itself is pinned by `tests/test_url_guards.py`). The error-handling sweep was confirmed green — `TestTheFailureMatrixIsComplete` passes and the full failure-injection matrix (LLM, search, OCR, PDF, URL, persistence failures) needed no new cases. Added `backend/scripts/performance_check.py`, a deterministic offline performance check that reports min/median/max wall-clock per input type with no timing threshold. Also corrected a stale runtime, not a stale code path: the backend process serving `127.0.0.1:8000` predated Phase 14, which is why the UI showed "PDF Unavailable / Coming in Phase 14"; restarted against the committed source, `GET /api/investigations/limits` advertises all four input types and the frontend shows every mode as Available. All 3008 backend tests pass (0 failures) and frontend typecheck, lint, build and `verify:api` (71 checks) pass.
+**Last Completed Task:** Phase 17 — Demo / Hackathon Polish. A frontend-only polish phase; the backend tree is byte-identical to the Phase 16 commit. Five tasks, all from the plan: (1) the dashboard's false "screenshot and PDF analysis do not" copy was replaced with the accurate statement that unavailable providers reduce coverage and the report's Limitations section names every check that could not happen — the health system remains authoritative and no capability probe was touched; (2) result-page section headings now render the localized `report.sections` titles (en/hi/mr) with the English title as fallback, localizing presentation labels only; (3) the "Why was this flagged?" experience was restructured around four questions — what was detected, why the rule triggered, which text caused it, how it contributed — with contribution, evidence backing and linked claims read from each flag's real risk factor; (4) a hand-rolled, dependency-free SVG claim → evidence → source graph renders the real relationships (`Claim.entity_ids`, evidence groups, `EvidenceItem.source_id`) with typed nodes, relationship-coloured edges, hover tracing, a legend and an honest empty state; (5) the README's documented demo investigation loads verbatim from a **Try Demo Investigation** button on `/investigate` and submits through the normal pipeline. Evidence cards and the timeline were polished (level labels, connectors, stage numbers, status-tinted connectors), and `verify-render.mjs` was extended to 69 checks covering all of it. Backend suite: **3012 passed, 4 deselected, 0 failed**; frontend typecheck, lint, build, `verify:api` (74 passed), live `verify:flow` (17 passed) and `verify-render.mjs` (69 passed) all green.
 
 - **Real PDF validation** — the declared media type is only a first
   filter; the PDF library parses the bytes and `is_pdf` is the
@@ -39,12 +39,13 @@
   processed, whether text was recovered, truncation facts and the
   processing time. Every field is a measurement or a submission fact —
   none is a judgement about the document.
-- **Verified end to end** — the full backend suite passes (**3008 passed,
+- **Verified end to end** — the full backend suite passes (**3012 passed,
   4 deselected, 0 failed**) and the frontend typechecks, lints, builds
-  and passes `verify:api` (71 checks).
+  and passes `verify:api` (74 checks), live `verify:flow` (17 checks)
+  and `verify-render.mjs` (69 checks).
 
-**Latest Commit:** `feat: implement full integration` (Phase 16)
-**Working Tree:** clean.
+**Latest Commit:** `feat: implement full integration` (Phase 16) — Phase 17 changes are in the working tree, awaiting commit
+**Working Tree:** Phase 17 frontend and documentation changes (uncommitted).
 
 ### Phase Status Summary
 
@@ -67,15 +68,19 @@
 | Phase 14 | PDF analysis | **COMPLETE** |
 | Phase 15 | Multilingual reports | **COMPLETE** |
 | Phase 16 | Full integration | **COMPLETE** |
+| Phase 17 | Demo / hackathon polish | **COMPLETE** |
 
 > Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
 > Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is
 > **not** a numbered project phase and is not started.
 >
-> **Phase 16 completes the planned roadmap.** Every input type the UI
+> **Phase 17 completes the planned roadmap.** Every input type the UI
 > discloses is backed by a real endpoint, every endpoint has been run
 > end to end through the whole chain, the failure matrix is fully
-> injected, and the pipeline's cost on realistic inputs is measured.
+> injected, the pipeline's cost on realistic inputs is measured, and
+> the report is polished for demonstration: localized headings, a
+> traceable claim → evidence → source graph, an explainable
+> why-flagged panel, and the README demo loadable from the UI.
 
 ### Phase 11 — React frontend
 
@@ -437,7 +442,7 @@ All checks below were executed against the **running** backend.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Full backend suite | `cd backend && python -m pytest tests/` | **3008 passed, 4 deselected, 0 failed, exit 0** |
+| Full backend suite | `cd backend && python -m pytest tests/` | **3012 passed, 4 deselected, 0 failed, exit 0** (Phase 17 changed no backend file; the previously recorded "3008" was a stale figure — Phase 15's documented 3007 plus Phase 16's 5 new tests) |
 | Consolidated E2E | `pytest tests/api/test_full_integration.py` | **5 passed** (TEXT, SCREENSHOT, PDF legs + URL refusal + multilingual retrieval) |
 | Live PDF round-trip | `POST /api/investigations/pdf` then `GET …?language=en\|hi\|mr` | 200, `pdf_source.text_recovered: true`, canonical fields identical across languages, persisted |
 | Limits | `GET /api/investigations/limits` | `["TEXT","URL","IMAGE","PDF"]`, `languages: ["en","hi","mr"]` |
@@ -974,17 +979,23 @@ the next phase:
 
 ## Next Exact Task
 
-**Phase 17 — Demo / Hackathon Polish**, per `IMPLEMENTATION_PLAN.md`.
+**The planned roadmap (Phases 0–17) is complete.** Phase 17's changes
+are in the working tree and ready to commit. Remaining scope is
+deliberately out of the roadmap:
 
-1. Investigation timeline polish.
-2. Evidence cards + claim/evidence graph visualization.
-3. "Why was this flagged?" experience.
+- **Report generation** — `AI_PIPELINE.md` Stage 11, not a numbered
+  phase, not started (requirements below).
+- **Embeddings / vector store** — decided (D-003) but not implemented
+  and **deferred**: no consumer exists in the investigation pipeline.
+- **Dashboard risk distribution** — rejected (D-051): the list
+  endpoint carries no risk level, and the dashboard says so rather
+  than fabricating a chart.
 
-**Phase 12 left the following open,** in priority order:
+**Carried, in priority order** (from earlier phases):
 
 - JavaScript-rendered pages yield little or no text
   (`PAGE_TEXT_NOT_RETRIEVED`); a headless-browser fetch is the
-  eventual remedy and is out of scope for Phase 12.
+  eventual remedy and is out of scope.
 - `GET /api/investigations/limits` still has no machine-readable
   OpenAPI schema (carried from Phase 10).
 - `completed_at` is still always `NULL` (a Phase 7 gap, carried).
@@ -1013,9 +1024,9 @@ still stand unchanged:
 > will have to satisfy. `tests/api/test_api_risk_safety.py` is the executable
 > statement of it, and a report's rendered text should meet the same bar.
 
-### Do not start before Phase 12 is green
+### Do not start before the roadmap is green
 
-- No authentication, no OCR/PDF ingestion, no report generation.
+- No authentication, no report generation, no embeddings.
 
 ---
 
@@ -1030,6 +1041,6 @@ If you are reading this in a fresh session:
        URL ingestion) and `docs/DECISIONS.md` (D-030…D-055)
 4. [ ] Read `docs/DATABASE_SCHEMA.md` and the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **3008 passed, 4 deselected,
+6. [ ] Run `cd backend && python -m pytest` — expect **3012 passed, 4 deselected,
        0 failed**
 7. [ ] Execute **Next Exact Task**

@@ -13,6 +13,8 @@ export interface ClaimsSectionProps {
   evidenceClaimIds: Set<string>;
   /** Show the section heading; false when embedded in a parent panel. */
   showHeading?: boolean;
+  /** Localized section title, from `report.sections.claims`. */
+  title?: string;
 }
 
 function findResult(
@@ -35,6 +37,7 @@ export function ClaimsSection({
   verificationResults,
   evidenceClaimIds,
   showHeading = true,
+  title = "Claims",
 }: ClaimsSectionProps) {
   if (claims.length === 0) {
     return (
@@ -58,7 +61,7 @@ export function ClaimsSection({
       {showHeading ? (
         <div className="flex items-baseline justify-between gap-3">
           <h2 id="claims-heading" className="text-base font-semibold text-ink">
-            Claims
+            {title}
           </h2>
           <p className="text-xs text-ink-faint">
             {claims.length} extracted

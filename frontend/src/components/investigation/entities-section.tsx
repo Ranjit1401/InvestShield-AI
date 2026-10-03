@@ -43,7 +43,14 @@ function MetadataPairs({ metadata }: { metadata: JsonObject }) {
   );
 }
 
-export function EntitiesSection({ entities }: { entities: Entity[] }) {
+export function EntitiesSection({
+  entities,
+  title = "Entities",
+}: {
+  entities: Entity[];
+  /** Localized section title, from `report.sections.entities`. */
+  title?: string;
+}) {
   if (entities.length === 0) {
     return (
       <EmptyState
@@ -58,7 +65,7 @@ export function EntitiesSection({ entities }: { entities: Entity[] }) {
     <section aria-labelledby="entities-heading" className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
         <h2 id="entities-heading" className="text-base font-semibold text-ink">
-          Entities
+          {title}
         </h2>
         <p className="text-xs text-ink-faint">{entities.length} identified</p>
       </div>

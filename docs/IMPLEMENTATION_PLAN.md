@@ -423,13 +423,57 @@ fabricated, and no message carries a path or engine detail.
 - [x] Error-handling sweep (LLM, search, OCR, PDF, DB failures)
 - [x] Performance check on realistic inputs
 
-## Phase 17 — Demo / Hackathon Polish `[ ]`
+## Phase 17 — Demo / Hackathon Polish `[x]`
 
-- [ ] Investigation timeline polish
-- [ ] Evidence cards + claim/evidence graph visualization
-- [ ] "Why was this flagged?" experience
-- [ ] Demo flow per README
-- [ ] Documentation final pass
+- [x] Investigation timeline polish
+- [x] Evidence cards + claim/evidence graph visualization
+- [x] "Why was this flagged?" experience
+- [x] Demo flow per README
+- [x] Documentation final pass
+
+**Status:** complete. A frontend-only phase: the backend
+tree is unchanged (3012 passed, 4 deselected, 0 failed),
+no decision was reversed, and no dependency was added.
+
+**What was built:**
+
+- The dashboard's stale "screenshot and PDF analysis do
+  not" copy (false since Phases 13–14) was replaced with
+  the accurate statement that unavailable providers reduce
+  coverage and the report's Limitations section names
+  every check that could not happen. The health system
+  stays authoritative.
+- Result-page section headings render the localized
+  `report.sections` titles (en/hi/mr) with the English
+  title as fallback; only presentation labels are
+  localized, never canonical data.
+- The red-flag panel is restructured around the four
+  questions — what was detected, why the rule triggered,
+  which text caused it, how it contributed — with the
+  last block read from the flag's real risk factor
+  (contribution, evidence backing, linked claims).
+- A hand-rolled SVG claim → evidence → source graph
+  (`frontend/src/components/evidence/evidence-graph.tsx`)
+  renders the real relationships (`Claim.entity_ids`,
+  evidence groups, `EvidenceItem.source_id`) with typed
+  nodes, relationship-coloured edges, hover tracing, a
+  legend, and an honest empty state. No graph library.
+- Evidence cards carry explicit claim → evidence → source
+  level labels and connectors; the timeline gains stage
+  numbers and status-tinted connectors.
+- The README's documented demo investigation is loaded
+  verbatim by a **Try Demo Investigation** button on
+  `/investigate`; submission uses the normal pipeline.
+- `verify-render.mjs` extended to 69 checks: localized
+  headings in all three languages, the why-flagged labels,
+  graph node/edge types and empty state, dashboard copy,
+  and demo/README sync.
+
+**Verification:** typecheck / lint / build pass;
+`verify:api` 74 passed; live `verify:flow` 17 passed;
+`verify-render.mjs` 69 passed against a live-captured
+demo investigation; backend suite 3012 passed, 4
+deselected, 0 failed.
 
 ---
 

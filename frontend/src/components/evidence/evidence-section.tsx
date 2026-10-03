@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { FileSearch, Link2 } from "lucide-react";
+import { ArrowDown, FileSearch, Link2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/state-blocks";
@@ -12,6 +12,35 @@ import {
   sourceTypeLabel,
 } from "@/lib/format";
 import type { Claim, EvidenceItem, EvidenceResponse, EvidenceSource } from "@/types/api";
+
+/** English fallback, matching the backend's own English section title. */
+const FALLBACK_TITLE = "Evidence";
+
+/**
+ * A labelled step in the claim → evidence → source chain. The same three
+ * labels the graph uses, so the card and the graph read as one system.
+ */
+function LevelLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-xs font-semibold tracking-wide text-ink-faint uppercase">
+      {children}
+    </p>
+  );
+}
+
+/** The visual step from one level of the chain to the next. */
+function LevelConnector({ label }: { label: string }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="flex items-center gap-2 pl-1 text-ink-faint"
+    >
+      <span className="h-3 w-px bg-hairline" />
+      <ArrowDown className="size-3" />
+      <span className="font-mono text-[10px] uppercase tracking-wide">{label}</span>
+    </div>
+  );
+}
 
 /** A single source, with its authority classification spelled out. */
 function SourceRow({ source }: { source: EvidenceSource }) {
@@ -74,7 +103,9 @@ function EvidenceRow({ item }: { item: EvidenceItem }) {
  *
  * The Claim → Evidence → Source relationship is the point of the product, so
  * the hierarchy is rendered literally: each claim owns a panel, that panel
- * lists the excerpts found for it, and each excerpt names its source.
+ * lists the excerpts found for it, and each excerpt names its source. The
+ * chain is marked with explicit level labels and connectors so the card
+ * reads the same way the evidence graph does.
  *
  * Absence of evidence is reported as absence. A claim with no evidence group,
  * or a group with no items, says so plainly and is never presented as
@@ -83,9 +114,12 @@ function EvidenceRow({ item }: { item: EvidenceItem }) {
 export function EvidenceSection({
   evidence,
   claims,
+  title = FALLBACK_TITLE,
 }: {
   evidence: EvidenceResponse[];
   claims: Claim[];
+  /** Localized section title, from `report.sections.evidence`. */
+  title?: string;
 }) {
   const claimText = useMemo(() => {
     const map = new Map<string, string>();
@@ -99,7 +133,7 @@ export function EvidenceSection({
     return (
       <section aria-labelledby="evidence-heading">
         <h2 id="evidence-heading" className="sr-only">
-          Evidence
+          {title}
         </h2>
         <EmptyState
           icon={<FileSearch aria-hidden="true" className="size-7" />}
@@ -114,7 +148,7 @@ export function EvidenceSection({
     <section aria-labelledby="evidence-heading" className="space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h2 id="evidence-heading" className="text-base font-semibold text-ink">
-          Evidence
+          {title}
         </h2>
         <p className="text-xs text-ink-faint">
           {totalItems} item{totalItems === 1 ? "" : "s"} across {evidence.length} claim
@@ -135,9 +169,7 @@ export function EvidenceSection({
                 <CardContent className="space-y-4 p-4 sm:p-5">
                   {/* Claim */}
                   <div className="space-y-1.5">
-                    <p className="text-xs font-medium tracking-wide text-ink-faint uppercase">
-                      Claim
-                    </p>
+                    <LevelLabel>Claim</LevelLabel>
                     <p className="text-sm leading-relaxed font-medium text-ink">
                       {text ? `“${text}”` : <span className="font-mono">{group.claim_id}</span>}
                     </p>
@@ -149,11 +181,11 @@ export function EvidenceSection({
                     </div>
                   </div>
 
+                  <LevelConnector label="Evidence" />
+
                   {/* Evidence */}
                   <div className="space-y-2">
-                    <p className="text-xs font-medium tracking-wide text-ink-faint uppercase">
-                      Evidence
-                    </p>
+                    <LevelLabel>Evidence</LevelLabel>
                     {group.evidence.length === 0 ? (
                       <p className="text-sm text-ink-muted">
                         No sufficient evidence found for this claim. Its verification status
@@ -177,19 +209,24 @@ export function EvidenceSection({
 
                   {/* Sources */}
                   {sources.length > 0 ? (
-                    <div className="space-y-2">
-                      <p className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-ink-faint uppercase">
-                        <Link2 aria-hidden="true" className="size-3" />
-                        Sources
-                      </p>
-                      <ul className="space-y-2">
-                        {sources.map((source) => (
-                          <li key={source.source_id}>
-                            <SourceRow source={source} />
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                    <>
+                      <LevelConnector label="Source" />
+                      <div className="space-y-2">
+                        <LevelLabel>
+                          <span className="inline-flex items-center gap-1.5">
+                            <Link2 aria-hidden="true" className="size-3" />
+                            Sources
+                          </span>
+                        </LevelLabel>
+                        <ul className="space-y-2">
+                          {sources.map((source) => (
+                            <li key={source.source_id}>
+                              <SourceRow source={source} />
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </>
                   ) : null}
 
                   {group.warnings && group.warnings.length > 0 ? (

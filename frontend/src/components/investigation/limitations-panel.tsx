@@ -18,10 +18,13 @@ export function LimitationsPanel({
   warnings,
   limitations,
   errors,
+  title = "Limitations",
 }: {
   warnings: LimitationResponse[];
   limitations: string[];
   errors: InvestigationErrorResponse[];
+  /** Localized section title, from `report.sections.limitations`. */
+  title?: string;
 }) {
   if (warnings.length === 0 && errors.length === 0) {
     return null;
@@ -30,7 +33,7 @@ export function LimitationsPanel({
   return (
     <section aria-labelledby="limitations-heading" className="space-y-3">
       <h2 id="limitations-heading" className="text-base font-semibold text-ink">
-        Limitations and errors
+        {title}
       </h2>
 
       {errors.length > 0 ? (

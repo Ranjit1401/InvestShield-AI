@@ -158,8 +158,10 @@ function SystemStatusPanel({
           </ul>
           {Object.values(health.services).some((probe) => !probe.available) ? (
             <p className="mt-2 text-xs leading-relaxed text-ink-faint">
-              Unavailable providers reduce what the pipeline can do. Text investigation still
-              works; screenshot and PDF analysis do not.
+              Unavailable providers reduce what the pipeline can do. The
+              investigation still runs with the providers that are available,
+              and the report&apos;s Limitations section names every check that
+              could not happen.
             </p>
           ) : null}
         </div>
