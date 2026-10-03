@@ -48,3 +48,4 @@ Thumbs.db
 build/
 *.egg-info/
 dist/
+.kilo/

@@ -99,6 +99,7 @@ One row per run.
 | `extraction_warnings` | JSON | not null | Phase 2's `processing_warnings`. |
 | `verification_warnings` | JSON | not null | Phase 4's batch-level `VerifiedResponse.warnings`. |
 | `source_metadata` | JSON | not null | Phase 12 `UrlSource.as_metadata()` for URL runs; `{}` for text runs. |
+| `image_metadata` | JSON | nullable | Phase 13 `ImageSource.as_metadata()` for image runs; `NULL` for every other run. |
 | `claim_count` … `factor_count` | Integer | not null | Seven denormalised counts, default 0. |
 | `started_at` | DateTime | not null | Run start. |
 | `completed_at` | DateTime | nullable | Run finish, if recorded. |
@@ -174,6 +175,22 @@ before Phase 12 gains the column at startup rather than on next recreation.
 This is the same "additive DDL, tolerate failure" posture the schema itself
 uses; it is **not** a migration framework (see Known Limitations — no
 migrations).
+
+### `image_metadata` holds screenshot provenance, in its own column
+
+Phase 13 stores the `ImageSource` record — filename, declared and
+detected media types, decoded format, byte size, dimensions, OCR
+language, whether text was recovered, truncation facts and the
+processing time — as a single JSON blob. It is a column of its own
+rather than a share of `source_metadata`, because the two provenance
+records are different models with no common shape and a run is a URL
+run or an image run, never both: one column each means the loader
+validates each blob against the model it came from, with nothing to
+disambiguate. Non-image runs store `NULL`.
+
+The column is added by the same additive `ALTER TABLE … ADD COLUMN`
+in `app/db/session.py`, so a database created before Phase 13 gains
+the column at startup.
 
 ---
 

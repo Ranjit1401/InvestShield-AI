@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # ---------- OCR ----------
     tesseract_cmd: str = ""
     ocr_languages: str = "eng"
+    # Upper bound on the text handed to extraction. Longer recovered
+    # text is truncated with a recorded limitation, so the pipeline
+    # never claims to have read a screenshot it only saw part of.
+    ocr_extraction_max_chars: int = 20_000
+    # A bound on a single recognition run, so a pathological image
+    # cannot hold the investigation open indefinitely.
+    ocr_timeout_seconds: int = 30
 
     # ---------- PDF ----------
     pdf_max_pages: int = 100

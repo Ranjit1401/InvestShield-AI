@@ -89,6 +89,11 @@ def create_db_engine(settings: Settings | None = None) -> Engine:
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # Phase 12: provenance for a URL submission, `NULL` for every text run.
     ("investigations", "source_metadata", "JSON"),
+    # Phase 13: provenance for a screenshot submission, `NULL` for every
+    # other run. A column of its own rather than a share of
+    # `source_metadata`, because the two provenance records are different
+    # models with no common shape and a run carries at most one of them.
+    ("investigations", "image_metadata", "JSON"),
 )
 
 

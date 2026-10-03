@@ -46,6 +46,7 @@ from app.graph.nodes import (
     verification_node,
 )
 from app.graph.state import InvestigationInputType, InvestigationState, semantic_view
+from app.schemas.ocr import ImageUpload
 
 logger = get_logger(__name__)
 
@@ -147,6 +148,7 @@ def run_investigation(
     input_type: InvestigationInputType | str = InvestigationInputType.TEXT,
     context: GraphContext | None = None,
     dependencies: GraphDependencies | None = None,
+    upload: ImageUpload | None = None,
 ) -> InvestigationState:
     """Run one investigation end to end.
 
@@ -156,12 +158,20 @@ def run_investigation(
     inject fakes.
 
     Args:
-        raw_input: The content to investigate, exactly as submitted.
-        input_type: The declared input kind. Only `TEXT` is analysed in this
-            version; the others are recognised and refused with a typed reason.
+        raw_input: The content to investigate, exactly as submitted. For an
+            `IMAGE` submission this is a descriptive reference (the filename);
+            the bytes the pipeline recognises travel in `upload`.
+        input_type: The declared input kind. `TEXT`, `URL` and `IMAGE` are
+            analysed; `PDF` and any other kind are recognised and refused with
+            a typed reason.
         context: A fully built context. Mutually exclusive with `dependencies`.
         dependencies: Dependencies to wrap in a fresh context, keeping the
             default clock. Mutually exclusive with `context`.
+        upload: The submitted image, for an `IMAGE` input. Carried to the
+            input stage through the state rather than the context, because the
+            context is built once per process and shared by every request, while
+            an upload belongs to the one run that received it. Ignored for
+            every other input kind.
 
     Returns:
         The final `InvestigationState`. On success it carries a
@@ -198,9 +208,13 @@ def run_investigation(
         extra={"input_type": kind, "input_length": len(raw_input or "")},
     )
 
+    seed: dict[str, Any] = {"raw_input": raw_input or "", "input_type": kind}
+    if upload is not None:
+        seed["upload"] = upload
+
     graph = build_investigation_graph()
     final = graph.invoke(
-        {"raw_input": raw_input or "", "input_type": kind},
+        seed,
         context=resolved,
     )
     return final

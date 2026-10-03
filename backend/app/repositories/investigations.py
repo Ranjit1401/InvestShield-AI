@@ -74,6 +74,7 @@ from app.schemas.evidence import (
     EvidenceSource,
 )
 from app.schemas.extraction import ClaimEntityLink, ExtractionResult
+from app.schemas.ocr import ImageSource
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment, RiskFactor
 from app.schemas.url import UrlSource
@@ -175,6 +176,32 @@ def _source_metadata_for(state: InvestigationState) -> dict[str, Any] | None:
     return _model_fields(type(source), payload)
 
 
+def _image_metadata_for(state: InvestigationState) -> dict[str, Any] | None:
+    """Render an image submission's provenance for storage, or `None`.
+
+    The image modality's answer to :func:`_source_metadata_for`, for the
+    same reason and in the same form: one JSON blob, because nothing
+    joins to it, filters on it or aggregates it. It lives in its own
+    `image_metadata` column rather than sharing `source_metadata`,
+    because the two provenance records are different models and a run
+    carries at most one of them.
+
+    Args:
+        state: The finished state.
+
+    Returns:
+        The `ImageSource` rendered in JSON mode, or `None` for a run
+        that had no image. Absent is stored as SQL `NULL` rather than
+        an empty object, so a `TEXT` or URL run is distinguishable from
+        an image run that somehow had none.
+    """
+    source = state.get("image_source")
+    if source is None:
+        return None
+    payload = source.model_dump(mode="json")
+    return _model_fields(type(source), payload)
+
+
 def _model_fields(model: type, payload: dict[str, Any]) -> dict[str, Any]:
     """Drop keys a Pydantic model does not declare.
 
@@ -268,6 +295,7 @@ class InvestigationRepository:
             extracted_text=str(state.get("extracted_text") or ""),
             language="en",
             source_metadata=_source_metadata_for(state),
+            image_metadata=_image_metadata_for(state),
             status=investigation_status(
                 _as_tuple(state.get("errors")), _as_tuple(state.get("timeline"))
             ).value,
@@ -724,6 +752,13 @@ class InvestigationRepository:
         if url_source is not None:
             state["url_source"] = url_source
 
+        # The same conditional discipline for the image modality: a URL
+        # or TEXT run reloads with no `image_source` key at all, so a
+        # reloaded image run is the only state that carries one.
+        image_source = _image_source_from_row(row)
+        if image_source is not None:
+            state["image_source"] = image_source
+
         return state
 
     def list_page(self, limit: int, offset: int = 0) -> tuple[list[InvestigationSummary], int]:
@@ -924,6 +959,41 @@ def _url_source_from_row(row: InvestigationRow) -> UrlSource | None:
     except ValidationError as exc:
         logger.warning(
             "Stored URL provenance did not match the current schema",
+            extra={"public_id": row.public_id, "reason": type(exc).__name__},
+        )
+        return None
+
+
+def _image_source_from_row(row: InvestigationRow) -> ImageSource | None:
+    """Rebuild an image submission's provenance from its stored JSON.
+
+    The image modality's answer to :func:`_url_source_from_row`, with the
+    same contract and the same three normal `None` cases: a run of any
+    other input kind, which never had one; a run stored before Phase 13,
+    whose row predates the column; and a row whose JSON no longer
+    validates against the current `ImageSource`.
+
+    Provenance describes how an image was read, not what the investigation
+    found, so a row written by an older schema must still reload and still
+    serve its claims, evidence and risk assessment. Failing the whole
+    retrieval because one descriptive field drifted would turn a cosmetic
+    schema change into losing access to a stored investigation.
+
+    Args:
+        row: The stored run.
+
+    Returns:
+        The `ImageSource`, or `None` when the run carries none this
+        version can read.
+    """
+    payload = getattr(row, "image_metadata", None)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return ImageSource.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Stored image provenance did not match the current schema",
             extra={"public_id": row.public_id, "reason": type(exc).__name__},
         )
         return None

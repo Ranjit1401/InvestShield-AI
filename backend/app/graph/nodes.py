@@ -59,7 +59,14 @@ from app.graph.state import (
     investigation_id_for,
 )
 from app.schemas.extraction import ExtractionMode, ExtractionResult
+from app.schemas.ocr import content_digest
 from app.schemas.verification import VerificationResponse, VerificationStatus
+from app.services.ocr_guards import SYNTAX_MESSAGES
+from app.services.ocr_service import (
+    ENGINE_MESSAGES,
+    OCRError,
+    build_image_analysis_text,
+)
 from app.services.url_fetch import FETCH_MESSAGES, URL_MESSAGES, UrlFetchError
 from app.services.website_extractor import build_analysis_text
 
@@ -93,6 +100,10 @@ WARNING_CODES: tuple[str, ...] = (
     "SEARCH_RESULTS_NOT_RECORDED",
     "URL_CONTENT_TRUNCATED",
     "PAGE_TEXT_NOT_RETRIEVED",
+    "OCR_UNAVAILABLE",
+    "OCR_TEXT_NOT_RETRIEVED",
+    "OCR_CONTENT_TRUNCATED",
+    "OCR_FAILED",
 )
 
 #: Stable failure codes. Any of these ends the run.
@@ -104,7 +115,9 @@ ERROR_CODES: tuple[str, ...] = (
     "VERIFICATION_FAILED",
     "RISK_ASSESSMENT_FAILED",
     "URL_FETCH_UNAVAILABLE",
+    "IMAGE_INPUT_UNAVAILABLE",
     *URL_MESSAGES,
+    *SYNTAX_MESSAGES,
 )
 
 #: URL failures the **caller** must fix. The submission itself is the problem: a
@@ -153,6 +166,26 @@ URL_SITE_FAULT_CODES: frozenset[str] = frozenset(FETCH_MESSAGES) - {
 #: which is the status that says "this deployment does not do this right now".
 URL_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = frozenset(
     {"URL_FETCH_DISABLED", "URL_FETCH_UNAVAILABLE"}
+)
+
+#: Image refusals the **caller** must fix. The submission itself is
+#: the problem: no image was sent, an image larger than the upload
+#: limit, a file that is not an image, or an image this version does
+#: not read. Retrying the same file unchanged fails identically, so
+#: the API answers `422`.
+#:
+#: These are the image modality's `SYNTAX_MESSAGES`, worded where
+#: the refusal is decided and imported here so the graph and the API
+#: classify them identically.
+IMAGE_CLIENT_FAULT_CODES: frozenset[str] = frozenset(SYNTAX_MESSAGES)
+
+#: Image analysis is not offered by this deployment, so nothing was
+#: attempted. The graph was built without an OCR service — a
+#: configuration, not a defect and not the caller's fault — so the
+#: API answers `503 Service Unavailable`, the status that says "this
+#: deployment does not do this right now".
+IMAGE_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = frozenset(
+    {"IMAGE_INPUT_UNAVAILABLE"}
 )
 
 #: Fixed wording per limitation. Each says what did not happen, never what it
@@ -208,6 +241,23 @@ WARNING_MESSAGES: dict[str, str] = {
         "so the analysis below covers the submitted URL and domain only and not "
         "the page's visible content."
     ),
+    "OCR_UNAVAILABLE": (
+        "Screenshot text recognition is not available in this deployment, so "
+        "the submitted image's text was not read. The image itself was "
+        "received, and the analysis below covers the image's own facts only "
+        "and not its text content."
+    ),
+    "OCR_TEXT_NOT_RETRIEVED": (
+        "The submitted image was read but no text was found in it. A "
+        "photograph or a scan of a handwritten note often appears this way, "
+        "so the analysis below covers the image's own facts only and not "
+        "any text it may contain."
+    ),
+    "OCR_CONTENT_TRUNCATED": (
+        "The text recovered from the submitted image is larger than this "
+        "version reads, so only its earlier content was analysed. Text later "
+        "in the image was not."
+    ),
 }
 
 #: Fixed wording per failure. Safe to surface: it describes the pipeline, never
@@ -217,9 +267,9 @@ ERROR_MESSAGES: dict[str, str] = {
         "No content was submitted, so there was nothing to investigate."
     ),
     "INPUT_TYPE_NOT_SUPPORTED": (
-        "This version analyses text and URL input. The submitted input "
-        "type was recognised but is not analysed, so no investigation "
-        "was performed."
+        "This version analyses text, URL and image input. The submitted "
+        "input type was recognised but is not analysed, so no "
+        "investigation was performed."
     ),
     "EXTRACTION_FAILED": (
         "The extraction stage did not complete, so no claims or entities were "
@@ -242,6 +292,11 @@ ERROR_MESSAGES: dict[str, str] = {
         "submitted URL was not retrieved and no investigation was "
         "performed."
     ),
+    "IMAGE_INPUT_UNAVAILABLE": (
+        "Screenshot investigation is not available in this deployment, "
+        "so the submitted image was not recognised and no "
+        "investigation was performed."
+    ),
 }
 
 # Phase 12's refusals are worded where the decision is made — the address policy
@@ -256,6 +311,19 @@ ERROR_MESSAGES: dict[str, str] = {
 # reaches a caller is always complete. `_error`, which reads this table directly,
 # is only ever called with the graph's own codes.
 ERROR_MESSAGES.update(URL_MESSAGES)
+
+# Phase 13's image refusals are worded where the decision is
+# made — the OCR policy and the recognition service — and merged
+# in for the same reason: the graph's promise holds for the
+# image modality too, with no second copy of these sentences.
+#
+# The caller-fault refusals (`SYNTAX_MESSAGES`) end the run, so
+# they belong in `ERROR_MESSAGES`. The engine's own failure
+# (`ENGINE_MESSAGES`, `OCR_FAILED`) is a limitation the run
+# continues past, so it belongs in `WARNING_MESSAGES` instead —
+# the two tables stay disjoint, which a test relies on.
+ERROR_MESSAGES.update(SYNTAX_MESSAGES)
+WARNING_MESSAGES.update(ENGINE_MESSAGES)
 
 
 # -- helpers -------------------------------------------------------------
@@ -501,6 +569,208 @@ def _url_input(
     }
 
 
+def _image_input(
+    state: InvestigationState,
+    context: GraphContext,
+) -> dict[str, Any]:
+    """Recognise a submitted screenshot and turn it into analysis text.
+
+    This is Phase 13's contribution to the graph, and it mirrors
+    `_url_input`: it runs inside `input_node` so everything
+    downstream — extraction, pattern detection, verification,
+    evidence, risk — is the *existing* machinery operating on the
+    resulting text. An image submission therefore produces an
+    investigation of exactly the same shape as a text one, and no
+    downstream stage needs to know where the text came from.
+
+    The node stays free of business logic by delegating every
+    decision: the recognition service owns decoding the image and
+    driving the engine, and this function only maps its typed
+    outcomes onto graph vocabulary.
+
+    Args:
+        state: The incoming state. Requires `input_type`, and
+            carries the submitted image in `upload`.
+        context: Services and clock.
+
+    Returns:
+        Partial state. On success it carries the composed analysis
+        text as `raw_input`, the `ImageSource` provenance, and any
+        limitation. On refusal it carries an `errors` entry and no
+        analysis text.
+    """
+    stage = GraphStage.INPUT
+    dependencies = context.dependencies
+    raw_input = state.get("raw_input") or ""
+    upload = state.get("upload")
+
+    # An image submission is identified by its content, so a re-run
+    # of the same screenshot shares an id no matter what the caller
+    # named the file. When no image was submitted there is no
+    # content to digest, and the seed text stands in.
+    identity = content_digest(upload) if upload is not None else raw_input
+
+    # One capability, checked once. A graph built without an OCR
+    # service cannot recognise a screenshot at all, which is a
+    # deployment configuration rather than a defect.
+    if not dependencies.supports_image:
+        logger.info("Image submission received by a graph without image support")
+        return {
+            "input_type": InvestigationInputType.IMAGE.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.IMAGE, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (_error(stage, "IMAGE_INPUT_UNAVAILABLE", None),),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "Screenshot investigation is not available in this "
+                    "deployment.",
+                ),
+            ),
+        }
+
+    # The typed JSON endpoint declares IMAGE but carries no image
+    # bytes: there is nothing to recognise, and the caller is told
+    # so rather than the run pretending an empty text was a
+    # screenshot.
+    if upload is None:
+        logger.info("Image input type submitted without an image")
+        return {
+            "input_type": InvestigationInputType.IMAGE.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.IMAGE, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (_error(stage, "OCR_IMAGE_EMPTY", None),),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "No image was submitted.",
+                ),
+            ),
+        }
+
+    ocr_service = dependencies.ocr_service
+    assert ocr_service is not None  # supports_image
+
+    try:
+        document = ocr_service.extract(upload)
+    except OCRError as exc:
+        # A typed refusal is a normal outcome, not a defect: the
+        # submission was understood and the answer is "no". Its
+        # message is fixed per code by the layer that raised it and
+        # carries no engine detail, so it is safe to surface here
+        # rather than restating it in this module.
+        logger.info("Image submission refused", extra={"reason": exc.code})
+        return {
+            "input_type": InvestigationInputType.IMAGE.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.IMAGE, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (
+                GraphError(
+                    code=exc.code,
+                    stage=stage,
+                    message=exc.message,
+                    error_type=None,
+                ),
+            ),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "The submitted image could not be accepted.",
+                ),
+            ),
+        }
+    except Exception as exc:
+        # The OCR service documents that it raises only `OCRError`
+        # for every condition it can anticipate. Anything else
+        # escaping is a contract violation below this layer, so it
+        # ends the run rather than being reported as though the
+        # image were merely unreadable.
+        logger.exception("OCR service violated its typed-failure contract")
+        return {
+            "input_type": InvestigationInputType.IMAGE.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.IMAGE, identity
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (
+                _error(stage, "IMAGE_INPUT_UNAVAILABLE", type(exc).__name__),
+            ),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "Screenshot recognition did not complete as expected.",
+                ),
+            ),
+        }
+
+    # The recognition outcome is mapped onto graph vocabulary here,
+    # the same place a fetch outcome is mapped for a URL, so no
+    # downstream stage learns where the text came from. Every
+    # outcome below keeps the run going: an image that cannot be
+    # read is a limitation to record, not a reason to stop, because
+    # the image's own facts are still evidence.
+    warnings: list[GraphWarning] = []
+
+    if document.limitation == "OCR_UNAVAILABLE":
+        warnings.append(_warning(stage, "OCR_UNAVAILABLE"))
+    elif document.limitation == "OCR_FAILED":
+        warnings.append(
+            _warning(stage, "OCR_FAILED", error_type=document.error_type)
+        )
+    elif not document.text.strip():
+        # Recognition ran and produced nothing. This is the
+        # characteristic outcome for a photograph, and reporting it
+        # as a complete reading of the image would overstate what
+        # was read.
+        warnings.append(_warning(stage, "OCR_TEXT_NOT_RETRIEVED"))
+
+    if document.truncated:
+        warnings.append(_warning(stage, "OCR_CONTENT_TRUNCATED"))
+
+    analysis_text = build_image_analysis_text(document)
+
+    return {
+        "input_type": InvestigationInputType.IMAGE.value,
+        "raw_input": analysis_text,
+        "extracted_text": analysis_text,
+        "image_source": document.source,
+        "investigation_id": investigation_id_for(
+            InvestigationInputType.IMAGE, identity
+        ),
+        "started_at": context.clock(),
+        "current_stage": stage.value,
+        "warnings": tuple(warnings),
+        "timeline": (
+            _event(
+                context,
+                stage,
+                TimelineStatus.PARTIAL if warnings else TimelineStatus.STARTED,
+                "Screenshot recognised."
+                if not warnings
+                else "Screenshot recognised, with limitations.",
+            ),
+        ),
+    }
+
+
 def input_node(state: InvestigationState, context: GraphContext) -> dict[str, Any]:
     """Validate the submission and open the investigation record.
 
@@ -516,8 +786,16 @@ def input_node(state: InvestigationState, context: GraphContext) -> dict[str, An
     submitted URL rather than from the retrieved text, so two submissions of the
     same address share an id no matter what the site returned that day.
 
+    An `IMAGE` submission is the same kind of exception: the submitted
+    bytes are not text, so `_image_input` recognises them and the pipeline
+    analyses the recovered text. The image's own facts are preserved in
+    `image_source`, and the investigation id is derived from the image
+    content rather than from the recovered text, so two submissions of the
+    same screenshot share an id no matter what the engine returned that day.
+
     Args:
-        state: The incoming state. Requires `raw_input` and `input_type`.
+        state: The incoming state. Requires `raw_input` and `input_type`,
+            and carries a submitted image in `upload` for an `IMAGE` input.
         context: Services and clock.
 
     Returns:
@@ -551,6 +829,9 @@ def input_node(state: InvestigationState, context: GraphContext) -> dict[str, An
 
     if input_type is InvestigationInputType.URL:
         return _url_input(raw_input, context)
+
+    if input_type is InvestigationInputType.IMAGE:
+        return _image_input(state, context)
 
     if input_type is not InvestigationInputType.TEXT:
         logger.info(

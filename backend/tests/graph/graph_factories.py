@@ -27,6 +27,7 @@ from app.schemas.common import EvidenceSpan
 from app.schemas.entities import Entity, EntityType, normalize_entity_name
 from app.schemas.evidence import EvidenceBundleResponse
 from app.schemas.extraction import ExtractionMode, ExtractionResult
+from app.schemas.ocr import ImageDocument, ImageSource, ImageUpload
 from app.schemas.red_flags import RedFlag, RedFlagCode
 from app.schemas.risk import RiskAssessment, RiskLevel
 from app.schemas.search import SearchResponse, SearchResult, SearchStatus
@@ -238,6 +239,77 @@ class RecordingRiskService:
         if self.raises is not None:
             raise self.raises
         return self.assessment
+
+
+def ocr_document(
+    text: str = "",
+    *,
+    limitation: str | None = None,
+    error_type: str | None = None,
+    truncated: bool = False,
+    filename: str | None = "screenshot.png",
+    content_type: str = "image/png",
+) -> ImageDocument:
+    """Build an `ImageDocument` a fake OCR service can return.
+
+    The genuine service decodes the image and drives Tesseract, so a
+    test that needs a particular recognition outcome — unavailable,
+    failed, empty, truncated — would need an engine to cooperate. This
+    builder produces the document directly, so each outcome is a
+    deliberate input rather than a coincidence of the environment.
+
+    Args:
+        text: The recovered text. Empty by default, which the graph
+            reads as "nothing readable was recovered".
+        limitation: The degradation code, when recognition could not
+            run at all (`OCR_UNAVAILABLE` or `OCR_FAILED`).
+        error_type: The exception class, carried only with the
+            `OCR_FAILED` limitation.
+        truncated: Whether `text` was cut at the character budget.
+        filename: The submitted filename, for the provenance record.
+        content_type: The declared media type.
+
+    Returns:
+        An `ImageDocument` for a fake to return.
+    """
+    return ImageDocument(
+        source=ImageSource(
+            filename=filename,
+            content_type=content_type,
+            byte_size=0,
+            ocr_language="eng",
+            text_recovered=bool(text.strip()),
+            processed_at=FIXED_INSTANT,
+        ),
+        text=text,
+        truncated=truncated,
+        limitation=limitation,
+        error_type=error_type,
+    )
+
+
+@dataclass
+class RecordingOcrService:
+    """Stands in for Phase 13's OCR service and remembers every call.
+
+    The genuine service owns decoding the image and driving the
+    engine. This fake returns one fixed document, so a test can drive
+    each recognition outcome the graph maps — unavailable, failed,
+    empty, truncated — without an engine, and can assert that the
+    input stage handed the service exactly the submitted bytes.
+
+    Attributes:
+        document: What `extract` returns.
+        calls: Every `ImageUpload` the node passed, in order.
+    """
+
+    document: ImageDocument = field(default_factory=ocr_document)
+    calls: list[ImageUpload] = field(default_factory=list)
+
+    def extract(self, upload: ImageUpload) -> ImageDocument:
+        """Record the argument and return the configured document."""
+        self.calls.append(upload)
+        return self.document
 
 
 # -- builders ------------------------------------------------------------
@@ -494,6 +566,7 @@ __all__ = [
     "MESSY_CONTENT",
     "RecordingEvidenceService",
     "RecordingExtractionService",
+    "RecordingOcrService",
     "RecordingRedFlagEngine",
     "RecordingRiskService",
     "RecordingSearchProvider",
@@ -505,10 +578,11 @@ __all__ = [
     "fake_dependencies",
     "fixed_clock",
     "make_assessment",
+    "ocr_document",
     "offline_context",
+    "offline_settings",
     "real_dependencies",
     "result_for",
     "sebi_result",
-    "offline_settings",
     "verification_response",
 ]

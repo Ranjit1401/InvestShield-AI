@@ -25,6 +25,7 @@ import type {
   InvestigationLimits,
   InvestigationListResponse,
   InvestigationResponse,
+  Language,
   ListInvestigationsParams,
   TextInvestigationRequest,
   UrlInvestigationRequest,
@@ -261,6 +262,12 @@ interface RequestOptions {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
 
+  // A multipart body carries its own Content-Type, complete with the
+  // boundary the server needs to parse the parts, so it is sent as-is
+  // rather than JSON-encoded and without the application/json header the
+  // JSON endpoints require.
+  const isMultipart = typeof FormData !== "undefined" && body instanceof FormData;
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onExternalAbort = () => controller.abort();
@@ -271,11 +278,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     response = await fetch(`${API_BASE_URL}${path}`, {
       method,
       headers: {
-        // The API accepts JSON only; a form-encoded body is refused with 422.
+        // The JSON endpoints accept JSON only; a form-encoded body is
+        // refused with 422. A multipart body is the one exception.
         Accept: "application/json",
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(body === undefined || isMultipart
+          ? {}
+          : { "Content-Type": "application/json" }),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : isMultipart ? body : JSON.stringify(body),
       signal: controller.signal,
     });
   } catch (cause) {
@@ -365,6 +375,33 @@ export function createUrlInvestigation(
   return request<InvestigationResponse>("/api/investigations/url", {
     method: "POST",
     body: payload,
+    signal,
+  });
+}
+
+/**
+ * `POST /api/investigations/image` — submit a screenshot for investigation.
+ *
+ * The image travels as `multipart/form-data`: the file is one part and
+ * the language another, so the request is not JSON and the browser sets
+ * the Content-Type with the boundary. The screenshot is decoded and read
+ * by OCR on the server; the recovered text is what the pipeline analyses.
+ *
+ * @param file The screenshot to investigate (PNG, JPEG or WebP).
+ * @param language The content language, recorded with the investigation.
+ * @param signal Abort signal for the request.
+ */
+export function createImageInvestigation(
+  file: File,
+  language?: Language,
+  signal?: AbortSignal,
+): Promise<InvestigationResponse> {
+  const form = new FormData();
+  form.append("file", file, file.name || "screenshot.png");
+  if (language !== undefined) form.append("language", language);
+  return request<InvestigationResponse>("/api/investigations/image", {
+    method: "POST",
+    body: form,
     signal,
   });
 }

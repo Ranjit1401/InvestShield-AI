@@ -1,4 +1,10 @@
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -22,8 +28,18 @@ import { ErrorState } from "@/components/common/state-blocks";
 import { cn } from "@/lib/utils";
 import { EXAMPLE_TEXT, MAX_TEXT_LENGTH, useTextInvestigation } from "@/hooks/use-text-investigation";
 import { MAX_URL_LENGTH, useUrlInvestigation } from "@/hooks/use-url-investigation";
+import {
+  MAX_UPLOAD_BYTES,
+  ALLOWED_IMAGE_TYPES,
+  useImageInvestigation,
+} from "@/hooks/use-image-investigation";
 import { useLimits } from "@/hooks/use-investigations";
-import { LANGUAGES, type InvestigationInputType, type Language } from "@/types/api";
+import {
+  LANGUAGES,
+  type InvestigationInputType,
+  type InvestigationResponse,
+  type Language,
+} from "@/types/api";
 
 /** All four input modes, with the phase that will actually process each one. */
 const INPUT_MODES = [
@@ -42,19 +58,31 @@ export function InvestigatePage() {
   const navigate = useNavigate();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [mode, setMode] = useState<InputModeId>("TEXT");
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [language, setLanguage] = useState<Language>("en");
   const [touched, setTouched] = useState(false);
 
   const limits = useLimits();
   const textApi = useTextInvestigation();
   const urlApi = useUrlInvestigation();
+  const imageApi = useImageInvestigation();
 
-  const api = mode === "URL" ? urlApi : textApi;
-  const { submit, isSubmitting, error } = api;
+  // The three submission hooks share every field except `submit`,
+  // whose parameter is a string for text and a URL but a `File`
+  // for a screenshot. The shared fields are read off the union
+  // here; the one field that differs is called through
+  // `submitCurrent`, which narrows to the right hook for the
+  // active mode.
+  const api = mode === "URL" ? urlApi : mode === "IMAGE" ? imageApi : textApi;
+  const { isSubmitting, error } = api;
+
+  const isUrl = mode === "URL";
+  const isImage = mode === "IMAGE";
 
   /**
    * Which modes the backend says it accepts. `GET /api/investigations/limits`
@@ -72,41 +100,92 @@ export function InvestigatePage() {
     typeof limits.data?.max_text_length === "number" ? limits.data.max_text_length : MAX_TEXT_LENGTH;
   const maxUrlLength =
     typeof limits.data?.max_url_length === "number" ? limits.data.max_url_length : MAX_URL_LENGTH;
+  const maxUploadBytes =
+    typeof limits.data?.max_upload_bytes === "number" ? limits.data.max_upload_bytes : MAX_UPLOAD_BYTES;
+
+  // The media types the backend accepts, with the documented
+  // constants as the fallback before the limits endpoint answers.
+  const allowedImageTypes = useMemo(
+    () =>
+      new Set<string>(
+        Array.isArray(limits.data?.allowed_image_types) &&
+          limits.data.allowed_image_types.length > 0
+          ? limits.data.allowed_image_types
+          : ALLOWED_IMAGE_TYPES,
+      ),
+    [limits.data?.allowed_image_types],
+  );
+  const allowedImageTypesList = Array.from(allowedImageTypes).join(", ");
 
   const activeMode = INPUT_MODES.find((item) => item.id === mode);
 
-  const value = mode === "URL" ? url : text;
+  const value = isUrl ? url : text;
   const trimmed = value.trim();
-  const isEmpty = trimmed.length === 0;
-  const maxLength = mode === "URL" ? maxUrlLength : maxTextLength;
-  const isTooLong = value.length > maxLength;
-  const canSubmit = !isEmpty && !isTooLong && !isSubmitting;
+
+  const isEmpty = isImage ? file === null : trimmed.length === 0;
+  const maxLength = isImage
+    ? maxUploadBytes
+    : isUrl
+      ? maxUrlLength
+      : maxTextLength;
+  const isTooLong = isImage
+    ? file !== null && file.size > maxUploadBytes
+    : value.length > maxLength;
+  // The declared media type is a hint, not a verdict — the server
+  // re-checks what the bytes actually decode to — but catching an
+  // obvious mismatch here saves an upload.
+  const isWrongType =
+    isImage && file !== null && !allowedImageTypes.has(file.type);
+  const canSubmit = !isEmpty && !isTooLong && !isWrongType && !isSubmitting;
 
   // Client-side guidance only. The backend re-validates and its error is what
   // the user ultimately sees.
-  const validationMessage = isEmpty
-    ? mode === "URL"
-      ? "Enter the URL you want investigated."
-      : "Enter the investment content you want investigated."
-    : isTooLong
-      ? `Content is ${value.length.toLocaleString()} characters. The limit is ${maxLength.toLocaleString()}.`
-      : null;
+  const validationMessage = isImage
+    ? file === null
+      ? "Choose the screenshot you want investigated."
+      : isTooLong
+        ? `The screenshot is ${file.size.toLocaleString()} bytes. The limit is ${maxUploadBytes.toLocaleString()} bytes.`
+        : isWrongType
+          ? `"${file.name}" is reported as ${
+              file.type || "an unknown type"
+            }. The API accepts ${allowedImageTypesList}.`
+          : null
+    : isEmpty
+      ? isUrl
+        ? "Enter the URL you want investigated."
+        : "Enter the investment content you want investigated."
+      : isTooLong
+        ? `Content is ${value.length.toLocaleString()} characters. The limit is ${maxLength.toLocaleString()}.`
+        : null;
+
+  function submitCurrent(): Promise<InvestigationResponse | null> {
+    if (isImage && file !== null) {
+      return imageApi.submit(file, language);
+    }
+    return isUrl ? urlApi.submit(value, language) : textApi.submit(value, language);
+  }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setTouched(true);
     if (!canSubmit) return;
 
-    void submit(value, language).then((result) => {
+    void submitCurrent().then((result) => {
       if (result) {
         navigate(`/investigation/${encodeURIComponent(result.investigation_id)}`);
       }
     });
   }
 
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selected = event.target.files?.[0] ?? null;
+    setFile(selected);
+    setTouched(true);
+  }
+
   function useExample() {
     // The example is only ever inserted by an explicit user action.
-    if (mode === "URL") {
+    if (isUrl) {
       setUrl(EXAMPLE_URL);
       urlInputRef.current?.focus();
     } else {
@@ -117,7 +196,11 @@ export function InvestigatePage() {
   }
 
   function clear() {
-    if (mode === "URL") {
+    if (isImage) {
+      setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      fileInputRef.current?.focus();
+    } else if (isUrl) {
       setUrl("");
       urlInputRef.current?.focus();
     } else {
@@ -217,7 +300,7 @@ export function InvestigatePage() {
           aria-labelledby={`mode-tab-${mode}`}
           className="space-y-4"
         >
-          {mode !== "TEXT" && mode !== "URL" ? (
+          {mode === "PDF" ? (
             <Alert
               tone="info"
               title={`${activeMode?.label ?? "This"} input is not available yet`}
@@ -225,7 +308,7 @@ export function InvestigatePage() {
               <p>
                 {activeMode?.label ?? "This"} investigation is scheduled for{" "}
                 {activeMode?.phase ?? "a later phase"}. The API does not expose an endpoint for it
-                yet, so this screen sends no request. Text and URL are fully operational.
+                yet, so this screen sends no request. Text, URL and Screenshot are fully operational.
               </p>
             </Alert>
           ) : null}
@@ -234,17 +317,49 @@ export function InvestigatePage() {
             <Card>
               <CardHeader>
                 <CardTitle>
-                  {mode === "URL" ? "Web page to investigate" : "Investment content"}
+                  {isUrl
+                    ? "Web page to investigate"
+                    : isImage
+                      ? "Screenshot to investigate"
+                      : "Investment content"}
                 </CardTitle>
                 <CardDescription>
-                  {mode === "URL"
+                  {isUrl
                     ? "Paste the public URL of the page, post or promotion. The page is fetched and its readable text is investigated; the URL itself is checked against the red-flag rules too."
-                    : "Paste the message, post or promotion exactly as you received it. Verbatim text lets the pipeline match the claims and red flags it finds back to your content."}
+                    : isImage
+                      ? "Upload a screenshot of the offer. It is decoded and read by OCR on the server, and the recovered text is investigated as the content it contains."
+                      : "Paste the message, post or promotion exactly as you received it. Verbatim text lets the pipeline match the claims and red flags it finds back to your content."}
                 </CardDescription>
               </CardHeader>
 
               <CardContent className="space-y-4">
-                {mode === "URL" ? (
+                {isImage ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="investigation-image">Screenshot to investigate</Label>
+                    <Input
+                      id="investigation-image"
+                      ref={fileInputRef}
+                      type="file"
+                      accept={allowedImageTypesList}
+                      onChange={handleFileChange}
+                      onBlur={() => setTouched(true)}
+                      invalid={touched && (isTooLong || isWrongType)}
+                      aria-describedby="investigation-image-hint investigation-image-count"
+                      disabled={isSubmitting}
+                    />
+                    <p id="investigation-image-hint" className="text-xs text-ink-faint">
+                      A PNG, JPEG or WebP file up to {maxUploadBytes.toLocaleString()} bytes. The
+                      screenshot is decoded and read by OCR on the server; the recovered text is
+                      what the pipeline investigates.
+                    </p>
+                    {file ? (
+                      <p className="font-mono text-xs text-ink-muted" aria-live="polite">
+                        {file.name} — {(file.size / 1024).toLocaleString()} KB
+                        {file.type ? ` (${file.type})` : ""}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : isUrl ? (
                   <div className="space-y-2">
                     <Label htmlFor="investigation-url">URL to investigate</Label>
                     <Input
@@ -291,13 +406,23 @@ export function InvestigatePage() {
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p
-                    id={mode === "URL" ? "investigation-url-count" : "investigation-text-count"}
+                    id={
+                      isImage
+                        ? "investigation-image-count"
+                        : isUrl
+                          ? "investigation-url-count"
+                          : "investigation-text-count"
+                    }
                     className={cn(
                       "font-mono text-xs",
                       isTooLong ? "text-tone-danger" : "text-ink-faint",
                     )}
                   >
-                    {value.length.toLocaleString()} / {maxLength.toLocaleString()} characters
+                    {isImage
+                      ? file
+                        ? `${file.size.toLocaleString()} / ${maxUploadBytes.toLocaleString()} bytes`
+                        : `No file chosen (limit ${maxUploadBytes.toLocaleString()} bytes)`
+                      : `${value.length.toLocaleString()} / ${maxLength.toLocaleString()} characters`}
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2">
@@ -316,7 +441,7 @@ export function InvestigatePage() {
                       variant="ghost"
                       size="sm"
                       onClick={clear}
-                      disabled={value.length === 0 || isSubmitting}
+                      disabled={(isImage ? file === null : value.length === 0) || isSubmitting}
                     >
                       <Eraser aria-hidden="true" />
                       Clear
@@ -324,18 +449,20 @@ export function InvestigatePage() {
                   </div>
                 </div>
 
-                <details className="rounded-md border border-hairline bg-surface px-3 py-2">
-                  <summary className="cursor-pointer text-sm text-ink-muted">
-                    {mode === "URL" ? "Example URL" : "Example investment message"}
-                  </summary>
-                  <p className="mt-2 rounded border border-hairline bg-surface-raised px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink-muted">
-                    {mode === "URL" ? EXAMPLE_URL : EXAMPLE_TEXT}
-                  </p>
-                  <p className="mt-1.5 text-xs text-ink-faint">
-                    Nothing is submitted until you press the button. Use “Use example” to place
-                    this {mode === "URL" ? "URL" : "text"} in the field.
-                  </p>
-                </details>
+                {!isImage ? (
+                  <details className="rounded-md border border-hairline bg-surface px-3 py-2">
+                    <summary className="cursor-pointer text-sm text-ink-muted">
+                      {isUrl ? "Example URL" : "Example investment message"}
+                    </summary>
+                    <p className="mt-2 rounded border border-hairline bg-surface-raised px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink-muted">
+                      {isUrl ? EXAMPLE_URL : EXAMPLE_TEXT}
+                    </p>
+                    <p className="mt-1.5 text-xs text-ink-faint">
+                      Nothing is submitted until you press the button. Use “Use example” to place
+                      this {isUrl ? "URL" : "text"} in the field.
+                    </p>
+                  </details>
+                ) : null}
 
                 <div className="space-y-2">
                   <Label htmlFor="investigation-language">Content language</Label>
@@ -367,7 +494,7 @@ export function InvestigatePage() {
                 {error ? (
                   <ErrorState
                     error={error}
-                    onRetry={canSubmit ? () => void submit(text, language) : undefined}
+                    onRetry={canSubmit ? () => void submitCurrent() : undefined}
                   />
                 ) : null}
 
@@ -375,7 +502,7 @@ export function InvestigatePage() {
                   <Button
                     type="submit"
                     size="lg"
-                    disabled={!canSubmit || (mode !== "TEXT" && mode !== "URL")}
+                    disabled={!canSubmit || mode === "PDF"}
                     aria-busy={isSubmitting}
                   >
                     {isSubmitting ? (

@@ -27,7 +27,7 @@ document is the contract; the frontend client mirrors it.
 | 202 | Investigation accepted and processing | **withdrawn**, see below |
 | 400 | Malformed request | not used |
 | 404 | Investigation not found | Phase 9 |
-| 413 | Upload exceeds size limit | Phases 13–14 |
+| 413 | Upload exceeds size limit | not used — an oversized upload is a `422` validation error (`OCR_IMAGE_TOO_LARGE`, Phase 13) |
 | 422 | Validation error (empty text, over-length, unanalysed input type, SSRF-blocked URL) | yes (URL in Phase 12) |
 | 429 | Upstream provider rate limit | not used — a rate limit is a degradation, not a client error (D-009) |
 | 500 | A stage broke its documented contract | yes |
@@ -53,13 +53,13 @@ investigation failures it is a `FailureDetail`:
 {
   "error": {
     "code": "INPUT_TYPE_NOT_SUPPORTED",
-    "message": "This version analyses text and URL input. The submitted input type was recognised but is not analysed, so no investigation was performed.",
+    "message": "This version analyses text, URL and image input. The submitted input type was recognised but is not analysed, so no investigation was performed.",
     "detail": {
       "errors": [
         { "code": "INPUT_TYPE_NOT_SUPPORTED", "stage": "input", "error_type": null }
       ],
-      "submitted_input_type": "IMAGE",
-      "supported_input_types": ["TEXT", "URL"]
+      "submitted_input_type": "PDF",
+      "supported_input_types": ["TEXT", "URL", "IMAGE"]
     }
   }
 }
@@ -215,9 +215,12 @@ than after being refused. Needs no investigation and never fails.
 
 ```json
 {
-  "supported_input_types": ["TEXT", "URL"],
+  "supported_input_types": ["TEXT", "URL", "IMAGE"],
   "max_text_length": 20000,
   "max_url_length": 2048,
+  "max_upload_bytes": 10485760,
+  "allowed_image_types": ["image/png", "image/jpeg", "image/webp"],
+  "ocr_languages": "eng",
   "languages": ["en", "hi", "mr"],
   "translation_enabled": false
 }
@@ -443,26 +446,92 @@ claims *in* the page; it does not score the hostname (D-006, D-020).
 
 ---
 
-## POST /api/investigations/upload — *not implemented*
+## POST /api/investigations/image
 
-Screenshot or PDF upload.
+Shorthand for `input_type = IMAGE`. **Implemented in Phase 13;
+stores its result like the text endpoint.** The server validates
+the upload, decodes the image locally, reads it with the
+text-recognition engine (Tesseract), and runs the standard
+pipeline over the recovered text.
 
 **Request** — `multipart/form-data`
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `file` | binary | yes | image or PDF, allow-listed MIME types |
-| `language` | string | no | form field |
+| `file` | binary | yes | PNG, JPEG or WebP |
+| `language` | string | no | form field, default `en` |
 
-**Limits:** 10 MB max. Allowed: `image/png`, `image/jpeg`, `image/webp`,
-`application/pdf`.
+**Guards, in order.** Byte budget (10 MiB) → declared media type
+(`image/png`, `image/jpeg`, `image/webp`) → decode (the image
+library opens the bytes; the decoded format is the authority, so a
+GIF wearing a PNG label is refused) → recognition (the engine,
+with a 30-second timeout).
 
-**413** when the file exceeds the size limit.
-**422** for a disallowed content type.
-**503** `OCR_UNAVAILABLE` when an image is submitted but OCR is not installed —
-*unless* Phase 8 is in force, in which case `IMAGE` and `PDF` are refused with
-`422` up front, before any availability check, because there is no ingestion path
-to be unavailable. **Phases 13–14.**
+**Recognition budget.** Recovered text is cut at a 20,000-character
+budget; the cut is recorded in `image_source.truncated` and
+`image_source.truncated_at`, and surfaced as an `OCR_CONTENT_TRUNCATED`
+limitation, so the pipeline never claims to have read text it did not
+see.
+
+**200 Response** — the standard `InvestigationResponse`, with
+`input_type: "IMAGE"` and `image_source` describing the submission
+and the recognition run:
+
+```json
+{
+  "investigation_id": "inv_7a1c2e9f4b8d3e01",
+  "status": "PARTIAL",
+  "input_type": "IMAGE",
+  "image_source": {
+    "filename": "offer.png",
+    "content_type": "image/png",
+    "detected_content_type": "image/png",
+    "format": "PNG",
+    "byte_size": 9531,
+    "width": 2400,
+    "height": 320,
+    "ocr_language": "eng",
+    "text_recovered": true,
+    "truncated": false,
+    "truncated_at": null,
+    "processed_at": "2026-10-03T00:00:04Z"
+  },
+  …the rest of the response, unchanged…
+}
+```
+
+Every `image_source` field is either a fact about the submission, a
+measurement of the decode, or a fact about the recognition run. None is
+a judgement: `text_recovered` says the engine produced text, not that
+the image is legitimate, and `detected_content_type` is what the bytes
+parse as, which can differ from the declared `content_type`.
+
+**Degradation, not failure.** An image that decodes but yields no
+readable text returns `200` with `status: PARTIAL` and an
+`OCR_TEXT_NOT_RETRIEVED` limitation. A wired graph whose engine is not
+installed returns `200` with `status: PARTIAL` and an `OCR_UNAVAILABLE`
+limitation and `text_recovered: false` — no text is fabricated (D-009).
+
+**422** for caller faults: an oversized upload (`OCR_IMAGE_TOO_LARGE`),
+a declared type this version does not read (`OCR_IMAGE_TYPE_UNSUPPORTED`),
+and bytes that do not decode (`OCR_IMAGE_UNREADABLE`). **503**
+`IMAGE_INPUT_UNAVAILABLE` when the graph is built without an OCR service
+at all — a capability refusal, distinct from the `OCR_UNAVAILABLE`
+*limitation* a wired graph reports when the engine is merely absent.
+
+No `message` or `detail` ever carries a filesystem path, an engine
+diagnostic or provider text; wording comes from the fixed
+`OCR_MESSAGES` / `ENGINE_MESSAGES` tables, and tests plant real-shaped
+failures to assert it.
+
+---
+
+## POST /api/investigations/upload — *not implemented*
+
+PDF upload. **Phase 14.** The image half of this surface is
+implemented as `POST /api/investigations/image` (Phase 13, above);
+PDF remains refused with `422` `INPUT_TYPE_NOT_SUPPORTED` up front,
+because there is no PDF ingestion path to be unavailable.
 
 ---
 
@@ -659,6 +728,7 @@ Guarantees a client may rely on:
 | `GET /api/investigations/{id}` | 9 | Implemented |
 | `GET /api/investigations` | 9 | Implemented |
 | `POST /api/investigations/url` | 12 | Implemented |
+| `POST /api/investigations/image` | 13 | Implemented |
 | `POST /api/investigations/upload` | 13 / 14 | Planned |
 
 Phase 8 built the two POST endpoints and answered them from memory. Phase 9 added
@@ -1072,7 +1142,8 @@ reading `ARCHITECTURE.md` §2.3d and `app/graph/state.py` alongside this section
 | `POST /api/investigations/text` | implemented |
 | `GET /api/investigations/limits` | implemented |
 | `POST /api/investigations/url` | implemented (Phase 12) |
-| `POST /api/investigations/upload` | **not implemented** — `422` (Phases 13–14) |
+| `POST /api/investigations/image` | implemented (Phase 13) |
+| `POST /api/investigations/upload` | **not implemented** — PDF only, `422` (Phase 14); the image half is `/investigations/image` above |
 | `GET /api/investigations/{id}` | implemented (Phase 9) |
 | `GET /api/investigations` | implemented (Phase 9) |
 

@@ -65,7 +65,8 @@ frontend:
 | 10 | Testing & quality hardening | complete |
 | 11 | React frontend | complete |
 | 12 | URL analysis | complete |
-| 13–14 | screenshot/OCR, PDF analysis | not started |
+| 13 | screenshot/OCR | complete |
+| 14 | PDF analysis | not started |
 
 Live endpoints:
 
@@ -75,28 +76,33 @@ GET  /api/investigations/limits
 POST /api/investigations
 POST /api/investigations/text
 POST /api/investigations/url
+POST /api/investigations/image
 GET  /api/investigations
 GET  /api/investigations/{id}
 ```
 
-`POST /api/investigations/text` and `POST /api/investigations/url` return
-the complete investigation synchronously — claims, entities, red flags,
-verification results, evidence with sources, the risk assessment, a stage
-timeline, and a `limitations` array of machine-readable codes. The URL
-endpoint fetches the submitted page under an SSRF guard (http/https only,
-private/loopback and metadata addresses refused, redirects re-validated,
-size and time budgets) and runs the same pipeline over the extracted page
-text.
+`POST /api/investigations/text`, `POST /api/investigations/url` and
+`POST /api/investigations/image` return the complete investigation
+synchronously — claims, entities, red flags, verification results,
+evidence with sources, the risk assessment, a stage timeline, and a
+`limitations` array of machine-readable codes. The URL endpoint fetches
+the submitted page under an SSRF guard (http/https only, private/loopback
+and metadata addresses refused, redirects re-validated, size and time
+budgets) and runs the same pipeline over the extracted page text. The
+image endpoint validates a PNG/JPEG/WebP upload, decodes it locally,
+reads it with Tesseract OCR, and runs the same pipeline over the
+recovered text.
 
 A **partial** run is a `200`, not an error. If search or the LLM is unavailable the
 response carries `status: PARTIAL` and names exactly which check did not happen.
 Only a malformed submission or a broken internal contract produces a `4xx`/`5xx`.
 
-`TEXT` and `URL` inputs are analysed. Image and PDF endpoints are not
-implemented yet — those input types are recognised and refused with a
-`422` that lists what this version does analyse. The frontend shows
-those modes as disabled and labels each with the phase that will
-implement it (13–14); it does not pretend they work.
+`TEXT`, `URL` and `IMAGE` inputs are analysed. The PDF endpoint is not
+implemented yet — that input type is recognised and refused with a
+`422` that lists what this version does analyse. The frontend shows the
+PDF mode as disabled and labels it with the phase that will implement it
+(14); the Screenshot mode is live. It does not pretend anything works
+that does not.
 
 See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for the full
 roadmap and [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for exactly where

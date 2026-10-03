@@ -12,6 +12,7 @@ import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { crc32, deflateSync } from "node:zlib";
 
 const OUT = join(mkdtempSync(join(tmpdir(), "is-client-")), "client.mjs");
 
@@ -44,6 +45,42 @@ function check(label, condition, detail = "") {
   }
 }
 
+/* A minimal, valid PNG, built with no dependency beyond node:zlib.
+ * The image endpoint accepts it and the OCR engine reads it (finding
+ * no text in a blank canvas), which is enough to prove the upload
+ * reaches the pipeline and that its provenance is returned. */
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const typeBuf = Buffer.from(type, "ascii");
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])));
+  return Buffer.concat([length, typeBuf, data, crc]);
+}
+
+function makePng(width = 1, height = 1) {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  // IHDR: width, height, bit depth 8, colour type 0 (greyscale),
+  // compression 0, filter 0, interlace 0.
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 0;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  // Each scanline is a filter byte (0) followed by `width` pixels.
+  const raw = Buffer.alloc(height * (1 + width));
+  const idat = deflateSync(raw);
+  return Buffer.concat([
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", idat),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 console.log(`API base: ${client.API_BASE_URL}\n`);
 
 console.log("== getHealth ==");
@@ -68,6 +105,14 @@ check(
   JSON.stringify(limits.supported_input_types),
 );
 check("max_url_length present", typeof limits.max_url_length === "number");
+check(
+  "reports IMAGE as supported",
+  Array.isArray(limits.supported_input_types) && limits.supported_input_types.includes("IMAGE"),
+  JSON.stringify(limits.supported_input_types),
+);
+check("max_upload_bytes present", typeof limits.max_upload_bytes === "number");
+check("allowed_image_types is an array", Array.isArray(limits.allowed_image_types));
+check("ocr_languages is a string", typeof limits.ocr_languages === "string");
 
 console.log("\n== getInvestigations (paging) ==");
 const page1 = await client.getInvestigations({ limit: 1, offset: 0 });
@@ -223,6 +268,85 @@ await expectApiError(
   "over-length url rejected",
   () => client.createUrlInvestigation({ url: "https://x/" + "a".repeat(5000) }),
   (e) => e.isValidation,
+);
+
+console.log("\n== image investigation wiring ==");
+
+// These exercise `POST /api/investigations/image` against the real
+// API. The valid PNG is accepted and its provenance is returned;
+// bytes that are not an image and an upload past the byte limit are
+// both refused by the backend's own validation rather than by the
+// client, which is the part worth checking against the real server.
+
+const pngBytes = makePng(1, 1);
+const pngFile = new File([pngBytes], "screenshot.png", { type: "image/png" });
+
+const imageResult = await client.createImageInvestigation(pngFile);
+check(
+  "image investigation returns IMAGE",
+  imageResult.input_type === "IMAGE",
+  String(imageResult.input_type),
+);
+check(
+  "image investigation carries image_source",
+  imageResult.image_source !== null && typeof imageResult.image_source === "object",
+  String(imageResult.image_source),
+);
+check(
+  "image_source reports the filename",
+  imageResult.image_source?.filename === "screenshot.png",
+  String(imageResult.image_source?.filename),
+);
+check(
+  "image_source reports the declared type",
+  imageResult.image_source?.content_type === "image/png",
+  String(imageResult.image_source?.content_type),
+);
+check(
+  "image_source reports the byte size",
+  imageResult.image_source?.byte_size === pngBytes.length,
+  String(imageResult.image_source?.byte_size),
+);
+
+// A blank canvas is a valid image the engine reads but finds no
+// text in. Where the engine is absent the run degrades to
+// OCR_UNAVAILABLE instead of decoding. Either outcome proves the
+// upload was processed, so the check accepts both.
+const engineRan =
+  imageResult.image_source?.format === "PNG" &&
+  typeof imageResult.image_source?.width === "number";
+const engineAbsent =
+  Array.isArray(imageResult.limitations) &&
+  imageResult.limitations.includes("OCR_UNAVAILABLE");
+check(
+  "image was decoded (or OCR is unavailable)",
+  engineRan || engineAbsent,
+  `format=${String(imageResult.image_source?.format)} limitations=${JSON.stringify(imageResult.limitations)}`,
+);
+
+// Bytes that claim to be an image but do not decode are refused.
+const notAnImage = new File(
+  [Buffer.from("definitely not an image")],
+  "shot.png",
+  { type: "image/png" },
+);
+await expectApiError(
+  "non-image bytes rejected",
+  () => client.createImageInvestigation(notAnImage),
+  (e) => e.status === 422 && e.code === "OCR_IMAGE_UNREADABLE",
+);
+
+// An upload past the byte limit is refused before it is decoded,
+// so this refusal does not depend on the OCR engine being present.
+const maxUploadBytes =
+  typeof limits.max_upload_bytes === "number" ? limits.max_upload_bytes : 0;
+const oversized = new File([Buffer.alloc(maxUploadBytes + 1)], "big.png", {
+  type: "image/png",
+});
+await expectApiError(
+  "oversized image rejected",
+  () => client.createImageInvestigation(oversized),
+  (e) => e.status === 422 && e.code === "OCR_IMAGE_TOO_LARGE",
 );
 
 console.log(`\n${pass} passed, ${fail} failed`);

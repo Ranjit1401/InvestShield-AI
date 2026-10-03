@@ -41,6 +41,7 @@ from app.schemas.claims import Claim
 from app.schemas.entities import Entity
 from app.schemas.url import MAX_URL_LENGTH, UrlSource
 from app.schemas.evidence import EvidenceResponse
+from app.schemas.ocr import ImageSource
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment
 from app.schemas.verification import VerificationResult
@@ -270,6 +271,15 @@ class InvestigationResponse(BaseModel):
             "Phase 12 provenance for a URL investigation: the submitted URL, the host "
             "contacted, the addresses it resolved to, and whether the page was "
             "truncated. Null for every non-URL input kind."
+        ),
+    )
+
+    image_source: ImageSource | None = Field(
+        default=None,
+        description=(
+            "Phase 13 provenance for an image investigation: the submitted file, "
+            "what it decoded to, and what the recognition engine recovered. Null "
+            "for every non-IMAGE input kind."
         ),
     )
 

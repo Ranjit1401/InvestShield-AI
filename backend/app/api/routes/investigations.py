@@ -1,14 +1,17 @@
-"""Investigation endpoints (Phase 8, extended by Phase 9).
+"""Investigation endpoints (Phase 8, extended by later phases).
 
-Five endpoints, deliberately thin. Each validates the submission, calls
-`run_investigation`, hands the final state to the adapter, and — for the write
-endpoints — stores it. No threshold, score, verdict or wording is decided here.
+Seven endpoints, deliberately thin. Each validates the submission, calls
+`run_investigation`, hands the final state to the adapter, and — for the
+write endpoints — stores it. No threshold, score, verdict or wording is decided here.
 
 - `POST /api/investigations/text` — the documented convenience form. `input_type`
   is fixed to `TEXT`, so a client cannot accidentally submit a URL and have it
   analysed as prose.
 - `POST /api/investigations/url` — the same convenience for a website. `input_type`
   is fixed to `URL`, so a client cannot accidentally submit prose as an address.
+- `POST /api/investigations/image` — the same convenience for a screenshot, as
+  `multipart/form-data`. `input_type` is fixed to `IMAGE`; the bytes travel in
+  the file part, because a JSON body cannot carry them.
 - `POST /api/investigations` — the typed form, where `input_type` is explicit.
 - `GET /api/investigations/{id}` — a stored run, rebuilt and passed to the **same**
   adapter the write path used.
@@ -37,16 +40,22 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 
 from app.api.adapters import serialize_investigation
-from app.api.deps import get_graph_context_dep, get_repository_dep
+from app.api.deps import (
+    get_graph_context_dep,
+    get_repository_dep,
+    get_settings_dep,
+)
 from app.api.errors import (
     SUPPORTED_INPUT_TYPES,
     ApiError,
     InvestigationNotFound,
     raise_for_graph_errors,
 )
+from app.core.config import Settings
 from app.core.logging import get_logger
 from app.graph.context import GraphContext
 from app.graph.investigation_graph import run_investigation
@@ -68,7 +77,9 @@ from app.schemas.api import (
     TextInvestigationRequest,
     UrlInvestigationRequest,
 )
+from app.schemas.ocr import ImageUpload
 from app.schemas.url import MAX_URL_LENGTH
+from app.services.ocr_guards import OCR_IMAGE_FORMATS
 
 logger = get_logger(__name__)
 
@@ -91,6 +102,18 @@ _URL_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     503: {
         "model": ErrorEnvelope,
         "description": "Website investigation is not available in this deployment.",
+    },
+}
+
+#: Same as `_ERROR_RESPONSES` plus the deployment-fault case, so a caller
+#: reading the OpenAPI document can see that a screenshot investigation has
+#: one more failure mode than a text one, and which status it produces.
+#: There is no `502`: an image has no upstream site to have failed.
+_IMAGE_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
+    **_ERROR_RESPONSES,
+    503: {
+        "model": ErrorEnvelope,
+        "description": "Screenshot investigation is not available in this deployment.",
     },
 }
 
@@ -166,6 +189,56 @@ def _investigate(
     return serialize_investigation(state, language=language)
 
 
+def _investigate_image(
+    raw_input: str,
+    upload: ImageUpload,
+    language: Language,
+    context: GraphContext,
+    repo: InvestigationRepository,
+) -> InvestigationResponse:
+    """Run one screenshot investigation, store it, and shape the result.
+
+    Mirrors :func:`_investigate` for the image modality. The submitted
+    bytes travel in `upload` rather than in `raw_input`, because a
+    screenshot is identified by its content, not by the text the caller
+    happened to name it; `raw_input` is only a descriptive reference
+    for the run's own logging. Everything else — store before shaping,
+    keep a partial run, reuse the write path's adapter — is the same
+    contract, so a screenshot result is indistinguishable in kind from
+    a text or URL one.
+
+    Args:
+        raw_input: A descriptive reference for the submission (the
+            filename, when one was supplied).
+        upload: The submitted image, bounded by the upload limit.
+        language: The requested language, echoed into the response.
+        context: The `GraphContext` the run executes against.
+        repo: The request's repository.
+
+    Returns:
+        The complete investigation response.
+
+    Raises:
+        SubmissionRejected: The image was too large, not an image
+            type this version reads, or not a readable image.
+        CapabilityUnavailable: This deployment does not analyse
+            screenshots.
+        GraphContractError: A stage broke its documented contract.
+    """
+    state = run_investigation(
+        raw_input,
+        input_type=InvestigationInputType.IMAGE,
+        context=context,
+        upload=upload,
+    )
+    raise_for_graph_errors(
+        tuple(state.get("errors") or ()),
+        submitted_input_type=InvestigationInputType.IMAGE.value,
+    )
+    _store(repo, state)
+    return serialize_investigation(state, language=language)
+
+
 @router.post(
     "/investigations/text",
     response_model=InvestigationResponse,
@@ -211,11 +284,14 @@ def create_investigation(
     """Investigate a submission whose input kind is declared explicitly.
 
     `TEXT` and `URL` are analysed by this version; for `URL` the `text` field
-    carries the address. `IMAGE` and `PDF` are recognised and refused with a
-    `422` naming the kinds that do work, rather than being analysed as text — the
-    product commits to all four inputs, but that ingestion is later work, and
-    quietly treating an image or a PDF as prose would report an analysis of
-    something the client never sent.
+    carries the address. `IMAGE` is analysed too, but through the multipart
+    `/investigations/image` endpoint, because a JSON body cannot carry the
+    image bytes — an `IMAGE` submission here is recognised and refused with a
+    `422` stating that no image was submitted, rather than being analysed as
+    prose or as an empty screenshot. `PDF` is recognised and refused with a
+    `422` naming the kinds that do work: the product commits to all four
+    inputs, but PDF ingestion is later work, and quietly treating a PDF as
+    prose would report an analysis of something the client never sent.
 
     A refused submission is **not** stored. There is no investigation to keep,
     and writing a row for a request that was rejected would fill the history with
@@ -274,26 +350,113 @@ def investigate_url(
     )
 
 
+@router.post(
+    "/investigations/image",
+    response_model=InvestigationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Investigate a submitted screenshot",
+    responses=_IMAGE_ERROR_RESPONSES,
+)
+async def investigate_image(
+    file: Annotated[
+        UploadFile,
+        File(description="The screenshot to investigate (PNG, JPEG or WebP)."),
+    ],
+    context: Annotated[GraphContext, Depends(get_graph_context_dep)],
+    repo: Annotated[InvestigationRepository, Depends(get_repository_dep)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    language: Annotated[Language, Form()] = Language.EN,
+) -> InvestigationResponse:
+    """Read the submitted screenshot and return the investigation of its text.
+
+    The response is the **same shape** as a text investigation, and that
+    is the point. The uploaded image is decoded locally and its text is
+    recovered by the OCR engine; the recovered text becomes the input
+    every downstream stage analyses, so the pipeline itself is the
+    existing Phase 1-6 machinery running unchanged. A client that already
+    renders a text result renders this one without a special case.
+
+    What is new is `image_source` in the response: the filename, the
+    declared and decoded media types, the decoded dimensions, whether any
+    text was recovered, and whether that text was cut at the character
+    budget. That provenance is what makes a screenshot result checkable —
+    a reader can see exactly which image produced the analysis and how
+    much of its text the engine actually read.
+
+    The file is read **bounded**: at most one byte past the upload limit,
+    so an oversized upload never reaches memory in full. The limit itself
+    is enforced by the OCR service, the same authority that enforces it
+    for any other caller, so the route cannot disagree with the service
+    about what counts as too large. The declared media type is likewise
+    only a first filter — the image library's decode is the authority on
+    what the file actually is.
+
+    The recognition work runs in a worker thread, because this endpoint
+    is `async` only for the bounded file read; the decode and recognition
+    themselves are synchronous and would otherwise hold the event loop
+    for the seconds an OCR run can take.
+
+    Returns `200` even for a partial run. A screenshot whose engine is
+    absent, or one that is a photograph with no readable text, is a real
+    result with a stated limitation rather than a refusal.
+
+    Fails with `422` when the submission itself is the problem — no file,
+    a file larger than the limit, a type this version does not read, or
+    bytes that do not decode as an image — with `503` when this deployment
+    does not offer screenshot investigation at all, and with `500` only
+    when a stage broke its documented contract. None of those is a verdict
+    about the screenshot's content.
+    """
+    max_bytes = settings.max_upload_bytes
+    raw = await file.read(max_bytes + 1)
+    declared = (file.content_type or "application/octet-stream").lower()
+    upload = ImageUpload(
+        content=raw,
+        content_type=declared,
+        filename=file.filename,
+    )
+    return await run_in_threadpool(
+        _investigate_image,
+        file.filename or "submitted image",
+        upload,
+        language,
+        context,
+        repo,
+    )
+
+
 @router.get(
     "/investigations/limits",
     summary="Input types this version analyses",
 )
-def investigation_limits() -> dict[str, object]:
-    """Report which input types are accepted today.
+def investigation_limits(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> dict[str, object]:
+    """Report which input types are accepted today, and their limits.
 
-    Exists so a client can discover the constraint before building a submission,
-    rather than after a rejection. Cheap, needs no investigation, and never
-    fails.
+    Exists so a client can discover the constraint before building a
+    submission, rather than after a rejection. Cheap, needs no
+    investigation, and never fails.
 
-    Declared **before** `/investigations/{investigation_id}` on purpose. FastAPI
-    matches routes in declaration order, so a path parameter registered first
-    would swallow this one and answer a request for the limits with a `404`
-    about a missing investigation.
+    The image limits are the ones the OCR service actually enforces:
+    the byte limit is read from the settings the app was built with,
+    and the accepted media types are the formats the image library can
+    decode — the authority on what counts as a readable image — rather
+    than the broader upload policy, which also names formats this
+    version analyses through a different endpoint.
+
+    Declared **before** `/investigations/{investigation_id}` on purpose.
+    FastAPI matches routes in declaration order, so a path parameter
+    registered first would swallow this one and answer a request for
+    the limits with a `404` about a missing investigation.
     """
     return {
         "supported_input_types": [kind.value for kind in SUPPORTED_INPUT_TYPES],
         "max_text_length": MAX_TEXT_LENGTH,
         "max_url_length": MAX_URL_LENGTH,
+        "max_upload_bytes": settings.max_upload_bytes,
+        "allowed_image_types": list(OCR_IMAGE_FORMATS.values()),
+        "ocr_languages": settings.ocr_languages,
         "languages": [language.value for language in Language],
         "translation_enabled": False,
     }

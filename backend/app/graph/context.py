@@ -49,6 +49,7 @@ from app.schemas.search import SearchResponse, SearchResult
 from app.schemas.verification import VerificationResult
 from app.services.evidence import EvidenceService
 from app.services.extraction_service import ExtractionService
+from app.services.ocr_service import OCRService
 from app.services.red_flag_engine import RedFlagEngine
 from app.services.risk import RiskService
 from app.services.search import SearchService
@@ -220,6 +221,11 @@ class GraphDependencies:
         website_extractor: Phase 12 `WebsiteContentExtractor`, or `None`. Paired
             with `url_fetch_service`: the two are only useful together, and the
             input stage treats either one being absent the same way.
+        ocr_service: Phase 13 `OCRService`, or `None` when the graph was built
+            without image support. Optional rather than required for the same
+            reason as `url_fetch_service`: a text-only graph needs no OCR
+            wiring, and its absence is a value the input stage reports rather
+            than an `AttributeError` mid-run.
     """
 
     extraction_service: ExtractionService
@@ -230,6 +236,7 @@ class GraphDependencies:
     search_recorder: RecordingSearchService | None = None
     url_fetch_service: URLFetchService | None = None
     website_extractor: WebsiteContentExtractor | None = None
+    ocr_service: OCRService | None = None
 
     @property
     def supports_url(self) -> bool:
@@ -241,6 +248,18 @@ class GraphDependencies:
         branching on two fields that must always agree.
         """
         return self.url_fetch_service is not None and self.website_extractor is not None
+
+    @property
+    def supports_image(self) -> bool:
+        """Whether this graph can analyse an image submission.
+
+        Unlike `supports_url`, this is a single service: recognising a
+        screenshot's text is one concern, so one dependency decides the
+        capability. Its absence means the input stage refuses the submission
+        with a typed reason rather than reaching for a service that is not
+        there.
+        """
+        return self.ocr_service is not None
 
     def clear_search_recording(self) -> None:
         """Discard recorded search responses, if a recorder is installed."""
@@ -311,5 +330,6 @@ def build_default_context(
             search_recorder=recorder,
             url_fetch_service=URLFetchService(settings=resolved),
             website_extractor=WebsiteContentExtractor(settings=resolved),
+            ocr_service=OCRService(settings=resolved),
         )
     )

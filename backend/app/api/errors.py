@@ -31,6 +31,8 @@ from __future__ import annotations
 from fastapi import status
 
 from app.graph.nodes import (
+    IMAGE_CAPABILITY_UNAVAILABLE_CODES,
+    IMAGE_CLIENT_FAULT_CODES,
     URL_CAPABILITY_UNAVAILABLE_CODES,
     URL_CLIENT_FAULT_CODES,
     URL_SITE_FAULT_CODES,
@@ -58,6 +60,7 @@ __all__ = [
 SUPPORTED_INPUT_TYPES: tuple[InvestigationInputType, ...] = (
     InvestigationInputType.TEXT,
     InvestigationInputType.URL,
+    InvestigationInputType.IMAGE,
 )
 
 #: Starlette renamed this constant when the status was reclassified, and the old
@@ -197,7 +200,7 @@ class GraphContractError(ApiError):
 #: that was expected to succeed.
 _CLIENT_FAULT_CODES: frozenset[str] = frozenset(
     {"INPUT_EMPTY", "INPUT_TYPE_NOT_SUPPORTED"}
-) | set(URL_CLIENT_FAULT_CODES)
+) | set(URL_CLIENT_FAULT_CODES) | set(IMAGE_CLIENT_FAULT_CODES)
 
 #: Failures caused by the submitted site or by our inability to reach it. These
 #: render as `502`, because the request was valid and the upstream we were asked
@@ -206,11 +209,12 @@ _CLIENT_FAULT_CODES: frozenset[str] = frozenset(
 #: disagree about which code means what.
 _SITE_FAULT_CODES: frozenset[str] = frozenset(URL_SITE_FAULT_CODES)
 
-#: The request was well-formed and this deployment does not offer URL analysis,
-#: so nothing was attempted. `503` rather than `500` because nothing is broken
-#: here, and rather than `502` because there is no upstream that failed.
-_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = frozenset(
-    URL_CAPABILITY_UNAVAILABLE_CODES
+#: The request was well-formed and this deployment does not offer URL
+#: or image analysis, so nothing was attempted. `503` rather than `500`
+#: because nothing is broken here, and rather than `502` because there
+#: is no upstream that failed.
+_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = (
+    URL_CAPABILITY_UNAVAILABLE_CODES | IMAGE_CAPABILITY_UNAVAILABLE_CODES
 )
 
 

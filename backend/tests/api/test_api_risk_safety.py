@@ -563,6 +563,11 @@ class TestTheAssessmentIsForwardedNotRestated:
             # Phase 12: a URL is bounded as a URL, not as prose, and the bound is
             # discoverable before a submission rather than after a rejection.
             "max_url_length",
+            # Phase 13: a screenshot is bounded in bytes, the image formats it
+            # may be are named, and the OCR language is discoverable too.
+            "max_upload_bytes",
+            "allowed_image_types",
+            "ocr_languages",
             "languages",
             "translation_enabled",
         }

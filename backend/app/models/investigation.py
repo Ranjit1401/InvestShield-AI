@@ -126,6 +126,15 @@ class InvestigationRow(Base):
     # simply do not have one, and a sentinel row would be a fiction.
     source_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Phase 13's `ImageSource` for an image submission, as JSON, and
+    # `None` for every other input kind. A column of its own rather
+    # than a share of `source_metadata`, because the two provenance
+    # records are different models with no common shape and a run is
+    # a URL run or an image run, never both: one column each means the
+    # loader validates each blob against the model it came from, with
+    # nothing to disambiguate.
+    image_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     current_stage: Mapped[str] = mapped_column(String(32), nullable=False, default="")
 

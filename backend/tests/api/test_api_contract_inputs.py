@@ -313,13 +313,14 @@ class TestInvalidSubmissions:
     ) -> None:
         """Each recognised-but-unanalysed kind is refused with a `422` naming what works.
 
-        `URL` left this set in Phase 12, which began analysing it. It is excluded
-        rather than deleted from the product's vocabulary.
+        `URL` left this set in Phase 12 and `IMAGE` in Phase 13, which began
+        analysing them. They are excluded rather than deleted from the
+        product's vocabulary.
 
         Args:
             api_client: A client running the real graph, offline.
         """
-        for kind in ("IMAGE", "PDF"):
+        for kind in ("PDF",):
             response = api_client.post(
                 TYPED_URL, json={"input_type": kind, "text": "some content"}
             )
@@ -327,7 +328,11 @@ class TestInvalidSubmissions:
             assert response.status_code == 422, f"{kind}: {response.text}"
             error = _error_body(response)
             assert error["code"] == "INPUT_TYPE_NOT_SUPPORTED"
-            assert error["detail"]["supported_input_types"] == ["TEXT", "URL"]
+            assert error["detail"]["supported_input_types"] == [
+                "TEXT",
+                "URL",
+                "IMAGE",
+            ]
             assert error["detail"]["submitted_input_type"] == kind
 
     def test_an_invented_input_type_is_refused(self, api_client: TestClient) -> None:
@@ -493,9 +498,18 @@ class TestDiscoveryEndpoints:
 
         assert response.status_code == 200
         body = response.json()
-        assert body["supported_input_types"] == ["TEXT", "URL"]
+        assert body["supported_input_types"] == ["TEXT", "URL", "IMAGE"]
         assert body["max_text_length"] == 20_000
         assert body["max_url_length"] == 2048
+        # Phase 13: a screenshot is bounded in bytes, the image formats it
+        # may be are named, and the OCR language is discoverable too.
+        assert body["max_upload_bytes"] == 10_485_760
+        assert set(body["allowed_image_types"]) == {
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+        }
+        assert isinstance(body["ocr_languages"], str)
         assert set(body["languages"]) == {"en", "hi", "mr"}
         assert body["translation_enabled"] is False
 
@@ -642,6 +656,9 @@ _DOCUMENTED_RESPONSE_KEYS = frozenset(
         # Phase 12: null for a `TEXT` submission, populated for a `URL` one.
         # Present in both so a client can read one key regardless of kind.
         "url_source",
+        # Phase 13: null unless the input was a screenshot, whose decoded
+        # shape and recovered text are reported so the analysis is checkable.
+        "image_source",
     }
 )
 

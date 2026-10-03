@@ -92,7 +92,7 @@ def test_unsupported_type_names_the_supported_kinds() -> None:
 
     detail = caught.value.detail
     assert detail["submitted_input_type"] == "PDF"
-    assert detail["supported_input_types"] == ["TEXT", "URL"]
+    assert detail["supported_input_types"] == ["TEXT", "URL", "IMAGE"]
 
 
 def test_contract_violation_raises_500() -> None:

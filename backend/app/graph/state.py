@@ -41,6 +41,7 @@ from app.schemas.claims import Claim
 from app.schemas.entities import Entity
 from app.schemas.evidence import EvidenceResponse
 from app.schemas.extraction import ClaimEntityLink, ExtractionMode, ExtractionResult
+from app.schemas.ocr import ImageSource, ImageUpload
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment
 from app.schemas.url import UrlSource
@@ -211,6 +212,14 @@ class InvestigationState(TypedDict, total=False):
         url_source: Phase 12 provenance for a URL submission — the submitted URL,
             the host contacted, the addresses it resolved to, and whether the
             response was truncated. Absent for every other input kind.
+        image_source: Phase 13 provenance for an image submission — the file
+            that was uploaded, what it decoded to, and what the recognition
+            engine recovered. Absent for every other input kind.
+        upload: Phase 13 transport for the submitted image bytes, present only
+            while the input stage is running. It is what the input stage reads
+            to recognise the screenshot; it is never persisted, never
+            serialised, and never carried into the analysis the way
+            `raw_input` is.
         extracted_text: The text Phase 2 worked from, which may be a normalized
             form of `raw_input`. Kept for traceability of Phase 2's own work.
         investigation_id: Deterministic digest of the submitted input. Derived,
@@ -242,6 +251,8 @@ class InvestigationState(TypedDict, total=False):
     input_type: str
     raw_input: str
     url_source: UrlSource | None
+    image_source: ImageSource | None
+    upload: ImageUpload | None
     extracted_text: str
     investigation_id: str
     started_at: datetime
@@ -303,6 +314,7 @@ TIMESTAMP_FIELDS: frozenset[str] = frozenset(
     {
         "assessed_at",
         "built_at",
+        "processed_at",
         "retrieved_at",
         "searched_at",
         "started_at",

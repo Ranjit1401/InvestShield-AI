@@ -202,19 +202,26 @@ class TestRoutesDoNotBypassTheGraph:
             "APIRouter",
             "Annotated",
             "Depends",
+            "File",
+            "Form",
             "Query",
+            "UploadFile",
+            "run_in_threadpool",
             "status",
             # Validate.
             "MAX_TEXT_LENGTH",
             "MAX_URL_LENGTH",
             "SUPPORTED_INPUT_TYPES",
             "ErrorEnvelope",
+            "ImageUpload",
             "InvestigationCreateRequest",
             "InvestigationListResponse",
             "InvestigationResponse",
             "InvestigationStatus",
             "InvestigationSummaryResponse",
             "Language",
+            "OCR_IMAGE_FORMATS",
+            "Settings",
             "TextInvestigationRequest",
             "UrlInvestigationRequest",
             # Delegate.
@@ -235,8 +242,9 @@ class TestRoutesDoNotBypassTheGraph:
             "raise_for_graph_errors",
             # Logging.
             "get_logger",
-            # The FastAPI dependency that supplies the context.
+            # The FastAPI dependencies that supply the context and settings.
             "get_graph_context_dep",
+            "get_settings_dep",
         }
 
         path = API_DIR / "routes" / "investigations.py"
@@ -605,9 +613,13 @@ class TestGraphAndApiAgreeOnTheStages:
             # submission, and still a field the route forwards from the state
             # rather than one it computes.
             "url_source",
+            # Phase 13: provenance for a screenshot investigation. Null for
+            # this `TEXT` submission, and likewise forwarded, not computed.
+            "image_source",
         }
         assert body["investigation_id"].startswith("inv_")
         assert body["url_source"] is None
+        assert body["image_source"] is None
 
     def test_the_investigation_id_is_derived_from_the_submitted_content(
         self, api_client: TestClient

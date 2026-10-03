@@ -1543,7 +1543,72 @@ input as a submitted message, one step earlier.
 **Reason:** The guarantee a client needs is that a hostile page cannot
 do more than supply content to be analysed. Keeping the fetch record
 descriptive and the extraction framing unchanged preserves that
-guarantee by construction, and the vocabulary tests enforce it at the
-API boundary like every other text the pipeline touches (D-046).
+guarantee by construction, and the vocabulary tests enforce it at
+the API boundary like every other text the pipeline touches (D-046).
+
+**Date:** 2026-10-03
+
+## D-056 — A screenshot is evidence, not a verdict; OCR is a local, optional capability
+
+**Decision:** `POST /api/investigations/image` accepts a
+PNG/JPEG/WebP upload, validates it, decodes it locally with
+Pillow, reads it with Tesseract (`pytesseract`, lazily
+imported), and feeds the recovered text to the *unchanged*
+pipeline. Three rules govern it:
+
+- **The decoded format is the authority, not the declared media
+  type.** The image library opens the bytes; a GIF wearing a PNG
+  label, or bytes that do not decode at all, are refused. The
+  declared type is only a first, cheap filter.
+- **`ImageSource` fields are chosen so a value cannot be read as
+  a finding.** `text_recovered` is a fact about the OCR run,
+  `detected_content_type` is what the bytes parse as, and neither
+  implies anything about legitimacy. The pipeline analyses claims
+  *in* the recovered text and never scores the image (D-006,
+  D-020).
+- **Recognition is a budget, not a blank cheque.** A 30-second
+  engine timeout and a 20,000-character extracted-text budget;
+  over-budget text is truncated and the truncation is recorded as
+  an `OCR_CONTENT_TRUNCATED` limitation, so the pipeline never
+  claims to have read text it did not see.
+
+**Context:** Phase 13's input is bytes, not text, so it needs an
+ingestion seam the way Phase 12 needed a fetch seam. The same
+discipline applies: recovered text is untrusted *data* (D-055),
+the investigation id is derived from the image content rather
+than the recovered text (two submissions of one screenshot share
+an id no matter what the engine returned), and the whole output
+is "claims a screenshot makes". OCR is deliberately local and
+optional — no network, no external service — so the guard surface
+is a byte budget, a media-type allowlist, and a decode, not an
+SSRF surface.
+
+**Alternatives:**
+
+- *Trust the declared media type.* Rejected: it is caller-
+  controlled and trivially spoofed; only the decoded format is
+  authoritative.
+- *Run OCR as a remote service.* Rejected: it would add a
+  credential, a network hop and a provider-text leakage surface
+  for a capability the stdlib-plus-Pillow stack covers locally.
+- *Treat "no text recovered" as a failure.* Rejected: a
+  photograph or a blank image legitimately yields no text. It is
+  a limitation (`OCR_TEXT_NOT_RETRIEVED`), reported as `200
+  PARTIAL`, not an error.
+- *Fabricate text when the engine is absent.* Rejected outright
+  (D-009): a wired graph with no engine returns `200 PARTIAL`
+  with an `OCR_UNAVAILABLE` limitation and `text_recovered:
+  false`.
+
+**Reason:** A caller needs to know exactly what was read from a
+screenshot and what was not. Making the decode authoritative, the
+provenance descriptive, and every degradation a recorded
+limitation keeps the guarantee that a hostile or blank image can
+do no more than supply content to be analysed — the same guarantee
+as text (D-046) and fetched pages (D-055). The fault split —
+caller faults `422` (`OCR_IMAGE_TOO_LARGE`,
+`OCR_IMAGE_TYPE_UNSUPPORTED`, `OCR_IMAGE_UNREADABLE`) versus a
+disabled capability `503` (`IMAGE_INPUT_UNAVAILABLE`) — follows
+D-054's "whose mistake is it" rule.
 
 **Date:** 2026-10-03

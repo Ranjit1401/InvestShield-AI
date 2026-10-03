@@ -162,12 +162,13 @@ def test_an_unsupported_input_type_is_not_stored(
     - a URL this deployment cannot analyse, refused with `503`.
 
     A `URL` submission is deliberately not in the first case any more. It left
-    that set in Phase 12, and it is now refused by capability rather than by kind.
+    that set in Phase 12, and `IMAGE` left it in Phase 13; both are now
+    refused by capability rather than by kind.
     """
     client, repository = stored_client
 
     for body, expected in (
-        ({"input_type": "IMAGE", "text": "some content"}, 422),
+        ({"input_type": "PDF", "text": "some content"}, 422),
         ({"input_type": "URL", "text": "https://example.invalid/promo"}, 503),
     ):
         response = client.post("/api/investigations", json=body)
@@ -444,7 +445,7 @@ def test_the_limits_endpoint_is_not_shadowed_by_the_id_route(
     response = persisted_client.get("/api/investigations/limits")
 
     assert response.status_code == 200
-    assert response.json()["supported_input_types"] == ["TEXT", "URL"]
+    assert response.json()["supported_input_types"] == ["TEXT", "URL", "IMAGE"]
 
 
 def test_phase_eight_response_shape_is_unchanged(
@@ -479,6 +480,8 @@ def test_phase_eight_response_shape_is_unchanged(
         "completed_at",
         # Phase 12: null for a TEXT run, populated for a URL one.
         "url_source",
+        # Phase 13: null unless the run was a screenshot.
+        "image_source",
     }
 
 

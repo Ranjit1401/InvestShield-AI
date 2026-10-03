@@ -44,6 +44,7 @@ EXPECTED_ENDPOINTS: dict[str, set[str]] = {
     "/api/investigations": {"get", "post"},
     "/api/investigations/text": {"post"},
     "/api/investigations/url": {"post"},
+    "/api/investigations/image": {"post"},
     "/api/investigations/limits": {"get"},
     "/api/investigations/{investigation_id}": {"get"},
 }

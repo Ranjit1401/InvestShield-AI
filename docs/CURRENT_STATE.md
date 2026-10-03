@@ -7,8 +7,8 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 12 — URL Analysis — **COMPLETE**
-**Current Subphase:** Phase 13 — Screenshot / OCR — **NOT STARTED**
+**Current Phase:** Phase 13 — Screenshot / OCR — **COMPLETE**
+**Current Subphase:** Phase 14 — PDF analysis — **NOT STARTED**
 
 > **Phase 10 naming, reconciled.** Two project documents disagreed about what
 > Phase 10 is. `IMPLEMENTATION_PLAN.md` has always called it "Backend Test Suite";
@@ -20,40 +20,47 @@
 > premature decision `DATABASE_SCHEMA.md` was careful to avoid when it declined to
 > create the `reports` table.
 
-**Last Completed Task:** Phase 12 — URL analysis. A new `POST
-/api/investigations/url` endpoint fetches the submitted page under an
-SSRF guard, extracts its visible text, and runs the existing pipeline
-over that text. The backend gained four new modules
-(`url_guards`, `url_fetch`, `website_extractor`, `schemas/url.py`),
-the graph gained a URL input path, persistence gained a `source_metadata`
-column, and the frontend gained a working URL input mode.
+**Last Completed Task:** Phase 13 — Screenshot / OCR. A new `POST
+/api/investigations/image` endpoint accepts a `multipart/form-data`
+upload, validates it (size, declared type, and what the bytes actually
+decode to), reads it locally with Tesseract OCR, and runs the existing
+pipeline over the recovered text. The backend gained three new modules
+(`ocr_guards`, `ocr_service`, `schemas/ocr.py`), the graph gained an
+IMAGE input path, persistence gained an `image_metadata` column, and the
+frontend gained a working Screenshot input mode.
 
-- **SSRF-guarded fetching** — http/https only, allowlist-only address
-  policy (private, loopback, link-local and metadata addresses refused,
-  including obfuscated IPv4 literals and names that *resolve* inward),
-  redirects re-validated at every hop, and byte/redirect/timeout budgets.
-- **Visible-text extraction** — a stdlib `HTMLParser` that drops
-  scripts, styles, comments and hidden content; no new dependency.
-- **The same pipeline, unchanged** — the graph's input node now accepts
-  URL input, fetches, and feeds the extracted text to extraction as
-  untrusted data. Fault taxonomy: caller faults are `422`, site faults
-  are `502`, a disabled fetch capability is `503`; nothing about the
-  site or the network leaks into an error message.
-- **Frontend URL mode** — the previously disabled "URL" tab on
-  `/investigate` is now live, its availability still read from
-  `GET /api/investigations/limits`.
-- **`url_source` on every response** — `null` for text runs; for URL
-  runs a frozen record of the fetch: submitted/normalized/final URL,
-  hostname, resolved addresses, redirect facts, HTTP status, content
-  type, TLS, charset, byte size, page title, meta description and the
-  fetch time. Every field is a transport fact or a string the page
-  published — none is a judgement about the host.
-- **Verified end to end** against the running backend: a real URL
-  investigation returns `url_source` and persists it; loopback,
-  metadata, non-http scheme and HTTP-error URLs are refused with the
-  documented codes. Full suite: **2796 passed, 4 deselected, 0 failed**.
+- **Real image validation** — the declared media type is only a first
+  filter; the image library decodes the bytes and the decoded format is
+  the authority. A GIF wearing a PNG label is refused, as are bytes that
+  do not decode at all.
+- **Local OCR** — `pytesseract` over a lazily-imported Pillow decode.
+  The Tesseract executable is resolved in one place (settings, then
+  `PATH`, then the well-known Windows locations) and its location is
+  configurable; recognition carries a native timeout and a character
+  budget, and over-budget text is truncated with a recorded limitation.
+- **Honest degradation** — a wired graph with no engine is not a failure:
+  the run continues and answers `200 PARTIAL` with an `OCR_UNAVAILABLE`
+  limitation and `text_recovered: false`. No text is ever fabricated.
+- **The same pipeline, unchanged** — the graph's input node accepts IMAGE
+  input, recognises it, and feeds the recovered text to extraction as
+  untrusted data. Caller faults (oversized, wrong type, undecodable) are
+  `422`; a disabled OCR capability is `503`.
+- **Frontend Screenshot mode** — the Screenshot tab on `/investigate` is
+  now a working file picker with client-side size and type checks; its
+  availability is still read from `GET /api/investigations/limits`.
+- **`image_source` on every response** — `null` for non-image runs; for
+  image runs a frozen record of the submission and the OCR run: filename,
+  declared and detected media types, decoded format, byte size, dimensions,
+  OCR language, whether text was recovered, truncation facts and the
+  processing time. Every field is a measurement or a submission fact —
+  none is a judgement about the image.
+- **Verified end to end** against the running backend: a real screenshot is
+  read by OCR, its recovered text is confirmed to reach the pipeline (a
+  red flag matched the recovered text), and the run persists with
+  `image_source` intact. Full suite: **2890 passed, 4 deselected, 0
+  failed**.
 
-**Latest Commit:** `feat: implement URL analysis` (Phase 12)
+**Latest Commit:** `feat: implement screenshot OCR analysis` (Phase 13)
 **Working Tree:** see `git status`.
 
 ### Phase Status Summary
@@ -73,15 +80,16 @@ column, and the frontend gained a working URL input mode.
 | Phase 10 | Testing & quality hardening | **COMPLETE** |
 | Phase 11 | React frontend | **COMPLETE** |
 | Phase 12 | URL analysis | **COMPLETE** |
-| Phase 13 | Screenshot / OCR | **NEXT** |
+| Phase 13 | Screenshot / OCR | **COMPLETE** |
+| Phase 14 | PDF analysis | **NEXT** |
 
 > Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
 > Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is
 > **not** a numbered project phase and is not started.
 >
-> **Phase 12 does not implement Phases 13–14.** The Screenshot and PDF input
-> surfaces exist in the UI and are explicitly marked unavailable, because their
-> backend processing does not exist. The UI marks them rather than faking them.
+> **Phase 13 does not implement Phase 14.** The PDF input
+> surface exists in the UI and is explicitly marked unavailable, because its
+> backend processing does not exist. The UI marks it rather than faking it.
 
 ### Phase 11 — React frontend
 
@@ -99,12 +107,13 @@ the full architecture, scripts and product rules.
 
 **Backend contract, as implemented in Phase 11.** At the time, `GET
 /api/investigations/limits` returned `supported_input_types: ["TEXT"]`,
-and the OpenAPI document exposed **no** `/url` or `/upload` endpoint.
+and the OpenAPI document exposed **no** `/url` or `/image` endpoint.
 The frontend therefore implemented only the endpoints that existed, which
 is why the input-mode tabs were a planned-surface disclosure rather than a
 working multi-upload form. **Phase 12 has since added
-`POST /api/investigations/url`**, so the URL tab is now operational; the
-Screenshot and PDF tabs remain disclosed-but-disabled.
+`POST /api/investigations/url`** and **Phase 13 has added
+`POST /api/investigations/image`**, so the URL and Screenshot tabs are
+now operational; the PDF tab remains disclosed-but-disabled.
 
 **Charting.** Recharts is used in exactly one place: risk contribution by severity, built
 from `risk_assessment.factors[].contribution`. No chart is rendered where the API provides
@@ -226,6 +235,82 @@ and the truncation is recorded; no translation is performed
 unavailable, so extraction runs in fallback mode and the run reports
 `PARTIAL`.
 
+### Phase 13 — Screenshot / OCR
+
+**Location:** `backend/app/services/ocr_service.py`,
+`ocr_guards.py`, `backend/app/schemas/ocr.py`, the IMAGE input path in
+`backend/app/graph/nodes.py`, and `frontend/src/hooks/use-image-investigation.ts`.
+
+| Concern | Where |
+| --- | --- |
+| Image request contract | `app/schemas/ocr.py` — `ImageUpload` (bytes, declared type, filename), frozen `ImageSource` and `ImageDocument` |
+| Upload guards | `app/services/ocr_guards.py` — byte budget, declared-media-type allow-list, format map |
+| Recognition | `app/services/ocr_service.py` — lazy Pillow decode, `pytesseract` with a native timeout and a character budget |
+| Graph input | `app/graph/nodes.py::_image_input` — recognises, records `image_source` on the state, feeds recovered text to extraction |
+| API surface | `app/api/routes/investigations.py::create_image_investigation` — `POST /api/investigations/image` (multipart) |
+| Response record | `app/schemas/ocr.py::ImageSource` — the submission and OCR facts; `ImageDocument` — recovered text, truncation, limitation |
+| Fault taxonomy | `app/api/errors.py` — caller faults `422`, disabled capability `503` |
+| Persistence | `image_metadata` JSON column on `investigations`, written by the repository |
+| Frontend | Screenshot mode on `/investigate`, availability read from `GET /api/investigations/limits` |
+
+**What it does.** The endpoint accepts a `multipart/form-data` upload,
+validates it, decodes the image locally, reads it with Tesseract OCR, and
+runs the *existing* pipeline (red flags → extraction → verification →
+evidence → risk) over the recovered text. The response is the standard
+`InvestigationResponse` plus an `image_source` object describing what was
+uploaded and read: filename, declared and detected media types, decoded
+format, byte size, dimensions, OCR language, whether text was recovered,
+truncation facts and the processing time.
+
+**Fault taxonomy — whose fault is it?**
+
+| Fault | Status | Code |
+| --- | --- | --- |
+| Oversized upload, non-image declared type, a format this version does not read, undecodable bytes | 422 | `OCR_IMAGE_TOO_LARGE`, `OCR_IMAGE_TYPE_UNSUPPORTED`, `OCR_IMAGE_UNREADABLE` |
+| OCR capability disabled by configuration (no Tesseract) | 503 | `IMAGE_INPUT_UNAVAILABLE` (capability not wired); `OCR_UNAVAILABLE` is a *limitation*, not an error |
+
+No message ever contains a filesystem path, a provider text or an engine
+detail — wording comes from the fixed `OCR_MESSAGES` / `ENGINE_MESSAGES`
+tables, and tests assert none of that detail reaches a response.
+
+**Degradation, not failure.** A wired graph with no Tesseract is not a
+failure: the run continues and answers `200 PARTIAL` with an
+`OCR_UNAVAILABLE` limitation and `text_recovered: false`. An image that
+decodes but yields no readable text returns `200 PARTIAL` with an
+`OCR_TEXT_NOT_RETRIEVED` limitation. Truncated recovered text is recorded
+as a limitation. An LLM-less deployment returns `PARTIAL` with the familiar
+`EXTRACTION_PARTIAL` / `EXTRACTION_FALLBACK` limitations, exactly as the
+text path does.
+
+### Phase 13 verification
+
+All checks below were executed against the **running** backend.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full backend suite | `cd backend && python -m pytest` | **2890 passed, 4 deselected, 0 failed** |
+| OCR unit tests | `pytest tests/test_ocr_guards.py tests/test_ocr_service.py` | pass (47 tests) |
+| Image endpoint tests | `pytest tests/api/test_image_investigation.py` | pass (14 tests) |
+| OCR unavailable | wired graph, engine path that does not exist | `200 PARTIAL`, `OCR_UNAVAILABLE` limitation, `text_recovered: false`, no fabricated text, no path leakage |
+| Image investigation round-trip | `POST /api/investigations/image` then `GET /api/investigations/{id}` | `200`, `input_type=IMAGE`, `image_source` persisted and returned |
+| OCR text reaches the pipeline | screenshot of "Guaranteed returns" | `GUARANTEED_RETURN` red flag detected, matched the recovered text |
+| TEXT regression | `POST /api/investigations/text` | unchanged: `input_type=TEXT`, `image_source: null` |
+| URL regression | `POST /api/investigations/url` (loopback) | unchanged: 422 `URL_ADDRESS_BLOCKED` (SSRF guard intact) |
+| Upload validation via API | GIF, oversized, garbage bytes, empty file | 422 `OCR_IMAGE_TYPE_UNSUPPORTED` / `OCR_IMAGE_TOO_LARGE` / `OCR_IMAGE_UNREADABLE` |
+| OpenAPI contract | `/openapi.json` | `/api/investigations/image` present; `ImageSource` on the response; 422/503 responses |
+| Frontend | `npm run typecheck` / `lint` / `build` | pass, pass, pass |
+| API client vs live API | `npm run verify:api` | **71 passed, 0 failed** (57 from Phase 12 + 14 image checks) |
+| Live E2E | generated screenshot → OCR → pipeline → persist | 19/19 checks passed |
+
+**Known limitations of the phase** (recorded, not hidden): recognition
+depends on the Tesseract binary being installed and resolvable; OCR accuracy
+is the engine's, not this phase's — a misread label is a wrong input, not a
+fabricated finding; recovered text is truncated at the character budget and
+the truncation is recorded; a blank or text-free image yields no text
+(`OCR_TEXT_NOT_RETRIEVED`); only PNG, JPEG and WebP are read (PDF is
+Phase 14); and in this deployment the LLM is unavailable, so extraction
+runs in fallback mode and the run reports `PARTIAL`.
+
 ### Files Recently Changed
 
 **Phase 12 — URL analysis:**
@@ -260,6 +345,37 @@ frontend/src/types/api.ts                         (+ UrlInvestigationRequest)
 frontend/src/pages/InvestigatePage.tsx            (URL mode)
 frontend/scripts/verify-api-client.mjs            (+ URL wiring checks)
 docs/*                                            (Phase 12 documentation)
+```
+
+**Phase 13 — Screenshot / OCR:**
+
+```
+backend/app/schemas/ocr.py                        (new — image upload/response contracts)
+backend/app/services/ocr_guards.py                (new — upload size/type guards)
+backend/app/services/ocr_service.py               (new — local Pillow decode + pytesseract OCR)
+backend/tests/image_factories.py                  (new — shared image test builders)
+backend/tests/test_ocr_guards.py                  (new)
+backend/tests/test_ocr_service.py                 (new)
+backend/tests/api/test_image_investigation.py     (new — endpoint contract, degradation, round-trip)
+backend/app/graph/nodes.py                        (+ IMAGE input node, IMAGE fault codes)
+backend/app/graph/state.py                        (+ image_source, upload)
+backend/app/graph/context.py                      (+ ocr_service, supports_image)
+backend/app/graph/investigation_graph.py          (+ upload parameter)
+backend/app/schemas/api.py                        (+ ImageSource on the response)
+backend/app/api/routes/investigations.py          (+ POST /api/investigations/image)
+backend/app/api/errors.py                         (+ IMAGE error classes and code sets)
+backend/app/api/adapters.py                       (serialize image_source)
+backend/app/core/config.py                        (+ OCR settings)
+backend/app/models/investigation.py               (+ image_metadata column)
+backend/app/db/session.py                         (additive DDL for image_metadata)
+backend/app/repositories/investigations.py        (persist image_source)
+backend/tests/api/*.py, backend/tests/graph/*.py  (+ IMAGE contract, error, safety, persistence and graph cases)
+frontend/src/hooks/use-image-investigation.ts     (new)
+frontend/src/services/api-client.ts               (+ createImageInvestigation, multipart)
+frontend/src/types/api.ts                         (+ ImageSource, url_source, image_source, image limits)
+frontend/src/pages/InvestigatePage.tsx            (Screenshot mode file picker)
+frontend/scripts/verify-api-client.mjs            (+ image wiring checks)
+docs/*                                            (Phase 13 documentation)
 ```
 
 **Phase 10 — testing and quality hardening:**
@@ -491,8 +607,9 @@ None.
 | PostgreSQL | **not installed** | DDL is verified by compiling every table and index against the PostgreSQL dialect in `tests/db/test_schema.py`, but no live PostgreSQL run has been made |
 | `httpx` | installed | used by `LLMService`, `SerpAPIProvider` and `UrlFetchService` |
 | `langgraph` | **installed, 1.2.12** | `requirements.txt`; verified on CPython 3.14 |
-| Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; `OCRService` not built |
-| `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred |
+| Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; OCR is verified working end to end |
+| `pytesseract` 0.3.13 / `Pillow` 12.2.0 | installed | the image modality's decode + OCR; `python-multipart` is installed too |
+| PyMuPDF / `sentence-transformers` | **not installed** | PyMuPDF is Phase 14; local embeddings were deferred (search is API-only) |
 
 > A repository-root `.env` exists (gitignored, contains real credentials). It is
 > **not** committed. `tests/graph/graph_factories.py`, `tests/api/conftest.py` and

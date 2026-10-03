@@ -110,6 +110,9 @@ def test_every_documented_response_field_exists() -> None:
         "completed_at",
         # Phase 12: null for a TEXT submission, populated for a URL one.
         "url_source",
+        # Phase 13: null unless the input was a screenshot, whose recovered
+        # text and decoded shape are reported so the analysis is checkable.
+        "image_source",
     }
 
 

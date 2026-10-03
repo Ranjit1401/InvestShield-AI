@@ -238,6 +238,12 @@ export interface InvestigationLimits {
   max_text_length?: number;
   languages?: Language[];
   translation_enabled?: boolean;
+  /** Phase 13: the upload byte limit a screenshot may not exceed. */
+  max_upload_bytes?: number;
+  /** Phase 13: the media types the screenshot endpoint accepts. */
+  allowed_image_types?: string[];
+  /** Phase 13: the OCR language pack the engine is asked to use. */
+  ocr_languages?: string;
   [key: string]: JsonValue | undefined;
 }
 
@@ -456,12 +462,63 @@ export interface InvestigationErrorResponse {
  * Investigation payloads
  * ------------------------------------------------------------------ */
 
+/**
+ * Phase 12 provenance for a URL investigation: the page that was
+ * fetched, where it resolved, and what it said about itself. Null
+ * for every other input kind.
+ */
+export interface UrlSource {
+  submitted_url: string;
+  normalized_url: string;
+  final_url: string;
+  hostname: string;
+  resolved_addresses: string[];
+  redirected: boolean;
+  redirect_count: number;
+  page_title: string | null;
+  meta_description: string | null;
+  http_status: number;
+  content_type: string | null;
+  is_https: boolean;
+  charset: string | null;
+  byte_size: number;
+  fetched_at: string;
+}
+
+/**
+ * Phase 13 provenance for a screenshot investigation: the file that
+ * was uploaded, what it decoded to, and what the OCR engine recovered.
+ * Null for every other input kind. The decode-dependent fields
+ * (`detected_content_type`, `format`, `width`, `height`) are `null`
+ * when the image was never decoded, which is the normal state of a run
+ * whose OCR engine is absent.
+ */
+export interface ImageSource {
+  filename: string | null;
+  content_type: string;
+  detected_content_type: string | null;
+  format: string | null;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  ocr_language: string;
+  /** A fact about the OCR run, not a statement about the image's content. */
+  text_recovered: boolean;
+  truncated: boolean;
+  truncated_at: number | null;
+  processed_at: string;
+}
+
 export interface InvestigationResponse {
   investigation_id: string;
   status: InvestigationStatus;
   input_type: InvestigationInputType;
   language: Language;
   current_stage: string;
+  /** Phase 12 provenance for a URL run; `null` otherwise. */
+  url_source?: UrlSource | null;
+  /** Phase 13 provenance for a screenshot run; `null` otherwise. */
+  image_source?: ImageSource | null;
   claims: Claim[];
   entities: Entity[];
   red_flags: RedFlag[];

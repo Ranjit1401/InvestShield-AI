@@ -135,6 +135,7 @@ def serialize_investigation(
         language=language,
         current_stage=state.get("current_stage") or "",
         url_source=state.get("url_source"),
+        image_source=state.get("image_source"),
         claims=list(state.get("claims") or ()),
         entities=list(state.get("entities") or ()),
         red_flags=list(state.get("red_flags") or ()),

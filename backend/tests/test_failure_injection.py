@@ -30,6 +30,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_graph_context_dep
+from app.core.config import Settings
 from app.graph.context import GraphContext, GraphDependencies, RecordingSearchService
 from app.graph.investigation_graph import run_investigation
 from app.graph.state import (
@@ -41,9 +42,11 @@ from app.graph.state import (
 from app.main import create_app
 from app.schemas.evidence import EvidenceBundleResponse
 from app.schemas.extraction import ExtractionMode
+from app.schemas.ocr import ImageUpload
 from app.schemas.risk import RiskAssessment, RiskLevel
 from app.schemas.search import SearchResponse, SearchStatus
 from app.schemas.verification import VerificationResponse, VerificationStatus
+from app.services.ocr_service import OCRService
 from app.services.search import SearchProvider, SearchService
 from app.services.url_fetch import UrlFetchError
 from sqlalchemy.exc import (
@@ -54,6 +57,7 @@ from sqlalchemy.exc import (
 from tests.graph.graph_factories import (
     RecordingEvidenceService,
     RecordingExtractionService,
+    RecordingOcrService,
     RecordingRedFlagEngine,
     RecordingRiskService,
     RecordingSearchProvider,
@@ -63,6 +67,7 @@ from tests.graph.graph_factories import (
     build_flag,
     extraction_with,
     offline_settings,
+    ocr_document,
     real_dependencies,
     result_for,
     sebi_result,
@@ -162,6 +167,24 @@ def _run(context: GraphContext, text: str = REGULATORY_CONTENT):
     return run_investigation(text, input_type=InvestigationInputType.TEXT, context=context)
 
 
+def _image_context(ocr_service: object) -> GraphContext:
+    """Build an offline context whose OCR service is the one given.
+
+    The genuine Phase 1-6 services are wired as usual; only the OCR
+    service is replaced, because that is the one service an image
+    submission exercises and the one whose outcome these tests drive.
+
+    Args:
+        ocr_service: The OCR service to wire in, real or fake.
+
+    Returns:
+        A `GraphContext` with image support and the given OCR service.
+    """
+    dependencies, _ = real_dependencies(offline_settings())
+    dependencies = dataclasses.replace(dependencies, ocr_service=ocr_service)
+    return GraphContext(dependencies=dependencies)
+
+
 def _api_client_for(settings, context: GraphContext) -> TestClient:
     """Build a client running a specific graph context.
 
@@ -225,7 +248,7 @@ class TestInputFailures:
         assert not state.get("claims")
         assert not state.get("risk_assessment")
 
-    @pytest.mark.parametrize("kind", ["IMAGE", "PDF"])
+    @pytest.mark.parametrize("kind", ["PDF"])
     def test_an_unsupported_input_type_is_refused_without_analysing_as_text(
         self, real_context: GraphContext, kind: str
     ) -> None:
@@ -233,7 +256,8 @@ class TestInputFailures:
 
         Analysing an image as text would report findings about something the client
         never submitted as text. `URL` left this set in Phase 12, which began
-        retrieving and analysing it; `TestUrlInputFailures` covers it below.
+        retrieving and analysing it, and `IMAGE` left it in Phase 13; each
+        is covered by its own failure class below.
 
         Args:
             real_context: An offline context with the genuine services.
@@ -494,6 +518,193 @@ class TestUrlInputFailures:
             message = state["errors"][0].message
             assert "example.com" not in message, code
             assert "Traceback" not in message, code
+
+
+class TestImageInputFailures:
+    """Phase 13: a screenshot that cannot be read, and the ways that fails.
+
+    Four things are distinguished, and the distinction is the substance of
+    this class rather than incidental:
+
+    - a submission the **caller** must fix, which is `422` and which
+      retrying unchanged will never clear — no image at all, an image over
+      the byte limit, a media type this version does not read, or bytes
+      that do not decode as an image;
+    - a **deployment** that cannot read screenshots at all, which is `503`
+      and says nothing about the submission;
+    - a **degradation** the run survives — the engine missing, the engine
+      failing, the image yielding no text, or the text being cut at the
+      budget — each recorded as a limitation on a run that still completes;
+    - and the outcome that is none of those: a screenshot read cleanly.
+
+    Collapsing any two of these would tell a caller to do something that
+    cannot work — for instance, retrying a screenshot the deployment's
+    engine cannot read, or treating a missing engine as a reason to stop.
+    """
+
+    def test_a_graph_without_ocr_cannot_read_a_screenshot(self) -> None:
+        """A context with no OCR service is a capability fault, not a bad
+        submission.
+
+        The request was well-formed; the deployment is the reason it
+        cannot be answered, so the caller must not be told to fix it.
+        """
+        dependencies, _ = real_dependencies(offline_settings())
+        context = GraphContext(dependencies=dependencies)
+
+        state = run_investigation(
+            "screenshot.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"\x89PNG\r\n", content_type="image/png"),
+        )
+
+        assert state["errors"][0].code == "IMAGE_INPUT_UNAVAILABLE"
+        assert state.get("risk_assessment") is None
+
+    def test_an_image_submission_without_bytes_is_refused(self) -> None:
+        """Declaring IMAGE but carrying no image is the caller's fault."""
+        context = _image_context(OCRService(settings=offline_settings()))
+
+        state = run_investigation(
+            "screenshot.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+        )
+
+        assert state["errors"][0].code == "OCR_IMAGE_EMPTY"
+        assert state.get("risk_assessment") is None
+
+    def test_an_image_over_the_byte_limit_is_refused(self) -> None:
+        """An image larger than the upload limit is the caller's fault."""
+        settings = Settings(_env_file=None, max_upload_bytes=16)
+        context = _image_context(OCRService(settings=settings))
+
+        state = run_investigation(
+            "big.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"x" * 17, content_type="image/png"),
+        )
+
+        assert state["errors"][0].code == "OCR_IMAGE_TOO_LARGE"
+        assert state.get("risk_assessment") is None
+
+    def test_a_non_image_media_type_is_refused(self) -> None:
+        """A declared media type this version does not read is the caller's."""
+        context = _image_context(OCRService(settings=offline_settings()))
+
+        state = run_investigation(
+            "notes.txt",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"plain text", content_type="text/plain"),
+        )
+
+        assert state["errors"][0].code == "OCR_IMAGE_TYPE_UNSUPPORTED"
+        assert state.get("risk_assessment") is None
+
+    def test_an_image_that_does_not_decode_is_refused(self) -> None:
+        """Bytes that declare an image but do not decode are the caller's."""
+        context = _image_context(OCRService(settings=offline_settings()))
+
+        state = run_investigation(
+            "fake.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"not an image", content_type="image/png"),
+        )
+
+        assert state["errors"][0].code == "OCR_IMAGE_UNREADABLE"
+        assert state.get("risk_assessment") is None
+
+    def test_a_missing_engine_is_a_limitation_not_a_fault(self) -> None:
+        """A deployment without Tesseract still answers, and says so.
+
+        The request was well-formed and the image was accepted; only the
+        engine to read it is absent. That is a gap in the deployment, so
+        the run continues and records the gap rather than ending.
+        """
+        settings = Settings(_env_file=None, tesseract_cmd="/no/such/tesseract")
+        context = _image_context(OCRService(settings=settings))
+
+        state = run_investigation(
+            "screenshot.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"\x89PNG\r\n", content_type="image/png"),
+        )
+
+        assert not state["errors"]
+        assert "OCR_UNAVAILABLE" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+    def test_an_image_that_yields_no_text_is_a_limitation(self) -> None:
+        """A readable image with nothing to say is a limitation, not an error.
+
+        A photograph of a scene, or a screenshot of a chart, can be a
+        perfectly good image that yields no words. Reporting that as a
+        failure would tell the caller their screenshot was broken.
+        """
+        ocr = RecordingOcrService(document=ocr_document())
+        context = _image_context(ocr)
+
+        state = run_investigation(
+            "blank.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"\x89PNG\r\n", content_type="image/png"),
+        )
+
+        assert not state["errors"]
+        assert "OCR_TEXT_NOT_RETRIEVED" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+    def test_recognition_that_fails_is_a_limitation(self) -> None:
+        """An engine that ran and failed is a limitation, not a fault.
+
+        The engine was present and the image decoded, so neither the
+        deployment nor the submission is at fault; the engine failed for
+        a reason the caller cannot act on. The run continues.
+        """
+        ocr = RecordingOcrService(
+            document=ocr_document(
+                limitation="OCR_FAILED", error_type="TesseractError"
+            )
+        )
+        context = _image_context(ocr)
+
+        state = run_investigation(
+            "screenshot.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"\x89PNG\r\n", content_type="image/png"),
+        )
+
+        assert not state["errors"]
+        assert "OCR_FAILED" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
+
+    def test_text_cut_at_the_budget_is_a_limitation(self) -> None:
+        """A screenshot longer than the budget is cut, and the cut is reported.
+
+        The analysis below runs over the cut text, so it must be visible
+        that text was dropped — otherwise the report would be confident
+        about a screenshot it only partly read.
+        """
+        ocr = RecordingOcrService(document=ocr_document(text="a" * 40, truncated=True))
+        context = _image_context(ocr)
+
+        state = run_investigation(
+            "screenshot.png",
+            input_type=InvestigationInputType.IMAGE,
+            context=context,
+            upload=ImageUpload(content=b"\x89PNG\r\n", content_type="image/png"),
+        )
+
+        assert not state["errors"]
+        assert "OCR_CONTENT_TRUNCATED" in {warning.code for warning in state["warnings"]}
+        assert state.get("risk_assessment") is not None
 
 
 class TestExtractionFailures:
