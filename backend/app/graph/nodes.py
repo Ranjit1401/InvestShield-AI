@@ -60,11 +60,16 @@ from app.graph.state import (
 )
 from app.schemas.extraction import ExtractionMode, ExtractionResult
 from app.schemas.verification import VerificationResponse, VerificationStatus
+from app.services.url_fetch import FETCH_MESSAGES, URL_MESSAGES, UrlFetchError
+from app.services.website_extractor import build_analysis_text
 
 logger = get_logger(__name__)
 
 __all__ = [
     "ERROR_CODES",
+    "URL_CLIENT_FAULT_CODES",
+    "URL_CAPABILITY_UNAVAILABLE_CODES",
+    "URL_SITE_FAULT_CODES",
     "WARNING_CODES",
     "evidence_node",
     "extraction_node",
@@ -86,6 +91,8 @@ WARNING_CODES: tuple[str, ...] = (
     "PARTIAL_VERIFICATION",
     "EVIDENCE_UNAVAILABLE",
     "SEARCH_RESULTS_NOT_RECORDED",
+    "URL_CONTENT_TRUNCATED",
+    "PAGE_TEXT_NOT_RETRIEVED",
 )
 
 #: Stable failure codes. Any of these ends the run.
@@ -96,6 +103,56 @@ ERROR_CODES: tuple[str, ...] = (
     "RED_FLAG_DETECTION_FAILED",
     "VERIFICATION_FAILED",
     "RISK_ASSESSMENT_FAILED",
+    "URL_FETCH_UNAVAILABLE",
+    *URL_MESSAGES,
+)
+
+#: URL failures the **caller** must fix. The submission itself is the problem: a
+#: malformed address, a scheme this version will not fetch, or a destination the
+#: SSRF policy refuses. Retrying the same URL unchanged fails identically, so the
+#: API answers `422`.
+#:
+#: Split from `ERROR_CODES` by fault rather than by stage, exactly as Phase 8
+#: splits `INPUT_EMPTY` from the contract violations recorded at the same stage.
+URL_CLIENT_FAULT_CODES: frozenset[str] = frozenset(
+    {
+        "URL_EMPTY",
+        "URL_INVALID",
+        "URL_TOO_LONG",
+        "URL_SCHEME_UNSUPPORTED",
+        "URL_HOST_MISSING",
+        "URL_HOST_TOO_LONG",
+        "URL_CREDENTIALS_NOT_ACCEPTED",
+        "URL_CONTROL_CHARACTERS_NOT_ACCEPTED",
+        "URL_ADDRESS_BLOCKED",
+        "URL_METADATA_ADDRESS_BLOCKED",
+        "URL_METADATA_HOSTNAME_BLOCKED",
+    }
+)
+
+#: URL failures caused by the **submitted site's** behaviour or by our own
+#: inability to reach it once we tried: a DNS failure, a timeout, an error
+#: status, a redirect loop, an oversized or non-HTML response. None of these is
+#: fixed by the caller changing the request, so the API answers `502 Bad Gateway`
+#: — the request was well-formed and the upstream we were asked to read could not
+#: be read.
+#:
+#: `URL_FETCH_DISABLED` is deliberately excluded: nothing was attempted, so
+#: there is no upstream to have failed. It belongs to
+#: `URL_CAPABILITY_UNAVAILABLE_CODES`.
+URL_SITE_FAULT_CODES: frozenset[str] = frozenset(FETCH_MESSAGES) - {
+    "URL_FETCH_DISABLED"
+}
+
+#: URL analysis is not offered by this deployment, so nothing was attempted.
+#:
+#: Two causes, distinguished because they are configured differently: the
+#: feature is switched off in settings, or the graph was built without URL
+#: services at all. Neither is the caller's fault and neither is a defect, so
+#: neither is a `422` or a `500` — the API answers `503 Service Unavailable`,
+#: which is the status that says "this deployment does not do this right now".
+URL_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = frozenset(
+    {"URL_FETCH_DISABLED", "URL_FETCH_UNAVAILABLE"}
 )
 
 #: Fixed wording per limitation. Each says what did not happen, never what it
@@ -141,6 +198,16 @@ WARNING_MESSAGES: dict[str, str] = {
         "query behind each retrieved document could not be traced. Retrieved text "
         "is still shown with its source."
     ),
+    "URL_CONTENT_TRUNCATED": (
+        "The submitted page was larger than this version reads, so only its "
+        "earlier content was analysed. Content later in the page was not."
+    ),
+    "PAGE_TEXT_NOT_RETRIEVED": (
+        "The submitted page was retrieved but no readable text was found in it. "
+        "A page that builds its content with JavaScript often appears this way, "
+        "so the analysis below covers the submitted URL and domain only and not "
+        "the page's visible content."
+    ),
 }
 
 #: Fixed wording per failure. Safe to surface: it describes the pipeline, never
@@ -150,8 +217,9 @@ ERROR_MESSAGES: dict[str, str] = {
         "No content was submitted, so there was nothing to investigate."
     ),
     "INPUT_TYPE_NOT_SUPPORTED": (
-        "This version analyses text input only. The submitted input type was "
-        "recognised but is not analysed, so no investigation was performed."
+        "This version analyses text and URL input. The submitted input "
+        "type was recognised but is not analysed, so no investigation "
+        "was performed."
     ),
     "EXTRACTION_FAILED": (
         "The extraction stage did not complete, so no claims or entities were "
@@ -169,7 +237,25 @@ ERROR_MESSAGES: dict[str, str] = {
         "The risk stage did not complete, so no risk assessment is reported for "
         "this investigation."
     ),
+    "URL_FETCH_UNAVAILABLE": (
+        "URL retrieval is not available in this deployment, so the "
+        "submitted URL was not retrieved and no investigation was "
+        "performed."
+    ),
 }
+
+# Phase 12's refusals are worded where the decision is made — the address policy
+# and the fetch service — and merged in here rather than retyped. That keeps the
+# graph's promise true for every code it can record ("every failure code has fixed
+# wording") without a second copy of these sentences that could drift from the
+# code it describes.
+#
+# Two of these carry a `{placeholder}` for a fact the caller supplied. The
+# placeholder is only ever formatted by the exception that raised it, and `_url_input`
+# surfaces that formatted `message` — never a raw template — so the wording that
+# reaches a caller is always complete. `_error`, which reads this table directly,
+# is only ever called with the graph's own codes.
+ERROR_MESSAGES.update(URL_MESSAGES)
 
 
 # -- helpers -------------------------------------------------------------
@@ -260,6 +346,161 @@ def _warnings_from(statuses: tuple[VerificationStatus, ...]) -> tuple[str, ...]:
 # -- nodes ---------------------------------------------------------------
 
 
+def _url_input(
+    raw_input: str,
+    context: GraphContext,
+) -> dict[str, Any]:
+    """Fetch a submitted URL and turn it into the text the pipeline analyses.
+
+    This is the whole of Phase 12's contribution to the graph. It runs inside
+    `input_node` rather than as a node of its own so that everything downstream
+    — extraction, pattern detection, verification, evidence, risk — is the
+    *existing* machinery operating on the resulting text. A URL submission
+    therefore produces an investigation of exactly the same shape as a text one,
+    and no downstream stage needs to know where the text came from.
+
+    The node stays free of business logic by delegating every decision: the fetch
+    service owns the network and the SSRF policy, the extractor owns HTML parsing,
+    and this function only maps their typed outcomes onto graph vocabulary.
+
+    Args:
+        raw_input: The submitted URL.
+        context: Services and clock.
+
+    Returns:
+        Partial state. On success it carries the composed analysis text as
+        `raw_input`, the `UrlSource` provenance, and any limitation. On refusal
+        it carries an `errors` entry and no analysis text.
+    """
+    stage = GraphStage.INPUT
+    dependencies = context.dependencies
+
+    # One capability, checked once. Fetching without extracting, or extracting
+    # without fetching, is not a configuration this product ships.
+    if not dependencies.supports_url:
+        logger.info("URL submission received by a graph without URL support")
+        return {
+            "input_type": InvestigationInputType.URL.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.URL, raw_input
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (_error(stage, "URL_FETCH_UNAVAILABLE", None),),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "Website investigation is not available in this deployment.",
+                ),
+            ),
+        }
+
+    fetch_service = dependencies.url_fetch_service
+    extractor = dependencies.website_extractor
+    assert fetch_service is not None and extractor is not None  # supports_url
+
+    try:
+        page = fetch_service.fetch(raw_input)
+    except UrlFetchError as exc:
+        # A typed refusal is a normal outcome, not a defect: the URL was
+        # understood and the answer is "no". Its message is fixed per code by
+        # the layer that raised it and carries no socket, TLS or HTTP detail, so
+        # it is safe to surface here rather than restating it in this module.
+        logger.info(
+            "Website retrieval refused",
+            extra={"reason": exc.code},
+        )
+        return {
+            "input_type": InvestigationInputType.URL.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.URL, raw_input
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (
+                GraphError(
+                    code=exc.code,
+                    stage=stage,
+                    message=exc.message,
+                    error_type=None,
+                ),
+            ),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "The submitted website could not be retrieved.",
+                ),
+            ),
+        }
+    except Exception as exc:
+        # Phase 12's fetch service documents that it raises only `UrlFetchError`
+        # for every condition it can anticipate. Anything else escaping is a
+        # contract violation below this layer, so it ends the run rather than
+        # being reported as though the site were merely unavailable.
+        logger.exception("URL fetch service violated its typed-failure contract")
+        return {
+            "input_type": InvestigationInputType.URL.value,
+            "investigation_id": investigation_id_for(
+                InvestigationInputType.URL, raw_input
+            ),
+            "current_stage": stage.value,
+            "started_at": context.clock(),
+            "errors": (
+                _error(stage, "URL_FETCH_UNAVAILABLE", type(exc).__name__),
+            ),
+            "timeline": (
+                _event(
+                    context,
+                    stage,
+                    TimelineStatus.FAILED,
+                    "Website retrieval did not complete as expected.",
+                ),
+            ),
+        }
+
+    document = extractor.extract(page)
+    analysis_text = build_analysis_text(document)
+
+    warnings: list[GraphWarning] = []
+    if page.truncated or document.truncated:
+        warnings.append(_warning(stage, "URL_CONTENT_TRUNCATED"))
+
+    # A page with no readable text is still analysed — the URL and domain are
+    # real evidence and the pattern rules still run over them — but the report
+    # must say that the page's visible content was not covered. This is the
+    # characteristic outcome for a JavaScript-rendered site, and reporting it as
+    # a complete analysis of the page would overstate what was read.
+    if not document.text.strip():
+        warnings.append(_warning(stage, "PAGE_TEXT_NOT_RETRIEVED"))
+
+    return {
+        "input_type": InvestigationInputType.URL.value,
+        "raw_input": analysis_text,
+        "extracted_text": analysis_text,
+        "url_source": document.source,
+        "investigation_id": investigation_id_for(
+            InvestigationInputType.URL, raw_input
+        ),
+        "started_at": context.clock(),
+        "current_stage": stage.value,
+        "warnings": tuple(warnings),
+        "timeline": (
+            _event(
+                context,
+                stage,
+                TimelineStatus.PARTIAL if warnings else TimelineStatus.STARTED,
+                "Website retrieved."
+                if not warnings
+                else "Website retrieved, with limitations.",
+            ),
+        ),
+    }
+
+
 def input_node(state: InvestigationState, context: GraphContext) -> dict[str, Any]:
     """Validate the submission and open the investigation record.
 
@@ -267,6 +508,13 @@ def input_node(state: InvestigationState, context: GraphContext) -> dict[str, An
     Normalization belongs to Phase 2, which already does it, so nothing is
     rewritten or trimmed here — an empty or unusable submission must be visible
     as submitted rather than quietly repaired.
+
+    A `URL` submission is the one exception to "nothing is rewritten": the
+    submitted string is a reference, not content, so `_url_input` retrieves it
+    and the pipeline analyses the retrieved page. The submitted URL itself is
+    preserved in `url_source`, and the investigation id is derived from the
+    submitted URL rather than from the retrieved text, so two submissions of the
+    same address share an id no matter what the site returned that day.
 
     Args:
         state: The incoming state. Requires `raw_input` and `input_type`.
@@ -300,6 +548,9 @@ def input_node(state: InvestigationState, context: GraphContext) -> dict[str, An
                 ),
             ),
         }
+
+    if input_type is InvestigationInputType.URL:
+        return _url_input(raw_input, context)
 
     if input_type is not InvestigationInputType.TEXT:
         logger.info(

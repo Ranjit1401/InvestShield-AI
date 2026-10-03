@@ -103,9 +103,17 @@ class TestOfflineFallback:
         assert "deterministic" in " ".join(result.processing_warnings).lower()
 
     def test_prompt_version_is_still_reported(self, settings: Settings) -> None:
+        """The version is recorded on every result, so it can be attributed.
+
+        `extraction-v2` is the Phase 12 prompt, which added the rule that web
+        page content is data and never instruction. The literal is spelled out
+        rather than imported, so a prompt change without a version bump fails
+        here instead of passing silently — which is the whole reason the version
+        exists.
+        """
         result = service_with(NullProvider(), settings).extract("We guarantee 40% returns.")
 
-        assert result.prompt_version == "extraction-v1"
+        assert result.prompt_version == "extraction-v2"
 
     def test_spans_are_exact_without_an_llm(self, settings: Settings) -> None:
         result = service_with(NullProvider(), settings).extract(

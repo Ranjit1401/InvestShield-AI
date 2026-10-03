@@ -43,6 +43,7 @@ from app.schemas.evidence import EvidenceResponse
 from app.schemas.extraction import ClaimEntityLink, ExtractionMode, ExtractionResult
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment
+from app.schemas.url import UrlSource
 from app.schemas.verification import VerificationResponse, VerificationResult
 
 __all__ = [
@@ -202,8 +203,14 @@ class InvestigationState(TypedDict, total=False):
 
     Attributes:
         input_type: Declared input kind, one of `InvestigationInputType`.
-        raw_input: Exactly what the caller submitted. Red-flag spans are anchored
-            to this string, so it is never replaced by a normalized variant.
+        raw_input: Exactly what the caller submitted, or — for a URL submission —
+            the analysis text composed from the retrieved page. Red-flag spans are
+            anchored to this string, so it is never replaced by a normalized
+            variant. For `URL` it is the *derived* text the pipeline analysed, not
+            the submitted URL; `url_source` holds the submitted URL itself.
+        url_source: Phase 12 provenance for a URL submission — the submitted URL,
+            the host contacted, the addresses it resolved to, and whether the
+            response was truncated. Absent for every other input kind.
         extracted_text: The text Phase 2 worked from, which may be a normalized
             form of `raw_input`. Kept for traceability of Phase 2's own work.
         investigation_id: Deterministic digest of the submitted input. Derived,
@@ -234,6 +241,7 @@ class InvestigationState(TypedDict, total=False):
 
     input_type: str
     raw_input: str
+    url_source: UrlSource | None
     extracted_text: str
     investigation_id: str
     started_at: datetime

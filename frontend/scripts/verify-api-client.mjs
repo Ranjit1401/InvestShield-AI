@@ -62,6 +62,12 @@ check(
   JSON.stringify(limits.supported_input_types),
 );
 check("max_text_length present", typeof limits.max_text_length === "number");
+check(
+  "reports URL as supported",
+  Array.isArray(limits.supported_input_types) && limits.supported_input_types.includes("URL"),
+  JSON.stringify(limits.supported_input_types),
+);
+check("max_url_length present", typeof limits.max_url_length === "number");
 
 console.log("\n== getInvestigations (paging) ==");
 const page1 = await client.getInvestigations({ limit: 1, offset: 0 });
@@ -179,6 +185,44 @@ await expectApiError(
     }
   },
   (e) => e.kind === "network" && e.code === "BACKEND_UNREACHABLE",
+);
+
+console.log("\n== url investigation wiring ==");
+
+// These exercise `POST /api/investigations/url` against the real API
+// without reaching the internet: the SSRF guard and the scheme check
+// both refuse before any socket is opened, so the response is produced
+// by the backend's own policy rather than by whatever the network did.
+
+await expectApiError(
+  "blocked loopback url rejected",
+  () => client.createUrlInvestigation({ url: "http://127.0.0.1/" }),
+  (e) => e.status === 422 && e.code === "URL_ADDRESS_BLOCKED",
+);
+
+await expectApiError(
+  "metadata url rejected",
+  () =>
+    client.createUrlInvestigation({ url: "https://169.254.169.254/latest/" }),
+  (e) => e.status === 422 && e.code === "URL_METADATA_ADDRESS_BLOCKED",
+);
+
+await expectApiError(
+  "unsupported scheme url rejected",
+  () => client.createUrlInvestigation({ url: "ftp://example.com/" }),
+  (e) => e.status === 422 && e.code === "URL_SCHEME_UNSUPPORTED",
+);
+
+await expectApiError(
+  "empty url rejected",
+  () => client.createUrlInvestigation({ url: "   " }),
+  (e) => e.isValidation,
+);
+
+await expectApiError(
+  "over-length url rejected",
+  () => client.createUrlInvestigation({ url: "https://x/" + "a".repeat(5000) }),
+  (e) => e.isValidation,
 );
 
 console.log(`\n${pass} passed, ${fail} failed`);

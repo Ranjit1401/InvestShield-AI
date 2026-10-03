@@ -74,6 +74,36 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024
     allowed_upload_types: str = "image/png,image/jpeg,image/webp,application/pdf"
 
+    # ---------- URL fetch (Phase 12) ----------
+    # URL investigation is the first stage allowed to make an outbound request
+    # to an address the user named, so every limit here is a security limit as
+    # much as a resource one. They are configuration rather than constants so an
+    # operator can tighten them without a code change, and so a test can drive
+    # the boundaries without waiting for a real slow response.
+    #
+    # Timeouts are deliberately short. An investigation is a synchronous HTTP
+    # request; a page that has not answered in a few seconds is a limitation to
+    # record, not a client to hang on.
+    url_fetch_enabled: bool = True
+    url_fetch_connect_timeout_seconds: float = 5.0
+    url_fetch_read_timeout_seconds: float = 10.0
+    url_fetch_total_timeout_seconds: float = 20.0
+    # Bounded so a redirect chain cannot be used to exhaust the request budget
+    # or to hop through a checked host to reach an unchecked one.
+    url_fetch_max_redirects: int = 3
+    # Applied while the body is being read, not after it has been buffered, so
+    # an oversized page is refused before it is fully downloaded.
+    url_fetch_max_bytes: int = 2 * 1024 * 1024
+    url_fetch_user_agent: str = "InvestShieldAI/1.0"
+    # Only these schemes are fetched. `file:`, `ftp:`, `data:` and
+    # `javascript:` are refused rather than normalised away.
+    url_fetch_allowed_schemes: str = "http,https"
+    url_fetch_allowed_content_types: str = "text/html,application/xhtml+xml"
+    # Upper bound on the normalised text handed to extraction. Longer pages are
+    # truncated with a recorded limitation, so the pipeline never claims to have
+    # read a page it only saw part of.
+    url_extraction_max_chars: int = 20_000
+
     # ---------- Risk engine ----------
     # Heuristic indicator weights (Phase 1). These are tuning knobs for the
     # explainable risk score. They are NOT scientifically validated
@@ -146,6 +176,24 @@ class Settings(BaseSettings):
     def allowed_upload_type_list(self) -> list[str]:
         """Allowed upload MIME types parsed from the comma-separated setting."""
         return [item.strip().lower() for item in self.allowed_upload_types.split(",") if item.strip()]
+
+    @property
+    def url_fetch_scheme_list(self) -> list[str]:
+        """URL schemes the fetcher will follow, lowercased and without colons."""
+        return [
+            item.strip().lower().rstrip(":")
+            for item in self.url_fetch_allowed_schemes.split(",")
+            if item.strip()
+        ]
+
+    @property
+    def url_fetch_content_type_list(self) -> list[str]:
+        """Content types treated as HTML pages, lowercased and without parameters."""
+        return [
+            item.strip().lower().split(";", 1)[0].strip()
+            for item in self.url_fetch_allowed_content_types.split(",")
+            if item.strip()
+        ]
 
     @property
     def is_sqlite(self) -> bool:

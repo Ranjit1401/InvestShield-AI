@@ -37,6 +37,7 @@ from tests.persistence_factories import MESSY_CONTENT, REGULATORY_CONTENT
 #: Prefixes the API serves. Built rather than repeated, so a prefix change is a
 #: one-line edit here instead of a silent `404` in every assertion.
 TEXT_URL = "/api/investigations/text"
+URL_URL = "/api/investigations/url"
 TYPED_URL = "/api/investigations"
 LIMITS_URL = "/api/investigations/limits"
 HEALTH_URL = "/api/health"
@@ -312,18 +313,21 @@ class TestInvalidSubmissions:
     ) -> None:
         """Each recognised-but-unanalysed kind is refused with a `422` naming what works.
 
+        `URL` left this set in Phase 12, which began analysing it. It is excluded
+        rather than deleted from the product's vocabulary.
+
         Args:
             api_client: A client running the real graph, offline.
         """
-        for kind in ("URL", "IMAGE", "PDF"):
+        for kind in ("IMAGE", "PDF"):
             response = api_client.post(
-                TYPED_URL, json={"input_type": kind, "text": "https://example.invalid/x"}
+                TYPED_URL, json={"input_type": kind, "text": "some content"}
             )
 
             assert response.status_code == 422, f"{kind}: {response.text}"
             error = _error_body(response)
             assert error["code"] == "INPUT_TYPE_NOT_SUPPORTED"
-            assert error["detail"]["supported_input_types"] == ["TEXT"]
+            assert error["detail"]["supported_input_types"] == ["TEXT", "URL"]
             assert error["detail"]["submitted_input_type"] == kind
 
     def test_an_invented_input_type_is_refused(self, api_client: TestClient) -> None:
@@ -489,8 +493,9 @@ class TestDiscoveryEndpoints:
 
         assert response.status_code == 200
         body = response.json()
-        assert body["supported_input_types"] == ["TEXT"]
+        assert body["supported_input_types"] == ["TEXT", "URL"]
         assert body["max_text_length"] == 20_000
+        assert body["max_url_length"] == 2048
         assert set(body["languages"]) == {"en", "hi", "mr"}
         assert body["translation_enabled"] is False
 
@@ -498,6 +503,17 @@ class TestDiscoveryEndpoints:
         # advertised kinds are exactly the ones a submission can be accepted as.
         assert api_client.post(TEXT_URL, json={"text": "a" * body["max_text_length"]}).status_code == 200
         assert api_client.post(TEXT_URL, json={"text": "a" * (body["max_text_length"] + 1)}).status_code == 422
+
+        # A URL is bounded as a URL, not as prose, and the advertised figure is
+        # the one the URL endpoint enforces. This app's graph is built without
+        # URL services, so a URL the schema accepts is refused further in with a
+        # `503` — which is what separates "too long" (422, the caller's) from
+        # "this deployment cannot do that" (503, not the caller's).
+        prefix = "https://example.com/"
+        within = prefix + "a" * (body["max_url_length"] - len(prefix))
+        assert len(within) == body["max_url_length"]
+        assert api_client.post(URL_URL, json={"url": within}).status_code == 503
+        assert api_client.post(URL_URL, json={"url": within + "a"}).status_code == 422
 
     def test_health_is_reachable_without_an_investigation(
         self, api_client: TestClient
@@ -623,6 +639,9 @@ _DOCUMENTED_RESPONSE_KEYS = frozenset(
         "errors",
         "started_at",
         "completed_at",
+        # Phase 12: null for a `TEXT` submission, populated for a `URL` one.
+        # Present in both so a client can read one key regardless of kind.
+        "url_source",
     }
 )
 

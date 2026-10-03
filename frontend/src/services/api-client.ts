@@ -27,6 +27,7 @@ import type {
   InvestigationResponse,
   ListInvestigationsParams,
   TextInvestigationRequest,
+  UrlInvestigationRequest,
   ValidationIssue,
 } from "@/types/api";
 import { isFailureDetail } from "@/types/api";
@@ -355,9 +356,21 @@ export function getLimits(signal?: AbortSignal): Promise<InvestigationLimits> {
 }
 
 /**
- * `POST /api/investigations/text` — the only input type the backend processes
- * today. URL, image and PDF are deferred to Phases 12-14 and are not called
- * from anywhere in this client.
+ * `POST /api/investigations/url` — submit a URL for investigation.
+ */
+export function createUrlInvestigation(
+  payload: UrlInvestigationRequest,
+  signal?: AbortSignal,
+): Promise<InvestigationResponse> {
+  return request<InvestigationResponse>("/api/investigations/url", {
+    method: "POST",
+    body: payload,
+    signal,
+  });
+}
+
+/**
+ * `POST /api/investigations/text` — submit text for investigation.
  */
 export function createTextInvestigation(
   payload: TextInvestigationRequest,

@@ -7,6 +7,8 @@ endpoints — stores it. No threshold, score, verdict or wording is decided here
 - `POST /api/investigations/text` — the documented convenience form. `input_type`
   is fixed to `TEXT`, so a client cannot accidentally submit a URL and have it
   analysed as prose.
+- `POST /api/investigations/url` — the same convenience for a website. `input_type`
+  is fixed to `URL`, so a client cannot accidentally submit prose as an address.
 - `POST /api/investigations` — the typed form, where `input_type` is explicit.
 - `GET /api/investigations/{id}` — a stored run, rebuilt and passed to the **same**
   adapter the write path used.
@@ -39,7 +41,12 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.api.adapters import serialize_investigation
 from app.api.deps import get_graph_context_dep, get_repository_dep
-from app.api.errors import ApiError, InvestigationNotFound, raise_for_graph_errors
+from app.api.errors import (
+    SUPPORTED_INPUT_TYPES,
+    ApiError,
+    InvestigationNotFound,
+    raise_for_graph_errors,
+)
 from app.core.logging import get_logger
 from app.graph.context import GraphContext
 from app.graph.investigation_graph import run_investigation
@@ -59,7 +66,9 @@ from app.schemas.api import (
     InvestigationSummaryResponse,
     Language,
     TextInvestigationRequest,
+    UrlInvestigationRequest,
 )
+from app.schemas.url import MAX_URL_LENGTH
 
 logger = get_logger(__name__)
 
@@ -68,6 +77,21 @@ router = APIRouter(tags=["investigations"])
 _ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     422: {"model": ErrorEnvelope, "description": "The submission could not be accepted."},
     500: {"model": ErrorEnvelope, "description": "A stage broke its documented contract."},
+}
+
+#: Same as `_ERROR_RESPONSES` plus the site-fault case, so a caller reading the
+#: OpenAPI document can see that a URL investigation has one more failure mode
+#: than a text one, and which status it produces.
+_URL_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
+    **_ERROR_RESPONSES,
+    502: {
+        "model": ErrorEnvelope,
+        "description": "The submitted site could not be retrieved.",
+    },
+    503: {
+        "model": ErrorEnvelope,
+        "description": "Website investigation is not available in this deployment.",
+    },
 }
 
 _RETRIEVE_RESPONSES: dict[int | str, dict[str, object]] = {
@@ -186,11 +210,12 @@ def create_investigation(
 ) -> InvestigationResponse:
     """Investigate a submission whose input kind is declared explicitly.
 
-    Only `TEXT` is analysed by this version. `URL`, `IMAGE` and `PDF` are
-    recognised and refused with a `422` naming the kinds that do work, rather
-    than being analysed as text — the product commits to all four inputs, but the
-    ingestion for the other three is later work, and quietly treating a URL as
-    prose would report an analysis of something the client never sent.
+    `TEXT` and `URL` are analysed by this version; for `URL` the `text` field
+    carries the address. `IMAGE` and `PDF` are recognised and refused with a
+    `422` naming the kinds that do work, rather than being analysed as text — the
+    product commits to all four inputs, but that ingestion is later work, and
+    quietly treating an image or a PDF as prose would report an analysis of
+    something the client never sent.
 
     A refused submission is **not** stored. There is no investigation to keep,
     and writing a row for a request that was rejected would fill the history with
@@ -199,6 +224,50 @@ def create_investigation(
     return _investigate(
         payload.text,
         payload.input_type,
+        payload.language,
+        context,
+        repo,
+    )
+
+
+@router.post(
+    "/investigations/url",
+    response_model=InvestigationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Investigate a submitted website",
+    responses=_URL_ERROR_RESPONSES,
+)
+def investigate_url(
+    payload: UrlInvestigationRequest,
+    context: Annotated[GraphContext, Depends(get_graph_context_dep)],
+    repo: Annotated[InvestigationRepository, Depends(get_repository_dep)],
+) -> InvestigationResponse:
+    """Retrieve the submitted page and return the investigation of its content.
+
+    The response is the **same shape** as a text investigation, and that is the
+    point. The submitted URL is retrieved, its readable content becomes the text
+    the pipeline analyses, and every downstream stage is the existing Phase 1-6
+    machinery running unchanged. A client that already renders a text result
+    renders this one without a special case.
+
+    What is new is `url_source` in the response: the submitted URL, the host
+    contacted, the addresses it resolved to, whether it redirected, and whether
+    the page was truncated. That provenance is what makes a website result
+    checkable — a reader can see exactly which host produced the analysis.
+
+    Returns `200` even for a partial run. A page that is too large, or one whose
+    content is built with JavaScript and therefore has no readable text, is a
+    real result with a stated limitation rather than a refusal.
+
+    Fails with `422` when the submission itself is the problem — a malformed
+    address, a scheme that will not be fetched, or a destination that is not a
+    public internet address — with `502` when the request was fine but the site
+    could not be read, and with `503` when this deployment does not offer website
+    investigation at all. None of those is `500`: nothing has broken.
+    """
+    return _investigate(
+        payload.url,
+        InvestigationInputType.URL,
         payload.language,
         context,
         repo,
@@ -222,8 +291,9 @@ def investigation_limits() -> dict[str, object]:
     about a missing investigation.
     """
     return {
-        "supported_input_types": [InvestigationInputType.TEXT.value],
+        "supported_input_types": [kind.value for kind in SUPPORTED_INPUT_TYPES],
         "max_text_length": MAX_TEXT_LENGTH,
+        "max_url_length": MAX_URL_LENGTH,
         "languages": [language.value for language in Language],
         "translation_enabled": False,
     }

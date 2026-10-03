@@ -12,7 +12,9 @@ document is the contract; the frontend client mirrors it.
 > taken from the **running** FastAPI application (`app.openapi()` plus the enums in
 > `app/schemas/*`) rather than transcribed from this prose, so where the two ever
 > disagree, the generated types and the code are authoritative. The frontend
-> adapts to the API; it does not redefine it, and Phase 11 changed no contract.
+> adapts to the API; it does not redefine it. Phase 11 changed no contract;
+> Phase 12 changed it additively (a new endpoint, a new `url_source` field, a
+> new limits field), which is why the mirror still holds.
 
 ---
 
@@ -25,11 +27,12 @@ document is the contract; the frontend client mirrors it.
 | 202 | Investigation accepted and processing | **withdrawn**, see below |
 | 400 | Malformed request | not used |
 | 404 | Investigation not found | Phase 9 |
-| 413 | Upload exceeds size limit | Phase 12 |
-| 422 | Validation error (empty text, over-length, unanalysed input type) | yes |
+| 413 | Upload exceeds size limit | Phases 13–14 |
+| 422 | Validation error (empty text, over-length, unanalysed input type, SSRF-blocked URL) | yes (URL in Phase 12) |
 | 429 | Upstream provider rate limit | not used — a rate limit is a degradation, not a client error (D-009) |
 | 500 | A stage broke its documented contract | yes |
-| 503 | A required service is unavailable | not used — same reason as 429 |
+| 502 | The submitted site itself failed (DNS, TLS, timeout, HTTP error, wrong content type) | Phase 12 |
+| 503 | A required service is unavailable (or a capability is disabled by configuration) | Phase 12 for `URL_FETCH_UNAVAILABLE`; see below for the general rule |
 
 Error body shape:
 
@@ -50,13 +53,13 @@ investigation failures it is a `FailureDetail`:
 {
   "error": {
     "code": "INPUT_TYPE_NOT_SUPPORTED",
-    "message": "This version analyses text input only. The submitted input type was recognised but is not analysed, so no investigation was performed.",
+    "message": "This version analyses text and URL input. The submitted input type was recognised but is not analysed, so no investigation was performed.",
     "detail": {
       "errors": [
         { "code": "INPUT_TYPE_NOT_SUPPORTED", "stage": "input", "error_type": null }
       ],
-      "submitted_input_type": "URL",
-      "supported_input_types": ["TEXT"]
+      "submitted_input_type": "IMAGE",
+      "supported_input_types": ["TEXT", "URL"]
     }
   }
 }
@@ -66,15 +69,17 @@ Three rules govern every failing endpoint:
 
 - **One shape.** Every failure uses the envelope above, so a client handles one
   error contract rather than learning a new one per route.
-- **The status says whose fault it is.** `INPUT_EMPTY` and
-  `INPUT_TYPE_NOT_SUPPORTED` are `422` — the caller must fix them. Every other
-  recorded graph error is a stage breaking a contract that documented it never
-  would, and is `500`.
+- **The status says whose fault it is.** `INPUT_EMPTY`,
+  `INPUT_TYPE_NOT_SUPPORTED` and the URL guard refusals are `422` — the
+  caller must fix them. A site that cannot be fetched is `502` — the
+  request was fine, the site failed. Every other recorded graph error is a
+  stage breaking a contract that documented it never would, and is `500`.
 - **A degraded run is not a failure.** When search, the LLM or extraction is
   unavailable the request still returns `200` with `status: PARTIAL` and the
-  limitation listed. Failing the request would make the product look broken at the
-  exact moment it is correctly reporting that it checked less than it wanted to
-  (D-009).
+  limitation listed. Failing the request would make the product look broken at
+  the exact moment it is correctly reporting that it checked less than it wanted
+  (D-009). The same rule covers a page whose text cannot be retrieved: the run
+  continues with a `PAGE_TEXT_NOT_RETRIEVED` warning.
 
 `message` and `detail` never contain a provider response, a stack trace or a
 connection string — only the graph's own fixed wording and, where relevant, an
@@ -210,8 +215,9 @@ than after being refused. Needs no investigation and never fails.
 
 ```json
 {
-  "supported_input_types": ["TEXT"],
+  "supported_input_types": ["TEXT", "URL"],
   "max_text_length": 20000,
+  "max_url_length": 2048,
   "languages": ["en", "hi", "mr"],
   "translation_enabled": false
 }
@@ -270,10 +276,16 @@ The shape both `POST` endpoints return. Generated from
   ],
   "errors": [],
 
+  "url_source": null,
+
   "started_at": "2026-10-01T00:00:00Z",
   "completed_at": "2026-10-01T00:00:04Z"
 }
 ```
+
+`url_source` is present on every response and is `null` for `TEXT`
+investigations. For a URL investigation it describes what was fetched
+(Phase 12):
 
 ### Fields the API layer owns
 
@@ -291,6 +303,7 @@ than a type error (D-038).
 | `limitations` | Deduplicated warning **codes**, first-seen order. Branch on these |
 | `warnings` | The same limitations, human-readable, with the stage that recorded each |
 | `errors` | Recorded failures. Any entry means `status: FAILED` |
+| `url_source` | URL investigations only: what was fetched (submitted/normalized/final URL, hostname, resolved addresses, redirect facts, status, content type, TLS, charset, byte size, page title, meta description, fetch time). `null` for `TEXT` |
 | `started_at` / `completed_at` | Wall-clock metadata |
 | `language` | Echo of the request. No message is translated |
 
@@ -312,12 +325,24 @@ Stable codes, from `app/graph/nodes.py`:
 
 `INPUT_TYPE_NOT_ANALYSED`, `EXTRACTION_FALLBACK`, `EXTRACTION_PARTIAL`,
 `NO_CLAIMS_EXTRACTED`, `NO_RED_FLAGS_DETECTED`, `SEARCH_UNAVAILABLE`,
-`PARTIAL_VERIFICATION`, `EVIDENCE_UNAVAILABLE`, `SEARCH_RESULTS_NOT_RECORDED`.
+`PARTIAL_VERIFICATION`, `EVIDENCE_UNAVAILABLE`, `SEARCH_RESULTS_NOT_RECORDED`,
+`URL_CONTENT_TRUNCATED`, `PAGE_TEXT_NOT_RETRIEVED`.
 
 Stable failure codes:
 
 `INPUT_EMPTY`, `INPUT_TYPE_NOT_SUPPORTED`, `EXTRACTION_FAILED`,
 `RED_FLAG_DETECTION_FAILED`, `VERIFICATION_FAILED`, `RISK_ASSESSMENT_FAILED`.
+
+Stable URL fault codes (Phase 12), answered before the graph runs.
+Caller faults — `422`: `URL_EMPTY`, `URL_INVALID`, `URL_TOO_LONG`,
+`URL_SCHEME_UNSUPPORTED`, `URL_HOST_MISSING`, `URL_HOST_TOO_LONG`,
+`URL_CREDENTIALS_NOT_ACCEPTED`, `URL_CONTROL_CHARACTERS_NOT_ACCEPTED`,
+`URL_ADDRESS_BLOCKED`, `URL_METADATA_ADDRESS_BLOCKED`,
+`URL_METADATA_HOSTNAME_BLOCKED`. Site faults — `502`:
+`URL_DNS_FAILED`, `URL_FETCH_FAILED`, `URL_TIMEOUT`,
+`URL_TOO_MANY_REDIRECTS`, `URL_HTTP_ERROR`, `URL_CONTENT_TOO_LARGE`,
+`URL_CONTENT_TYPE_UNSUPPORTED`. Capability faults — `503`:
+`URL_FETCH_DISABLED`, `URL_FETCH_UNAVAILABLE`.
 
 ### `status` is derived from the timeline, not the warnings
 
@@ -332,14 +357,89 @@ right distinction, so the adapter reads those rather than re-deciding (D-037).
 
 ---
 
-## POST /api/investigations/url — *not implemented*
+## POST /api/investigations/url
 
-Shorthand for `input_type = URL`. The server would fetch and analyse the page.
-SSRF guards apply. **Phase 12.**
+Shorthand for `input_type = URL`. **Implemented in Phase 12; stores its
+result like the text endpoint.** The server fetches the submitted page
+under an SSRF guard, extracts its visible text, and runs the standard
+pipeline over that text.
 
-Phase 8 refuses `URL` with `422` `INPUT_TYPE_NOT_SUPPORTED` rather than analysing
-the string as prose. The product commits to this endpoint; this version does not
-have the crawler behind it.
+**Request**
+
+```json
+{ "url": "https://example.com/investment", "language": "en" }
+```
+
+`url` is required, 1–2048 characters, and must be `http` or `https`.
+Unknown fields are rejected.
+
+**Guards, in order.** Syntax and length → scheme → host → credentials →
+control characters → address policy (every address the connection would
+actually reach, including each redirect hop and every name a hostname
+resolves to). The policy is an allowlist of global unicast space:
+private, loopback, link-local and metadata addresses are refused, as are
+obfuscated IPv4 literals (`127.1`, `0x7f000001`, `2130706433`) and
+hostnames that *resolve* inward (`localhost`, `ip-127-0-0-1.sslip.io`).
+
+**Fetch budget.** One pinned connection per redirect hop, at most 3
+redirects, at most 2 MiB of body, a 5-second connect timeout, a
+10-second read timeout and a 20-second total deadline.
+Non-HTML content types are refused. Over-budget content is truncated and
+the truncation is recorded as a `URL_CONTENT_TRUNCATED` warning.
+
+**200 Response** — the standard `InvestigationResponse`, with
+`input_type: "URL"` and `url_source` describing the fetch:
+
+```json
+{
+  "investigation_id": "inv_3f2b1c9e4a7d8e01",
+  "status": "PARTIAL",
+  "input_type": "URL",
+  "url_source": {
+    "submitted_url": "https://example.com/investment",
+    "normalized_url": "https://example.com/investment",
+    "final_url": "https://example.com/investment",
+    "hostname": "example.com",
+    "resolved_addresses": ["93.184.216.34"],
+    "redirected": false,
+    "redirect_count": 0,
+    "page_title": "Example Investment",
+    "meta_description": null,
+    "http_status": 200,
+    "content_type": "text/html",
+    "is_https": true,
+    "charset": "UTF-8",
+    "byte_size": 577,
+    "fetched_at": "2026-10-03T00:00:04Z"
+  },
+  …the rest of the response, unchanged…
+}
+```
+
+Every `url_source` field is either a fact about the HTTP exchange
+or a string the page published about itself. None of them is a
+judgement: `page_title` is what the page called itself, `is_https`
+is a transport fact, and neither implies anything about
+legitimacy (D-055). A page whose visible text is empty still runs
+the pipeline and returns `200` with `status: PARTIAL` and a
+`PAGE_TEXT_NOT_RETRIEVED` warning — an unreadable page is a
+limitation, not a failure (D-009).
+
+**422** for caller faults: empty, over-length, invalid, non-http(s)
+scheme, embedded credentials, control characters, and every SSRF
+refusal. **502** for site faults: DNS failure, connection failure,
+timeout, too many redirects, non-2xx HTTP status, over-budget content
+and unsupported content type. **503** when fetching is disabled by
+configuration. The taxonomy answers *whose fault it is* — a blocked
+destination is the caller's mistake; a dead site is not (D-054).
+
+No `message` or `detail` ever carries a socket error, TLS diagnostic,
+resolved address, response header or provider text; wording comes from
+the fixed `URL_MESSAGES` table, and tests plant real-shaped failures to
+assert it.
+
+**The domain itself is never labelled malicious.** The pipeline analyses
+claims *in* the page; it does not score the hostname (D-006, D-020).
 
 ---
 
@@ -362,7 +462,7 @@ Screenshot or PDF upload.
 **503** `OCR_UNAVAILABLE` when an image is submitted but OCR is not installed —
 *unless* Phase 8 is in force, in which case `IMAGE` and `PDF` are refused with
 `422` up front, before any availability check, because there is no ingestion path
-to be unavailable. **Phase 12.**
+to be unavailable. **Phases 13–14.**
 
 ---
 
@@ -558,12 +658,14 @@ Guarantees a client may rely on:
 | `GET /api/investigations/limits` | 8 | Implemented |
 | `GET /api/investigations/{id}` | 9 | Implemented |
 | `GET /api/investigations` | 9 | Implemented |
-| `POST /api/investigations/url` | 8 / 12 | Planned |
-| `POST /api/investigations/upload` | 8 / 13 / 14 | Planned |
+| `POST /api/investigations/url` | 12 | Implemented |
+| `POST /api/investigations/upload` | 13 / 14 | Planned |
 
 Phase 8 built the two POST endpoints and answered them from memory. Phase 9 added
 the store; both POSTs now persist what they return, and the response shape is
-unchanged, so a client written against Phase 8 keeps working.
+unchanged, so a client written against Phase 8 keeps working. Phase 12 added the
+URL endpoint and the `url_source` field — additive only: a client that ignores
+`url_source` and reads `input_type: "TEXT"` responses is unaffected.
 
 The `risk_*` fields in the two response examples below are Phase 6 contracts:
 `risk_score` is bounded by `risk_score_ceiling` (100), so a response can never
@@ -966,11 +1068,11 @@ reading `ARCHITECTURE.md` §2.3d and `app/graph/state.py` alongside this section
 | Endpoint | Status |
 | --- | --- |
 | `GET /api/health` | implemented (Phase 0, database probe fixed in Phase 8) |
-| `POST /api/investigations` | implemented, `TEXT` only |
+| `POST /api/investigations` | implemented — `TEXT` and `URL` (for `URL` the `text` field carries the address) |
 | `POST /api/investigations/text` | implemented |
 | `GET /api/investigations/limits` | implemented |
-| `POST /api/investigations/url` | **not implemented** — `422` (Phase 12) |
-| `POST /api/investigations/upload` | **not implemented** — `422` (Phase 12) |
+| `POST /api/investigations/url` | implemented (Phase 12) |
+| `POST /api/investigations/upload` | **not implemented** — `422` (Phases 13–14) |
 | `GET /api/investigations/{id}` | implemented (Phase 9) |
 | `GET /api/investigations` | implemented (Phase 9) |
 

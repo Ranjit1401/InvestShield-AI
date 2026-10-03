@@ -150,19 +150,30 @@ def test_a_refused_submission_is_not_stored(
 def test_an_unsupported_input_type_is_not_stored(
     stored_client: tuple[TestClient, InvestigationRepository],
 ) -> None:
-    """A refused `URL` submission is not analysed and not stored either.
+    """A refused submission is not analysed and not stored either.
 
-    Storing it would produce a history entry describing a text analysis of
-    something the client never sent — a run that cannot have happened.
+    Storing it would produce a history entry describing an analysis of something
+    the client never sent — a run that cannot have happened.
+
+    Two refusals are checked, because Phase 12 gave URL failures a third status
+    and each must leave the history untouched:
+
+    - an unsupported kind, refused with `422`;
+    - a URL this deployment cannot analyse, refused with `503`.
+
+    A `URL` submission is deliberately not in the first case any more. It left
+    that set in Phase 12, and it is now refused by capability rather than by kind.
     """
     client, repository = stored_client
-    response = client.post(
-        "/api/investigations",
-        json={"input_type": "URL", "text": "https://example.invalid/promo"},
-    )
 
-    assert response.status_code == 422
-    assert repository.list_page(limit=20)[1] == 0
+    for body, expected in (
+        ({"input_type": "IMAGE", "text": "some content"}, 422),
+        ({"input_type": "URL", "text": "https://example.invalid/promo"}, 503),
+    ):
+        response = client.post("/api/investigations", json=body)
+
+        assert response.status_code == expected, f"{body}: {response.text}"
+        assert repository.list_page(limit=20)[1] == 0
 
 
 # -- retrieval -----------------------------------------------------------
@@ -433,7 +444,7 @@ def test_the_limits_endpoint_is_not_shadowed_by_the_id_route(
     response = persisted_client.get("/api/investigations/limits")
 
     assert response.status_code == 200
-    assert response.json()["supported_input_types"] == ["TEXT"]
+    assert response.json()["supported_input_types"] == ["TEXT", "URL"]
 
 
 def test_phase_eight_response_shape_is_unchanged(
@@ -466,6 +477,8 @@ def test_phase_eight_response_shape_is_unchanged(
         "errors",
         "started_at",
         "completed_at",
+        # Phase 12: null for a TEXT run, populated for a URL one.
+        "url_source",
     }
 
 

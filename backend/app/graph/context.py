@@ -52,7 +52,9 @@ from app.services.extraction_service import ExtractionService
 from app.services.red_flag_engine import RedFlagEngine
 from app.services.risk import RiskService
 from app.services.search import SearchService
+from app.services.url_fetch import URLFetchService
 from app.services.verification import VerificationService
+from app.services.website_extractor import WebsiteContentExtractor
 
 __all__ = [
     "GraphContext",
@@ -210,6 +212,14 @@ class GraphDependencies:
             `None` when no recorder is installed. Absent recorder means the
             evidence stage cannot see which query surfaced which document, which
             the graph reports as a limitation rather than hiding.
+        url_fetch_service: Phase 12 `URLFetchService`, or `None` when the graph
+            was built without URL support. Optional rather than required so that
+            a text-only deployment — and the existing text-only tests — need no
+            URL wiring, and so its absence is a value the input stage can report
+            rather than an `AttributeError` mid-run.
+        website_extractor: Phase 12 `WebsiteContentExtractor`, or `None`. Paired
+            with `url_fetch_service`: the two are only useful together, and the
+            input stage treats either one being absent the same way.
     """
 
     extraction_service: ExtractionService
@@ -218,6 +228,19 @@ class GraphDependencies:
     evidence_service: EvidenceService
     risk_service: RiskService
     search_recorder: RecordingSearchService | None = None
+    url_fetch_service: URLFetchService | None = None
+    website_extractor: WebsiteContentExtractor | None = None
+
+    @property
+    def supports_url(self) -> bool:
+        """Whether this graph can analyse a URL submission.
+
+        Both services must be present: fetching without extracting would hand the
+        pipeline raw bytes, and extracting without fetching has nothing to work
+        on. Reporting one combined capability keeps the input stage from
+        branching on two fields that must always agree.
+        """
+        return self.url_fetch_service is not None and self.website_extractor is not None
 
     def clear_search_recording(self) -> None:
         """Discard recorded search responses, if a recorder is installed."""
@@ -286,5 +309,7 @@ def build_default_context(
             evidence_service=EvidenceService(),
             risk_service=RiskService(settings=resolved),
             search_recorder=recorder,
+            url_fetch_service=URLFetchService(settings=resolved),
+            website_extractor=WebsiteContentExtractor(settings=resolved),
         )
     )

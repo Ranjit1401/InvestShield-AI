@@ -39,6 +39,7 @@ from app.graph.state import (
 )
 from app.schemas.claims import Claim
 from app.schemas.entities import Entity
+from app.schemas.url import MAX_URL_LENGTH, UrlSource
 from app.schemas.evidence import EvidenceResponse
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment
@@ -60,6 +61,7 @@ __all__ = [
     "RecordedErrorDetail",
     "TextInvestigationRequest",
     "TimelineEventResponse",
+    "UrlInvestigationRequest",
 ]
 
 #: Upper bound on submitted text. A submission larger than this is refused at the
@@ -126,21 +128,62 @@ class InvestigationCreateRequest(BaseModel):
 
     `input_type` is explicit rather than inferred from the body so that an
     unsupported kind is refused with a typed `422` instead of being guessed at.
-    Only `TEXT` is analysed today; `URL`, `IMAGE` and `PDF` are recognised and
-    refused so that a client learns which ones are missing rather than receiving
-    a text analysis of something it did not send (Phase 8 scope).
+    `TEXT` and `URL` are analysed as of Phase 12; `IMAGE` and `PDF` are
+    recognised and refused so that a client learns which ones are missing rather
+    than receiving an analysis of something it did not send.
+
+    For `URL`, `text` carries the address rather than prose. The field is not
+    renamed to `url` because this endpoint is deliberately kind-agnostic: one
+    body shape that means "the content for this kind" is what lets the typed
+    endpoint stay a thin pass-through instead of growing a branch per input kind.
+    `POST /api/investigations/url` is the form that names the field `url`.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     input_type: InvestigationInputType = Field(
         default=InvestigationInputType.TEXT,
-        description="Declared input kind. Only TEXT is analysed by this version.",
+        description="Declared input kind. TEXT and URL are analysed by this version.",
     )
     text: str = Field(
         min_length=1,
         max_length=MAX_TEXT_LENGTH,
-        description="Content to investigate, for the TEXT input type.",
+        description="Content to investigate. For the URL input type, the address to investigate.",
+    )
+    language: Language = Field(
+        default=Language.EN,
+        description="Recorded for Phase 15 rendering; not translated in this version.",
+    )
+
+
+class UrlInvestigationRequest(BaseModel):
+    """Body for `POST /api/investigations/url`.
+
+    The dedicated URL form of the same investigation, so a client does not have
+    to know that the typed endpoint names the address `text`.
+
+    The length bound here is `MAX_URL_LENGTH`, not `MAX_TEXT_LENGTH`. A URL is
+    bounded by what a URL can be; bounding it as prose would either reject a
+    legitimately long link or quietly allow a longer one than the fetcher's own
+    limit, producing two different answers to the same question depending on
+    which layer rejected it.
+
+    Only presence and length are enforced here. Whether the address is a URL at
+    all, whether its scheme may be fetched, and whether it points at a public
+    host are all decided by `app.services.url_guards` at retrieval time, because
+    they need one decision in one place and the answer to the last of those is
+    not knowable without resolving the name (Phase 12 §5).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(
+        min_length=1,
+        max_length=MAX_URL_LENGTH,
+        description=(
+            "The web address to investigate. Must begin with http:// or https://. "
+            "Addresses that are not public internet destinations are refused."
+        ),
     )
     language: Language = Field(
         default=Language.EN,
@@ -220,6 +263,15 @@ class InvestigationResponse(BaseModel):
         description="Echo of the requested language; no translation is performed.",
     )
     current_stage: str = Field(description="The last stage that ran.")
+
+    url_source: UrlSource | None = Field(
+        default=None,
+        description=(
+            "Phase 12 provenance for a URL investigation: the submitted URL, the host "
+            "contacted, the addresses it resolved to, and whether the page was "
+            "truncated. Null for every non-URL input kind."
+        ),
+    )
 
     claims: list[Claim] = Field(default_factory=list)
     entities: list[Entity] = Field(default_factory=list)

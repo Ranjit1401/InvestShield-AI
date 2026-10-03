@@ -8,7 +8,7 @@ platform.
 > InvestShield does not just detect suspicious investment content. It investigates the claims
 > behind it and shows the evidence.
 
-This app is a read-and-submit client for the Phase 0–10 FastAPI backend. It renders what the
+This app is a read-and-submit client for the Phase 0–12 FastAPI backend. It renders what the
 API returns and never invents findings, counts, sources or evidence.
 
 ## Requirements
@@ -46,7 +46,7 @@ or any other backend credential.
 | --------------------- | ------------------------- | ------------------------------------ |
 | `/`                   | Landing                   | none (static content only)           |
 | `/dashboard`          | Dashboard                 | `GET /api/health`, `GET /api/investigations` |
-| `/investigate`        | New investigation         | `GET /api/investigations/limits`, `POST /api/investigations/text` |
+| `/investigate`        | New investigation         | `GET /api/investigations/limits`, `POST /api/investigations/text`, `POST /api/investigations/url` |
 | `/investigation/:id`  | Investigation report      | `GET /api/investigations/{id}`       |
 | `/history`            | History                   | `GET /api/investigations`            |
 
@@ -54,19 +54,22 @@ Any other path renders a not-found page.
 
 ## Input support
 
-**Text is the only input type the backend processes today.** The input-mode selector on
-`/investigate` shows all four planned modes, and the availability of each is driven by
+The input-mode selector on `/investigate` shows all four planned
+modes, and the availability of each is driven by
 `GET /api/investigations/limits` rather than hardcoded:
 
-| Mode       | Status                            | Backend phase |
-| ---------- | --------------------------------- | ------------- |
-| Text       | Available                         | —             |
-| URL        | Unavailable, "Coming in Phase 12" | Phase 12      |
-| Screenshot | Unavailable, "Coming in Phase 13" | Phase 13      |
-| PDF        | Unavailable, "Coming in Phase 14" | Phase 14      |
+| Mode       | Status     | Backend phase |
+| ---------- | ---------- | ------------- |
+| Text       | Available  | —             |
+| URL        | Available  | 12            |
+| Screenshot | Unavailable, "Coming in Phase 13" | Phase 13 |
+| PDF        | Unavailable, "Coming in Phase 14" | Phase 14 |
 
 Unavailable modes are disabled and are not in the tab order. No request is ever sent for
-them — the endpoints do not exist.
+them — the upload endpoint does not exist. The URL mode submits through
+`createUrlInvestigation` (`POST /api/investigations/url`), holds an in-flight
+guard against double submission like the text mode, and surfaces the API's
+error envelope verbatim (`URL_ADDRESS_BLOCKED`, `URL_HTTP_ERROR`, …).
 
 ## Architecture
 
@@ -79,7 +82,8 @@ src/
 │   ├── investigation/  header, claims, entities, red flags, timeline, limitations, list
 │   ├── evidence/       claim → evidence → source panels
 │   └── risk/           risk score, factor breakdown chart, factor list
-├── hooks/              use-async-resource, use-investigations, use-text-investigation
+├── hooks/              use-async-resource, use-investigations, use-text-investigation,
+│                       use-url-investigation
 ├── lib/                class-name helper, display formatting, colour intent
 ├── pages/              one file per route
 ├── services/           api-client.ts — the only module that calls fetch
@@ -152,4 +156,4 @@ investigation payload to prove the populated and empty states both render.
 ## Scope
 
 Authentication, portfolios, trading, recommendations and payment flows are deliberately absent.
-Phases 12–14 (URL, screenshot/OCR, PDF) are surfaced in the UI as planned but unimplemented.
+Phases 13–14 (screenshot/OCR, PDF) are surfaced in the UI as planned but unimplemented.

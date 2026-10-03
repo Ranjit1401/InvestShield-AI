@@ -15,12 +15,13 @@ import {
 import { PageContainer } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Label, Textarea } from "@/components/ui/input";
+import { Input, Label, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
 import { ErrorState } from "@/components/common/state-blocks";
 import { cn } from "@/lib/utils";
 import { EXAMPLE_TEXT, MAX_TEXT_LENGTH, useTextInvestigation } from "@/hooks/use-text-investigation";
+import { MAX_URL_LENGTH, useUrlInvestigation } from "@/hooks/use-url-investigation";
 import { useLimits } from "@/hooks/use-investigations";
 import { LANGUAGES, type InvestigationInputType, type Language } from "@/types/api";
 
@@ -32,19 +33,28 @@ const INPUT_MODES = [
   { id: "PDF" as const, label: "PDF", icon: FileText, phase: "Phase 14" },
 ] as const;
 
+/** The one URL used by the "use example" action in URL mode. */
+const EXAMPLE_URL = "https://example.com/investment-offer";
+
 type InputModeId = InvestigationInputType;
 
 export function InvestigatePage() {
   const navigate = useNavigate();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
   const [mode, setMode] = useState<InputModeId>("TEXT");
   const [text, setText] = useState("");
+  const [url, setUrl] = useState("");
   const [language, setLanguage] = useState<Language>("en");
   const [touched, setTouched] = useState(false);
 
   const limits = useLimits();
-  const { submit, isSubmitting, error } = useTextInvestigation();
+  const textApi = useTextInvestigation();
+  const urlApi = useUrlInvestigation();
+
+  const api = mode === "URL" ? urlApi : textApi;
+  const { submit, isSubmitting, error } = api;
 
   /**
    * Which modes the backend says it accepts. `GET /api/investigations/limits`
@@ -58,22 +68,28 @@ export function InvestigatePage() {
     return new Set(reported);
   }, [limits.data]);
 
-  const maxLength =
+  const maxTextLength =
     typeof limits.data?.max_text_length === "number" ? limits.data.max_text_length : MAX_TEXT_LENGTH;
+  const maxUrlLength =
+    typeof limits.data?.max_url_length === "number" ? limits.data.max_url_length : MAX_URL_LENGTH;
 
   const activeMode = INPUT_MODES.find((item) => item.id === mode);
 
-  const trimmed = text.trim();
+  const value = mode === "URL" ? url : text;
+  const trimmed = value.trim();
   const isEmpty = trimmed.length === 0;
-  const isTooLong = text.length > maxLength;
+  const maxLength = mode === "URL" ? maxUrlLength : maxTextLength;
+  const isTooLong = value.length > maxLength;
   const canSubmit = !isEmpty && !isTooLong && !isSubmitting;
 
   // Client-side guidance only. The backend re-validates and its error is what
   // the user ultimately sees.
   const validationMessage = isEmpty
-    ? "Enter the investment content you want investigated."
+    ? mode === "URL"
+      ? "Enter the URL you want investigated."
+      : "Enter the investment content you want investigated."
     : isTooLong
-      ? `Content is ${text.length.toLocaleString()} characters. The limit is ${maxLength.toLocaleString()}.`
+      ? `Content is ${value.length.toLocaleString()} characters. The limit is ${maxLength.toLocaleString()}.`
       : null;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -81,7 +97,7 @@ export function InvestigatePage() {
     setTouched(true);
     if (!canSubmit) return;
 
-    void submit(text, language).then((result) => {
+    void submit(value, language).then((result) => {
       if (result) {
         navigate(`/investigation/${encodeURIComponent(result.investigation_id)}`);
       }
@@ -90,15 +106,30 @@ export function InvestigatePage() {
 
   function useExample() {
     // The example is only ever inserted by an explicit user action.
-    setText(EXAMPLE_TEXT);
+    if (mode === "URL") {
+      setUrl(EXAMPLE_URL);
+      urlInputRef.current?.focus();
+    } else {
+      setText(EXAMPLE_TEXT);
+      textareaRef.current?.focus();
+    }
     setTouched(false);
-    textareaRef.current?.focus();
   }
 
   function clear() {
-    setText("");
+    if (mode === "URL") {
+      setUrl("");
+      urlInputRef.current?.focus();
+    } else {
+      setText("");
+      textareaRef.current?.focus();
+    }
     setTouched(false);
-    textareaRef.current?.focus();
+  }
+
+  function handleModeChange(next: InputModeId) {
+    setMode(next);
+    setTouched(false);
   }
 
   return (
@@ -140,7 +171,7 @@ export function InvestigatePage() {
                   // An unsupported mode is removed from the tab order rather
                   // than focusable-but-inert.
                   disabled={disabled}
-                  onClick={() => setMode(item.id)}
+                  onClick={() => handleModeChange(item.id)}
                   className={cn(
                     "flex flex-col items-start gap-1.5 rounded-md border p-3 text-left transition-colors",
                     isActive
@@ -186,7 +217,7 @@ export function InvestigatePage() {
           aria-labelledby={`mode-tab-${mode}`}
           className="space-y-4"
         >
-          {mode !== "TEXT" ? (
+          {mode !== "TEXT" && mode !== "URL" ? (
             <Alert
               tone="info"
               title={`${activeMode?.label ?? "This"} input is not available yet`}
@@ -194,7 +225,7 @@ export function InvestigatePage() {
               <p>
                 {activeMode?.label ?? "This"} investigation is scheduled for{" "}
                 {activeMode?.phase ?? "a later phase"}. The API does not expose an endpoint for it
-                yet, so this screen sends no request. Text is fully operational.
+                yet, so this screen sends no request. Text and URL are fully operational.
               </p>
             </Alert>
           ) : null}
@@ -202,44 +233,71 @@ export function InvestigatePage() {
           <form onSubmit={handleSubmit} noValidate>
             <Card>
               <CardHeader>
-                <CardTitle>Investment content</CardTitle>
+                <CardTitle>
+                  {mode === "URL" ? "Web page to investigate" : "Investment content"}
+                </CardTitle>
                 <CardDescription>
-                  Paste the message, post or promotion exactly as you received it. Verbatim text
-                  lets the pipeline match the claims and red flags it finds back to your content.
+                  {mode === "URL"
+                    ? "Paste the public URL of the page, post or promotion. The page is fetched and its readable text is investigated; the URL itself is checked against the red-flag rules too."
+                    : "Paste the message, post or promotion exactly as you received it. Verbatim text lets the pipeline match the claims and red flags it finds back to your content."}
                 </CardDescription>
               </CardHeader>
 
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="investigation-text">Content to investigate</Label>
-                  <Textarea
-                    id="investigation-text"
-                    ref={textareaRef}
-                    value={text}
-                    onChange={(event) => setText(event.target.value)}
-                    onBlur={() => setTouched(true)}
-                    rows={10}
-                    spellCheck={false}
-                    placeholder="Paste the investment message you want investigated…"
-                    invalid={touched && (isEmpty || isTooLong)}
-                    aria-describedby="investigation-text-hint investigation-text-count"
-                    disabled={mode !== "TEXT" || isSubmitting}
-                  />
-                  <p id="investigation-text-hint" className="text-xs text-ink-faint">
-                    Up to {maxLength.toLocaleString()} characters. Empty or whitespace-only content
-                    is refused by the API.
-                  </p>
-                </div>
+                {mode === "URL" ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="investigation-url">URL to investigate</Label>
+                    <Input
+                      id="investigation-url"
+                      ref={urlInputRef}
+                      type="url"
+                      value={url}
+                      onChange={(event) => setUrl(event.target.value)}
+                      onBlur={() => setTouched(true)}
+                      inputMode="url"
+                      autoComplete="url"
+                      placeholder="https://example.com/investment-offer"
+                      invalid={touched && (isEmpty || isTooLong)}
+                      aria-describedby="investigation-url-hint investigation-url-count"
+                      disabled={isSubmitting}
+                    />
+                    <p id="investigation-url-hint" className="text-xs text-ink-faint">
+                      Public HTTP(S) URLs only. Private, loopback and cloud-metadata
+                      addresses are refused by the API.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label htmlFor="investigation-text">Content to investigate</Label>
+                    <Textarea
+                      id="investigation-text"
+                      ref={textareaRef}
+                      value={text}
+                      onChange={(event) => setText(event.target.value)}
+                      onBlur={() => setTouched(true)}
+                      rows={10}
+                      spellCheck={false}
+                      placeholder="Paste the investment message you want investigated…"
+                      invalid={touched && (isEmpty || isTooLong)}
+                      aria-describedby="investigation-text-hint investigation-text-count"
+                      disabled={mode !== "TEXT" || isSubmitting}
+                    />
+                    <p id="investigation-text-hint" className="text-xs text-ink-faint">
+                      Up to {maxTextLength.toLocaleString()} characters. Empty or whitespace-only
+                      content is refused by the API.
+                    </p>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p
-                    id="investigation-text-count"
+                    id={mode === "URL" ? "investigation-url-count" : "investigation-text-count"}
                     className={cn(
                       "font-mono text-xs",
                       isTooLong ? "text-tone-danger" : "text-ink-faint",
                     )}
                   >
-                    {text.length.toLocaleString()} / {maxLength.toLocaleString()} characters
+                    {value.length.toLocaleString()} / {maxLength.toLocaleString()} characters
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2">
@@ -248,7 +306,7 @@ export function InvestigatePage() {
                       variant="ghost"
                       size="sm"
                       onClick={useExample}
-                      disabled={isSubmitting || mode !== "TEXT"}
+                      disabled={isSubmitting || (mode !== "TEXT" && mode !== "URL")}
                     >
                       <Sparkles aria-hidden="true" />
                       Use example
@@ -258,7 +316,7 @@ export function InvestigatePage() {
                       variant="ghost"
                       size="sm"
                       onClick={clear}
-                      disabled={text.length === 0 || isSubmitting}
+                      disabled={value.length === 0 || isSubmitting}
                     >
                       <Eraser aria-hidden="true" />
                       Clear
@@ -268,14 +326,14 @@ export function InvestigatePage() {
 
                 <details className="rounded-md border border-hairline bg-surface px-3 py-2">
                   <summary className="cursor-pointer text-sm text-ink-muted">
-                    Example investment message
+                    {mode === "URL" ? "Example URL" : "Example investment message"}
                   </summary>
                   <p className="mt-2 rounded border border-hairline bg-surface-raised px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink-muted">
-                    {EXAMPLE_TEXT}
+                    {mode === "URL" ? EXAMPLE_URL : EXAMPLE_TEXT}
                   </p>
                   <p className="mt-1.5 text-xs text-ink-faint">
                     Nothing is submitted until you press the button. Use “Use example” to place
-                    this text in the field.
+                    this {mode === "URL" ? "URL" : "text"} in the field.
                   </p>
                 </details>
 
@@ -317,7 +375,7 @@ export function InvestigatePage() {
                   <Button
                     type="submit"
                     size="lg"
-                    disabled={!canSubmit || mode !== "TEXT"}
+                    disabled={!canSubmit || (mode !== "TEXT" && mode !== "URL")}
                     aria-busy={isSubmitting}
                   >
                     {isSubmitting ? (

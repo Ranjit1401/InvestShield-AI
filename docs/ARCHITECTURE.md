@@ -28,7 +28,7 @@ investshield-ai/
 │   │   ├── models/           # SQLAlchemy ORM models
 │   │   ├── schemas/          # Pydantic contracts (common, red_flags, claims,
 │   │   │                     #   entities, extraction, search, verification,
-│   │   │                     #   evidence, risk, api)
+│   │   │                     #   evidence, risk, api, url)
 │   │   ├── prompts/          # versioned LLM prompts
 │   │   ├── scripts/          # runnable developer scripts (manual smoke tests)
 │   │   ├── services/         # external + domain services
@@ -136,14 +136,18 @@ Single-responsibility services, each independently constructible and testable:
 | `VerificationService` | Verifies claims against authoritative sources | `INSUFFICIENT_EVIDENCE` / `SEARCH_UNAVAILABLE` |
 | `EvidenceService` | Assembles traceable, verbatim-sourced evidence bundles | none (inherits Phase 3/4 codes) |
 | `RiskService` | Deterministic, explainable, de-duplicated risk assessment | none (inherits Phase 1/4 codes) |
+| `UrlGuardService` | SSRF allowlist policy, URL syntax/scheme validation | `URL_ADDRESS_BLOCKED` |
+| `UrlFetchService` | Pinned-connection fetch, redirect re-validation, budgets | `URL_DNS_FAILED` / `URL_TIMEOUT` / `URL_HTTP_ERROR` |
+| `WebsiteExtractor` | Visible-text extraction from HTML | none (records `PAGE_TEXT_NOT_RETRIEVED`) |
 | `InvestigationService` | Façade orchestrating the pipeline | aggregates |
 
 **Implemented:** `LLMService`, `SearchService`, `SearchProvider`, `RedFlagEngine`,
 `normalize_text`, `ClaimExtractor`, `EntityExtractor`, `ExtractionService`,
-`VerificationService`, `EvidenceService`, `RiskService`.
+`VerificationService`, `EvidenceService`, `RiskService`, `UrlGuardService`,
+`UrlFetchService`, `WebsiteExtractor`.
 
 **Deferred:** `EmbeddingService`, `VectorStore`, `OCRService` and `PDFService`
-belong to image and PDF ingestion (Phase 12); embeddings are off by default and
+belong to image and PDF ingestion (Phases 13–14); embeddings are off by default and
 Phase 5 falls back to lexical similarity.
 
 **Superseded:** `InvestigationService` is the façade originally sketched to
@@ -797,7 +801,10 @@ reconstruct (D-042).
 - Tailwind CSS design tokens + shadcn/ui primitives.
 - `react-router-dom` for the five routes.
 - Typed API client in `src/services/` generated to mirror `API_SPEC.md`.
-- Recharts for risk distribution on the dashboard.
+- Input modes: Text and URL are live; Screenshot and PDF are disclosed,
+  disabled, and phase-labelled, with availability read from
+  `GET /api/investigations/limits`.
+- Recharts for risk contribution by severity.
 - Design language: dark financial-security "command center" — dense evidence
   panels, explicit risk badges, timeline strip. Deliberately **not** a chat UI.
 
@@ -811,8 +818,12 @@ surfaced as Limitations rather than crashing:
 ```
 Groq unavailable     → LLM_SERVICE_ERROR          → EXTRACTION_FALLBACK limitation, 200
 SerpAPI unavailable  → SEARCH_SERVICE_ERROR       → SEARCH_UNAVAILABLE limitation, 200
-OCR unavailable      → OCR_UNAVAILABLE            → 503 (Phase 12; 422 in Phase 8)
-PDF extraction fails → PDF_EXTRACTION_FAILED      → 503 (Phase 12; 422 in Phase 8)
+URL host blocked     → URL_ADDRESS_BLOCKED        → 422 (caller's destination)
+URL site fault       → URL_DNS_FAILED/…/URL_HTTP_ERROR → 502 (the site failed)
+URL fetch disabled   → URL_FETCH_UNAVAILABLE      → 503 (capability off)
+Page text empty      → PAGE_TEXT_NOT_RETRIEVED    → PARTIAL limitation, 200
+OCR unavailable      → OCR_UNAVAILABLE            → 503 (Phase 13; 422 in Phase 8)
+PDF extraction fails → PDF_EXTRACTION_FAILED      → 503 (Phase 14; 422 in Phase 8)
 Empty text           → INPUT_EMPTY                → 422
 Unanalysed input type→ INPUT_TYPE_NOT_SUPPORTED   → 422
 Stage contract broken→ *_FAILED                   → 500
@@ -855,8 +866,11 @@ defaulting the other way would let a bug present as the caller's mistake.
 - Secrets only in `.env`, never in Git, never returned by the API.
 - Uploaded files: type allow-list, size cap, stored in memory or a temp dir, and
   **never executed**.
-- URL fetching (Phase 12): HTTPS-only, private/loopback IP blocked (SSRF guard),
-  redirect limit, response size cap, timeout.
+- URL fetching (Phase 12): http/https only, allowlist-only address policy
+  (private/loopback/link-local/metadata refused, including obfuscated
+  literals and inward-resolving names), every redirect hop re-validated,
+  response size cap, connect and total timeouts, and no socket/TLS/host
+  detail in any error message.
 - Extracted text is treated as untrusted data and is never passed to a shell,
   an eval, or a templating engine.
 - We never download or execute APKs or arbitrary binaries — `.apk` content is
@@ -1265,3 +1279,105 @@ statement count for one stored run against twenty, not by asserting a fixed coun
 — the last because every relationship is `lazy="selectin"`, which is what makes the
 cost independent of history size. A fixed-count assertion would break on the next
 legitimate query and invite the threshold ratchet that quietly retires an N+1 test.
+
+### 2.3h URL ingestion (Phase 12, complete)
+
+#### Files
+
+```
+backend/app/schemas/url.py               UrlInvestigationRequest, UrlSource, WebsiteDocument
+backend/app/services/url_guards.py       UrlGuardService — SSRF policy, URL syntax
+backend/app/services/url_fetch.py        UrlFetchService — pinned-connection fetch
+backend/app/services/website_extractor.py WebsiteExtractor — visible text from HTML
+backend/app/graph/nodes.py               _url_input — the URL input node
+```
+
+#### The request path
+
+```
+POST /api/investigations/url ─► UrlInvestigationRequest (pydantic: length, single string)
+        │
+        ▼
+_url_input ─► UrlGuardService.validate_url   (syntax, scheme, host, credentials,
+        │                                      control characters — all 422s)
+        ▼
+        UrlFetchService.fetch                  (address policy at every hop: DNS,
+        │                                      redirect target, resolved set — 422s;
+        │                                      site failures — 502s)
+        ▼
+        WebsiteExtractor.extract               (HTMLParser: scripts, styles, comments
+        │                                      and hidden content dropped)
+        ▼
+        state["extracted_text"] = document.text,  state["url_source"] = source
+        │
+        ▼
+        the standard pipeline, unchanged (extraction → … → risk)
+```
+
+The graph owns no fetch logic of its own; it calls the services through
+`GraphContext` (`url_fetch_service`, `website_extractor`), exactly as it
+calls `search_service` and `llm_service` (D-033).
+
+#### Why three services, not one
+
+`UrlGuardService` decides *may we try*, `UrlFetchService` decides *did it
+work*, and `WebsiteExtractor` decides *what did we get*. Splitting them is
+what keeps the fault taxonomy honest: a refusal is the caller's mistake
+(422), a site failure is the site's (502), and an unreadable-but-fetched
+page is a limitation (200 PARTIAL). One fused service would have to
+interleave those three judgements in a single code path.
+
+#### The SSRF policy is an allowlist of *addresses*, not a blocklist of names
+
+`is_global()` is the only predicate that matters. A destination is refused
+unless *every* address it could resolve to is global unicast space. This
+covers, in one rule:
+
+- IPv4 private/loopback/link-local ranges and the metadata
+  `169.254.169.254`;
+- IPv6 `::1`, `fc00::/7`, `fe80::/10`;
+- obfuscated IPv4 literals (`127.1`, `0x7f000001`, `2130706433`),
+  which `ipaddress` alone accepts;
+- **names that resolve inward** — `localhost`, `ip-127-0-0-1.sslip.io`,
+  a DNS record an attacker controls. The guard resolves the name with its
+  own `getaddrinfo` and applies the same predicate to the result, so a
+  public-looking hostname that points at loopback is refused;
+- **every redirect hop** — the fetch re-validates the next Location before
+  following it, so a public page cannot 302 the connection inward.
+
+#### Budgets and transport
+
+Stdlib `http.client` only — no new dependency. One connection per hop,
+closed by construction; at most 3 redirects; at most 2 MiB of body;
+a 5-second connect timeout, a 10-second read timeout and a 20-second
+total deadline; `http`/`https` only; the response content type must be
+HTML or XHTML or the fetch is a `502`.
+Over-budget bodies are truncated and the truncation is recorded
+(`URL_CONTENT_TRUNCATED`), because a truncated page is a real
+limitation the report should name.
+
+#### What the response records
+
+`UrlSource` — 15 frozen fields: submitted/normalized/final URL, hostname,
+resolved addresses, redirect facts, HTTP status, content type, TLS, charset,
+byte size, page title, meta description, fetch time. It is persisted in the
+`source_metadata` JSON column and returned as `url_source` on the response.
+Every field is a transport fact or a string the page published; none is a
+finding about the host (D-055).
+
+#### Failure policy
+
+A URL fault is answered *before* the graph runs — the route maps the typed
+`InvalidUrl` / `UrlFetchError` / capability errors to the envelope, so no
+partial investigation is created for a request that never started. A
+fetched-but-empty page is the opposite case: the run proceeds, the pipeline
+reports what it found in nothing, and `PAGE_TEXT_NOT_RETRIEVED` is recorded
+as a warning (D-009, D-032).
+
+#### Determinism and isolation
+
+The URL tests use the same fakes the graph tests use
+(`tests/url_factories.py`: `FakeFetchService`, `stub_resolution`,
+`offline_settings`), and the suite's network guard covers the URL tests too —
+no URL test may open a real connection. SSRF behaviour is asserted against
+literal targets and against a resolution stub, never against a live host.

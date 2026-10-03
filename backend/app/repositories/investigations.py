@@ -37,10 +37,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.adapters import investigation_status
+from app.core.logging import get_logger
 from app.graph.state import (
     GraphError,
     GraphWarning,
@@ -74,8 +76,11 @@ from app.schemas.evidence import (
 from app.schemas.extraction import ClaimEntityLink, ExtractionResult
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment, RiskFactor
+from app.schemas.url import UrlSource
 from app.schemas.verification import VerificationResponse, VerificationResult
 __all__ = ["InvestigationRepository", "InvestigationSummary", "NotFound"]
+
+logger = get_logger(__name__)
 
 
 class NotFound(Exception):
@@ -146,6 +151,28 @@ def _as_tuple(value: Any) -> tuple[Any, ...]:
     if isinstance(value, tuple):
         return value
     return tuple(value)
+
+
+def _source_metadata_for(state: InvestigationState) -> dict[str, Any] | None:
+    """Render a URL submission's provenance for storage, or `None`.
+
+    Phase 12 stores provenance as one JSON blob rather than a set of columns,
+    because nothing joins to it, filters on it or aggregates it — it is only ever
+    read whole and shown beside the investigation it belongs to.
+
+    Args:
+        state: The finished state.
+
+    Returns:
+        The `UrlSource` rendered in JSON mode, or `None` for a run that had no
+        URL. Absent is stored as SQL `NULL` rather than an empty object so a
+        `TEXT` run is distinguishable from a URL run that somehow had none.
+    """
+    source = state.get("url_source")
+    if source is None:
+        return None
+    payload = source.model_dump(mode="json")
+    return _model_fields(type(source), payload)
 
 
 def _model_fields(model: type, payload: dict[str, Any]) -> dict[str, Any]:
@@ -240,6 +267,7 @@ class InvestigationRepository:
             raw_input=str(state.get("raw_input") or ""),
             extracted_text=str(state.get("extracted_text") or ""),
             language="en",
+            source_metadata=_source_metadata_for(state),
             status=investigation_status(
                 _as_tuple(state.get("errors")), _as_tuple(state.get("timeline"))
             ).value,
@@ -686,6 +714,16 @@ class InvestigationRepository:
         batch = _verification_response_from_row(row, row.verification_results)
         if batch is not None:
             state["verification"] = batch
+
+        # Added only when the row carries one, so a `TEXT` run reloads with
+        # exactly the keys it was stored with. Writing `url_source: None`
+        # unconditionally would give every reloaded state a key the live state
+        # never had, and the determinism test that compares a live run with its
+        # reloaded twin would rightly fail on that alone.
+        url_source = _url_source_from_row(row)
+        if url_source is not None:
+            state["url_source"] = url_source
+
         return state
 
     def list_page(self, limit: int, offset: int = 0) -> tuple[list[InvestigationSummary], int]:
@@ -854,6 +892,41 @@ def _verification_from_row(row: VerificationResultRow) -> VerificationResult:
         queries=tuple(row.queries),
         warnings=tuple(row.warnings),
     )
+
+
+def _url_source_from_row(row: InvestigationRow) -> UrlSource | None:
+    """Rebuild a URL submission's provenance from its stored JSON.
+
+    Returns `None` in three cases that are all normal rather than exceptional:
+    a `TEXT` run, which never had one; a run stored before Phase 12, whose row
+    predates the column; and a row whose JSON no longer validates against the
+    current `UrlSource`.
+
+    That last case is why this returns `None` rather than raising. Provenance is
+    descriptive metadata about how a page was fetched — it is not the
+    investigation. A row written by an older version of this schema must still
+    reload and still serve its claims, evidence and risk assessment; failing the
+    whole retrieval because one descriptive field drifted would turn a cosmetic
+    schema change into losing access to a stored investigation.
+
+    Args:
+        row: The stored run.
+
+    Returns:
+        The `UrlSource`, or `None` when the run carries none this version can
+        read.
+    """
+    payload = getattr(row, "source_metadata", None)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return UrlSource.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Stored URL provenance did not match the current schema",
+            extra={"public_id": row.public_id, "reason": type(exc).__name__},
+        )
+        return None
 
 
 def _source_from_row(row: SourceRow) -> EvidenceSource:

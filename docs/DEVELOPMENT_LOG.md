@@ -1492,3 +1492,172 @@ work on Node 22.
   demonstrated need for more.
 - **No backend file was modified.** `git diff` for this phase touches `frontend/` and
   `docs/` only.
+
+## Phase 12 — URL Analysis
+
+**Date:** 2026-10-03
+**Phase:** 12 — URL analysis
+**Commit:** `feat: implement URL analysis`
+
+### What was implemented
+
+`POST /api/investigations/url` accepts `{ "url": …, "language": … }`,
+fetches the submitted page under an SSRF guard, extracts its visible
+text, and runs the existing LangGraph pipeline over that text. The
+response is the standard `InvestigationResponse` plus `url_source`, a
+frozen record of the fetch that is also persisted in a new
+`source_metadata` JSON column and returned by `GET
+/api/investigations/{id}`.
+
+- `app/schemas/url.py` — `MAX_URL_LENGTH` (2048),
+  `UrlInvestigationRequest`, and the frozen `UrlSource` (15 fields:
+  submitted/normalized/final URL, hostname, resolved addresses,
+  redirect facts, status, content type, TLS, charset, byte size,
+  page title, meta description, fetch time) and `WebsiteDocument`.
+  Every field is a transport fact or a string the page published;
+  none is a judgement about the host.
+- `app/services/url_guards.py` — `UrlGuardService`: URL syntax,
+  scheme, host, credential and control-character validation, and the
+  SSRF address policy. The policy is an **allowlist of global unicast
+  space**, so private, loopback, link-local and metadata addresses are
+  refused by default, including obfuscated IPv4 literals (`127.1`,
+  `0x7f000001`, `2130706433`) and **names that resolve inward**
+  (`localhost`, `ip-127-0-0-1.sslip.io`) — the guard resolves the
+  name itself and applies the same predicate to every result.
+- `app/services/url_fetch.py` — `UrlFetchService`: stdlib
+  `http.client` only, no new dependency. One pinned connection per
+  redirect hop (closed by construction), at most 3 redirects, at most
+  2 MiB of body, a 5-second connect timeout, a 10-second read
+  timeout and a 20-second total deadline, http/https
+  only, HTML content type required. **Every redirect target is
+  re-validated** before the connection follows it, so a public page
+  cannot 302 the connection inward. Over-budget bodies are truncated
+  and the truncation is recorded.
+- `app/services/website_extractor.py` — `WebsiteExtractor`: a stdlib
+  `HTMLParser` that drops scripts, styles, comments and hidden
+  content and returns normalised visible text plus the page title and
+  meta description.
+- `app/graph/nodes.py` — `_url_input`, called from the existing
+  `input_node` (not a new node), so everything downstream is the
+  *existing* machinery. Two new warning codes: `URL_CONTENT_TRUNCATED`
+  and `PAGE_TEXT_NOT_RETRIEVED`. `ERROR_CODES`/`WARNING_MESSAGES`
+  absorb the URL vocabulary from the services, so wording is defined
+  where the decision is made and merged, never retyped.
+- `app/graph/state.py` — `url_source` on `InvestigationState`.
+- `app/graph/context.py` — `url_fetch_service`, `website_extractor`,
+  `supports_url` on `GraphDependencies`; wired in `GraphContext`.
+- `app/api/routes/investigations.py` — the URL route, and the
+  generic `POST /api/investigations` now analyses `input_type:
+  "URL"` (the `text` field carries the address).
+- `app/api/errors.py` — `UpstreamSiteError` (502) and
+  `CapabilityUnavailable` (503); the client/site/capability code
+  sets are imported from `app.graph.nodes` so the graph's
+  classification and the API's status mapping cannot disagree.
+- `app/db/session.py`, `app/models/investigation.py`,
+  `app/repositories/investigations.py` — additive `source_metadata`
+  column (JSON, `{}` for text runs), written on every URL run.
+- `app/prompts/extraction.py` — `extraction-v2`: the extraction
+  prompt now frames web content as untrusted data to describe.
+- Frontend — `use-url-investigation.ts`, `createUrlInvestigation` in
+  the API client, `UrlInvestigationRequest` in the types, and the
+  URL mode on `/investigate`. The previously disabled URL tab is live;
+  availability is still read from `GET /api/investigations/limits`,
+  which now reports `supported_input_types: ["TEXT", "URL"]` and
+  `max_url_length`.
+
+### The fault taxonomy
+
+The phase's central design decision (D-054). Every failure is
+classified **by whose fault it is**, and the status code says so:
+
+| Fault | Status | Codes |
+| --- | --- | --- |
+| Caller's bad destination | 422 | `URL_EMPTY`, `URL_INVALID`, `URL_TOO_LONG`, `URL_SCHEME_UNSUPPORTED`, `URL_HOST_MISSING`, `URL_HOST_TOO_LONG`, `URL_CREDENTIALS_NOT_ACCEPTED`, `URL_CONTROL_CHARACTERS_NOT_ACCEPTED`, `URL_ADDRESS_BLOCKED`, `URL_METADATA_ADDRESS_BLOCKED`, `URL_METADATA_HOSTNAME_BLOCKED` |
+| The site failed | 502 | `URL_DNS_FAILED`, `URL_FETCH_FAILED`, `URL_TIMEOUT`, `URL_TOO_MANY_REDIRECTS`, `URL_HTTP_ERROR`, `URL_CONTENT_TOO_LARGE`, `URL_CONTENT_TYPE_UNSUPPORTED` |
+| Capability switched off | 503 | `URL_FETCH_DISABLED`, `URL_FETCH_UNAVAILABLE` |
+
+A refused destination is the caller's mistake; a dead site is not, and
+answering either with `500` would claim a defect that does not exist,
+while answering a dead site with `200 PARTIAL` would claim an
+investigation that never started. A fetched-but-unreadable page is the
+opposite case: the run proceeds and `PAGE_TEXT_NOT_RETRIEVED` is
+recorded, because an unreadable page is a limitation, not a failure
+(D-009, D-032).
+
+No `message` or `detail` carries a socket error, TLS diagnostic,
+resolved address, response header or provider text. Wording comes
+from the fixed `URL_MESSAGES` table, and tests plant real-shaped
+failures (a `gaierror`, a timeout, a `http.client.HTTPException`)
+and assert none of that detail reaches a response.
+
+### Two defects found and fixed during the phase
+
+1. **`_read_bounded` read from the wrong object.** The byte-budget
+   reader took the `HTTPConnection` and called `connection.response.read()`
+   — an attribute that does not exist — so *every* successful fetch
+   would have surfaced as `URL_FETCH_UNAVAILABLE` with an
+   `AttributeError`. Caught by the graph-level URL execution tests
+   before any commit; the reader now takes the `HTTPResponse`.
+2. **Inaccurate vocabulary.** `INPUT_TYPE_NOT_SUPPORTED` said "This
+   version analyses text input only" and `URL_FETCH_UNAVAILABLE`
+   said "…text input only in this deployment" — both false once URL
+   analysis shipped. No test pinned the wording; both messages now
+   state what is actually analysed.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `cd backend && python -m pytest` | **2796 passed, 4 deselected, 0 failed** (286 added: 189 in four new modules, 97 across twelve existing ones) |
+| SSRF, literal targets | metadata `169.254.169.254`, `127.0.0.1`, `10.0.0.1`, `[::1]` — all refused |
+| SSRF, resolving names | `localhost`, `ip-127-0-0-1.sslip.io` — refused via a resolution stub |
+| SSRF, redirects | every redirect hop re-validated, parametrized over six target kinds |
+| Live round-trip | `POST /api/investigations/url` (example.com) → `200`, `input_type: "URL"`, `url_source` populated; `GET /api/investigations/{id}` returns the same `url_source` (persistence verified) |
+| TEXT regression | demo scam text → 3 red flags (`GUARANTEED_RETURN`, `UNREALISTIC_RETURN`, `WHATSAPP_INVESTMENT_GROUP`), full pipeline unchanged |
+| Faults through the API | `127.0.0.1` → 422 `URL_ADDRESS_BLOCKED`; `169.254.169.254` → 422 `URL_METADATA_ADDRESS_BLOCKED`; `ftp://` → 422 `URL_SCHEME_UNSUPPORTED`; a 404 URL → 502 `URL_HTTP_ERROR` |
+| OpenAPI | `/api/investigations/url` in paths; `UrlInvestigationRequest` (url 1–2048, language, `additionalProperties: false`); `UrlSource` with all 15 properties; 422/502/503 responses documented |
+| Frontend | `npm run typecheck`, `npm run lint`, `npm run build` — all pass (2234 modules) |
+| `npm run verify:api` | **57 passed, 0 failed** (48 from Phase 11 + 9 new URL checks: limits discovery fields and the URL client's error paths) |
+
+### Security review
+
+- **No secrets anywhere in the frontend.** `VITE_API_BASE_URL` is the
+  only environment variable read; a scan of `frontend/` finds no
+  `GROQ_API_KEY`, `SERPAPI_KEY`, `DATABASE_URL` or token reference.
+- **No raw HTML reaches the DOM.** Fetched markup is parsed
+  server-side into plain text; no `dangerouslySetInnerHTML`,
+  `innerHTML` or `v-html` exists anywhere in `src/`, and React
+  escapes everything it renders.
+- **Error messages are fixed tables.** Tests plant real-shaped
+  failures and assert socket/TLS/host detail never leaks — the same
+  leak-safety method Phase 10 established (D-047).
+- **`.env` files are gitignored** (root and `backend/`), verified
+  with `git check-ignore`; only `.env.example` is committed.
+
+### Known limitations (recorded, not hidden)
+
+- **JavaScript-rendered pages** yield little or no text; the run
+  reports `PAGE_TEXT_NOT_RETRIEVED` and analyses the URL and domain
+  only. A headless browser is the eventual remedy and is out of scope.
+- **Network dependency.** Fetching fails closed: no network, no URL
+  analysis, and the failure is a typed `502`/`503`, never a silent
+  empty result.
+- **Truncation.** Pages over the byte budget are cut and the cut is
+  recorded (`URL_CONTENT_TRUNCATED`).
+- **No translation** (`translation_enabled: false`), as before.
+- **LLM-less deployment.** In this environment the LLM is
+  unavailable, so extraction runs in fallback mode and every run
+  reports `PARTIAL` with `EXTRACTION_PARTIAL`/`EXTRACTION_FALLBACK`
+  — the same behaviour the text path has always had.
+
+### Not done, deliberately
+
+- **Phases 13–14 are not implemented.** Screenshot and PDF surfaces
+  remain disabled, phase-labelled UI; the OpenAPI document exposes no
+  `/upload` endpoint.
+- **No domain reputation scoring.** The pipeline analyses claims *in*
+  the page; it never scores the hostname (D-006, D-020, D-055).
+- **No raw HTML is persisted** — only the extracted text and the
+  `UrlSource` record.
+- **No new runtime dependency.** Fetching and extraction use the
+  standard library only.

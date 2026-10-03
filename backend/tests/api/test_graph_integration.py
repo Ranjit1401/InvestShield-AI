@@ -206,6 +206,8 @@ class TestRoutesDoNotBypassTheGraph:
             "status",
             # Validate.
             "MAX_TEXT_LENGTH",
+            "MAX_URL_LENGTH",
+            "SUPPORTED_INPUT_TYPES",
             "ErrorEnvelope",
             "InvestigationCreateRequest",
             "InvestigationListResponse",
@@ -214,6 +216,7 @@ class TestRoutesDoNotBypassTheGraph:
             "InvestigationSummaryResponse",
             "Language",
             "TextInvestigationRequest",
+            "UrlInvestigationRequest",
             # Delegate.
             "GraphContext",
             "run_investigation",
@@ -598,8 +601,13 @@ class TestGraphAndApiAgreeOnTheStages:
             "errors",
             "started_at",
             "completed_at",
+            # Phase 12: provenance for a URL investigation. Null for this `TEXT`
+            # submission, and still a field the route forwards from the state
+            # rather than one it computes.
+            "url_source",
         }
         assert body["investigation_id"].startswith("inv_")
+        assert body["url_source"] is None
 
     def test_the_investigation_id_is_derived_from_the_submitted_content(
         self, api_client: TestClient

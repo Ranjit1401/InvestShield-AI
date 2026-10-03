@@ -116,6 +116,16 @@ class InvestigationRow(Base):
     extracted_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     language: Mapped[str] = mapped_column(String(8), nullable=False, default="en")
 
+    # Phase 12's `UrlSource` for a URL submission, as JSON, and `None` for every
+    # other input kind.
+    #
+    # JSON rather than columns because it is provenance metadata that is only
+    # ever read as a whole: nothing joins to it, filters on it or aggregates it,
+    # and the page title, resolved addresses and HTTP status have no use outside
+    # being shown alongside the investigation. It is nullable because `TEXT` runs
+    # simply do not have one, and a sentinel row would be a fiction.
+    source_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     current_stage: Mapped[str] = mapped_column(String(32), nullable=False, default="")
 

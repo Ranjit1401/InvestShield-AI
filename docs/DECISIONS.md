@@ -1453,6 +1453,97 @@ and no `access-control-allow-origin` header.
 
 **Reason:** A loud failure at startup is far cheaper than a silent one at runtime. The
 developer is told immediately that the port they need is taken, instead of discovering later
-that the browser is blocking requests for a reason the error message deliberately hides.
+that the browser is blocking requests for a reason the error deliberately hides.
 
 **Date:** 2026-10-02
+
+## D-054 — URL analysis fetches with the stdlib, guards with an allowlist, and splits faults 422/502/503 by whose mistake they are
+
+**Decision:** `POST /api/investigations/url` is built on three
+services — `UrlGuardService` (may we try), `UrlFetchService` (did it
+work, stdlib `http.client` only), `WebsiteExtractor` (what did we
+get) — and every failure is classified before it is answered: a
+caller's bad destination is `422`, a site that failed is `502`, a
+fetch capability switched off by configuration is `503`, and an
+unreadable page is a `200 PARTIAL` with `PAGE_TEXT_NOT_RETRIEVED`.
+
+**Context:** The endpoint dereferences a user-supplied URL from the
+server, which is the one request path where the *caller* can point the
+server's own connections at an address the caller chooses. The existing
+fault philosophy (D-009, D-039) says the status code answers whose
+fault it is — but a URL adds a fourth category the earlier phases never
+had: a *site* that is down is neither the caller's mistake nor ours,
+and answering it `500` would claim a defect that does not exist, while
+answering it `200 PARTIAL` would claim an investigation that never
+started. `502` names that category.
+
+**Alternatives:**
+
+- *`httpx` for the fetch.* Rejected: the dependency already exists for
+  other services, but `http.client` needs no new import surface for a
+  *security boundary* — fewer moving parts inside the SSRF path, and
+  redirects can be handled one hop at a time with explicit
+  re-validation between hops, which a redirect-following client hides.
+- *A blocklist of dangerous ranges.* Rejected: a blocklist must be
+  complete to be safe, and "complete" is a moving target (IPv6 unique
+  local, carrier-grade NAT, future metadata addresses). The policy is
+  therefore an allowlist — global unicast space only — so an unknown
+  range is refused by default.
+- *Refuse by hostname.* Rejected: hostnames are attacker-controlled
+  strings; `localhost` is just a name, and `ip-127-0-0-1.sslip.io`
+  resolves to loopback while looking like a public host. The guard
+  resolves the name itself and applies the address predicate to every
+  result, and again to every redirect target.
+- *Fetch errors as `500`.* Rejected: a DNS failure is not our defect;
+  dressing it as one would make every dead link look like a platform
+  outage.
+
+**Reason:** The taxonomy is what makes the endpoint honest. A user who
+submits an internal address is told their submission was refused; a user
+who submits a dead site is told the site failed; a deployment with
+fetching disabled is told the capability is off; and a page that
+fetched but contained no readable text still gets an investigation with
+a named limitation. Each of those is a different truth, and collapsing
+any two of them would mislead a client that branches on the status.
+
+**Date:** 2026-10-03
+
+## D-055 — Fetched page text is untrusted data, never trusted as text
+
+**Decision:** Text extracted from a fetched page is treated exactly
+like user-submitted text: it flows into the pipeline as *data*, the
+extraction prompt (v2) frames it as untrusted content to describe, and
+nothing in the pipeline interprets it as an instruction, a verdict on
+the host, or a finding about legitimacy. `UrlSource` fields are
+chosen so a value cannot be read as a judgement — `page_title` is
+what the page called itself, `is_https` is a transport fact.
+
+**Context:** Phase 12's whole output is "claims a page makes about
+itself". A page can name its own title, describe its own registration
+and publish any claim — including claims about InvestShield, or prompt
+text aimed at an LLM that might summarise the page. The pipeline
+already refuses to trust generated text (D-015) and never emits a
+verdict (D-016, D-020); a fetched page is the same kind of untrusted
+input as a submitted message, one step earlier.
+
+**Alternatives:**
+
+- *Score the domain.* Rejected: "is this host a scam" is exactly the
+  judgement D-006 and D-020 forbid without authoritative evidence, and
+  no authoritative source for domain reputation is wired in. The
+  pipeline analyses claims *in* the page and says so.
+- *Store the raw HTML.* Rejected: nothing downstream reads it, and
+  keeping attacker-controlled bytes in the database would widen the
+  stored-XSS surface for no reader. Visible text is extracted and the
+  markup discarded.
+- *Trust the page's self-description.* Rejected: `page_title` and
+  `meta_description` are recorded as facts the page published, and
+  nothing downstream treats them as verified.
+
+**Reason:** The guarantee a client needs is that a hostile page cannot
+do more than supply content to be analysed. Keeping the fetch record
+descriptive and the extraction framing unchanged preserves that
+guarantee by construction, and the vocabulary tests enforce it at the
+API boundary like every other text the pipeline touches (D-046).
+
+**Date:** 2026-10-03

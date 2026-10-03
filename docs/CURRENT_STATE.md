@@ -7,8 +7,8 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 11 — React Frontend — **COMPLETE**
-**Current Subphase:** Phase 12 — URL Analysis — **NOT STARTED**
+**Current Phase:** Phase 12 — URL Analysis — **COMPLETE**
+**Current Subphase:** Phase 13 — Screenshot / OCR — **NOT STARTED**
 
 > **Phase 10 naming, reconciled.** Two project documents disagreed about what
 > Phase 10 is. `IMPLEMENTATION_PLAN.md` has always called it "Backend Test Suite";
@@ -20,26 +20,40 @@
 > premature decision `DATABASE_SCHEMA.md` was careful to avoid when it declined to
 > create the `reports` table.
 
-**Last Completed Task:** Phase 11 — the React frontend. A new `frontend/` application
-integrating with the existing API. **No backend file was modified in Phase 11**, and no
-API contract was changed: the frontend types were written from the running FastAPI
-application and the app was adapted wherever the API fell short of the plan.
+**Last Completed Task:** Phase 12 — URL analysis. A new `POST
+/api/investigations/url` endpoint fetches the submitted page under an
+SSRF guard, extracts its visible text, and runs the existing pipeline
+over that text. The backend gained four new modules
+(`url_guards`, `url_fetch`, `website_extractor`, `schemas/url.py`),
+the graph gained a URL input path, persistence gained a `source_metadata`
+column, and the frontend gained a working URL input mode.
 
-- **Five routes** — landing, dashboard, investigate, investigation report, history — plus
-  a not-found page.
-- **A typed API client** as the only `fetch` boundary, with the documented error envelope,
-  `ApiError` kinds (`http` / `network` / `timeout` / `malformed`), and no `any` in `src/`.
-- **A financial-security command-center design system**: Tailwind v4 theme, shadcn/ui-style
-  primitives, Lucide icons, and one Recharts view (risk contribution by severity) backed by
-  real factor data.
-- **Text is the only operational input.** URL, Screenshot and PDF surfaces are present and
-  clearly marked unavailable; their availability is read from
-  `GET /api/investigations/limits` rather than hardcoded. No request is sent for them.
-- **Verified against the running backend**, not mocks: 48 API-client assertions, 17 live
-  end-to-end text-flow assertions, and 26 server-render assertions over a real investigation
-  payload. See "Phase 11 verification" below.
+- **SSRF-guarded fetching** — http/https only, allowlist-only address
+  policy (private, loopback, link-local and metadata addresses refused,
+  including obfuscated IPv4 literals and names that *resolve* inward),
+  redirects re-validated at every hop, and byte/redirect/timeout budgets.
+- **Visible-text extraction** — a stdlib `HTMLParser` that drops
+  scripts, styles, comments and hidden content; no new dependency.
+- **The same pipeline, unchanged** — the graph's input node now accepts
+  URL input, fetches, and feeds the extracted text to extraction as
+  untrusted data. Fault taxonomy: caller faults are `422`, site faults
+  are `502`, a disabled fetch capability is `503`; nothing about the
+  site or the network leaks into an error message.
+- **Frontend URL mode** — the previously disabled "URL" tab on
+  `/investigate` is now live, its availability still read from
+  `GET /api/investigations/limits`.
+- **`url_source` on every response** — `null` for text runs; for URL
+  runs a frozen record of the fetch: submitted/normalized/final URL,
+  hostname, resolved addresses, redirect facts, HTTP status, content
+  type, TLS, charset, byte size, page title, meta description and the
+  fetch time. Every field is a transport fact or a string the page
+  published — none is a judgement about the host.
+- **Verified end to end** against the running backend: a real URL
+  investigation returns `url_source` and persists it; loopback,
+  metadata, non-http scheme and HTTP-error URLs are refused with the
+  documented codes. Full suite: **2796 passed, 4 deselected, 0 failed**.
 
-**Latest Commit:** `feat: implement React frontend` (Phase 11)
+**Latest Commit:** `feat: implement URL analysis` (Phase 12)
 **Working Tree:** see `git status`.
 
 ### Phase Status Summary
@@ -58,15 +72,16 @@ application and the app was adapted wherever the API fell short of the plan.
 | Phase 9 | Database models & repositories | **COMPLETE** |
 | Phase 10 | Testing & quality hardening | **COMPLETE** |
 | Phase 11 | React frontend | **COMPLETE** |
-| Phase 12 | URL analysis | **NEXT** |
+| Phase 12 | URL analysis | **COMPLETE** |
+| Phase 13 | Screenshot / OCR | **NEXT** |
 
 > Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
 > Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is
 > **not** a numbered project phase and is not started.
 >
-> **Phase 11 does not implement Phases 12–14.** The URL, Screenshot and PDF input
-> surfaces exist in the UI and are explicitly marked unavailable, because their backend
-> processing does not exist. The UI marks them rather than faking them.
+> **Phase 12 does not implement Phases 13–14.** The Screenshot and PDF input
+> surfaces exist in the UI and are explicitly marked unavailable, because their
+> backend processing does not exist. The UI marks them rather than faking them.
 
 ### Phase 11 — React frontend
 
@@ -82,11 +97,14 @@ the full architecture, scripts and product rules.
 | `/history`           | History               | `GET /api/investigations` (limit/offset)         |
 | `*`                  | Not found             | none                                            |
 
-**Backend contract, as implemented.** `GET /api/investigations/limits` returns
-`supported_input_types: ["TEXT"]`, and the OpenAPI document exposes **no** `/url` or
-`/upload` endpoint. The frontend therefore implements only the endpoints that exist. This
-is the reason the input-mode tabs are a planned-surface disclosure rather than a working
-multi-upload form.
+**Backend contract, as implemented in Phase 11.** At the time, `GET
+/api/investigations/limits` returned `supported_input_types: ["TEXT"]`,
+and the OpenAPI document exposed **no** `/url` or `/upload` endpoint.
+The frontend therefore implemented only the endpoints that existed, which
+is why the input-mode tabs were a planned-surface disclosure rather than a
+working multi-upload form. **Phase 12 has since added
+`POST /api/investigations/url`**, so the URL tab is now operational; the
+Screenshot and PDF tabs remain disclosed-but-disabled.
 
 **Charting.** Recharts is used in exactly one place: risk contribution by severity, built
 from `risk_assessment.factors[].contribution`. No chart is rendered where the API provides
@@ -123,18 +141,126 @@ All checks below were executed against the **running** backend, not mocks.
 | All five routes served | `GET /` … `/history` on the dev server | 200, every module compiles |
 | CORS preflight | `OPTIONS /api/investigations/text`, origin `localhost:5173` | `access-control-allow-origin: http://localhost:5173` |
 
-`verify:api` covers the happy paths for all five endpoints plus the error paths:
+`verify:api` covered the happy paths for all five endpoints plus the error paths:
 `INPUT_EMPTY`, over-length text, `INVESTIGATION_NOT_FOUND`, an out-of-range `limit`, and a
 simulated unreachable backend. `verify:flow` creates a real investigation through the same
 client function the Investigate page calls, then reads it back and confirms it appears in
-the history list with matching counts.
+the history list with matching counts. (Phase 12 extended `verify:api` to 57 checks,
+adding the limits discovery fields and the URL client's error paths — see
+"Phase 12 verification" below.)
 
 **Not verified in a real browser.** No automated browser was available in this environment,
 so mouse-driven interaction, visual layout at each breakpoint and the dev-server HMR
 experience were not exercised. Rendering correctness, the API contract and route serving
 were verified as described above.
 
+### Phase 12 — URL analysis
+
+**Location:** `backend/app/services/url_guards.py`, `url_fetch.py`,
+`website_extractor.py`, `backend/app/schemas/url.py`, the URL input path in
+`backend/app/graph/nodes.py`, and `frontend/src/hooks/use-url-investigation.ts`.
+
+| Concern | Where |
+| --- | --- |
+| URL request contract | `app/schemas/url.py` — `UrlInvestigationRequest` (url 1–2048 chars, optional language), frozen `UrlSource` and `WebsiteDocument` |
+| SSRF guard | `app/services/url_guards.py` — allowlist-only address policy, obfuscated-IPv4 detection, scheme allow-list |
+| Fetching | `app/services/url_fetch.py` — stdlib `http.client`, pinned connections, per-hop redirect re-validation, byte/redirect/timeout budgets |
+| Text extraction | `app/services/website_extractor.py` — stdlib `HTMLParser`, drops scripts/styles/comments/hidden content |
+| Graph input | `app/graph/nodes.py::_url_input` — fetches, records `url_source` on the state, feeds extracted text to extraction |
+| API surface | `app/api/routes/investigations.py::create_url_investigation` — `POST /api/investigations/url` |
+| Response record | `app/schemas/url.py::UrlSource` — 15 frozen fields describing the fetch; `WebsiteDocument` — extracted title/text/truncation |
+| Fault taxonomy | `app/api/errors.py` — caller faults `422`, site faults `502`, disabled capability `503` |
+| Persistence | `source_metadata` JSON column on `investigations`, written by the repository |
+| Frontend | URL mode on `/investigate`, availability read from `GET /api/investigations/limits` |
+
+**What it does.** The endpoint accepts `{ "url": "https://…", "language": "en" }`,
+validates and guards the URL, fetches the page over a pinned connection, extracts
+the visible text, and runs the *existing* pipeline (red flags → extraction →
+verification → evidence → risk) over that text. The response is the standard
+`InvestigationResponse` plus a `url_source` object describing what was fetched:
+submitted URL, hostname, HTTP status, whether TLS was used, byte size, and the
+truncation/timeout/content-type flags.
+
+**Fault taxonomy — whose fault is it?**
+
+| Fault | Status | Code |
+| --- | --- | --- |
+| Empty / over-length / invalid / non-http(s) URL, embedded credentials, control characters, unknown field | 422 | `URL_EMPTY`, `URL_INVALID`, `URL_TOO_LONG`, `URL_SCHEME_UNSUPPORTED`, `URL_HOST_MISSING`, `URL_HOST_TOO_LONG`, `URL_CREDENTIALS_NOT_ACCEPTED`, `URL_CONTROL_CHARACTERS_NOT_ACCEPTED` |
+| SSRF-blocked destination (literal or resolving inward) | 422 | `URL_ADDRESS_BLOCKED`, `URL_METADATA_ADDRESS_BLOCKED`, `URL_METADATA_HOSTNAME_BLOCKED` |
+| Site fault — DNS, connect, TLS, timeout, too many redirects, HTTP error, oversize or wrong content type | 502 | `URL_DNS_FAILED`, `URL_FETCH_FAILED`, `URL_TIMEOUT`, `URL_TOO_MANY_REDIRECTS`, `URL_HTTP_ERROR`, `URL_CONTENT_TOO_LARGE`, `URL_CONTENT_TYPE_UNSUPPORTED` |
+| Fetch capability disabled by configuration | 503 | `URL_FETCH_DISABLED`, `URL_FETCH_UNAVAILABLE` |
+
+No message ever contains a socket error, TLS detail, resolved address or
+provider text — wording comes from the fixed `URL_MESSAGES` table, and tests
+plant real-shaped failures and assert none of that detail reaches a response.
+
+**Degradation, not failure.** A JavaScript-only page whose visible text is
+empty still runs the pipeline; the run returns `200` with `PARTIAL` and a
+`PAGE_TEXT_NOT_RETRIEVED` warning. Truncated content is recorded as a
+limitation. An LLM-less deployment returns `PARTIAL` with the familiar
+`EXTRACTION_PARTIAL` / `EXTRACTION_FALLBACK` limitations, exactly as the
+text path does.
+
+### Phase 12 verification
+
+All checks below were executed against the **running** backend.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full backend suite | `cd backend && python -m pytest` | **2796 passed, 4 deselected, 0 failed** |
+| URL fetch / guard unit tests | `pytest tests/test_url_fetch.py tests/test_url_guards.py tests/test_website_extractor.py tests/graph/test_graph_url_execution.py` | pass |
+| SSRF redirects | parametrized over metadata / loopback / private / IPv6 literals and inward-resolving names | all refused with `URL_ADDRESS_BLOCKED` / `URL_METADATA_ADDRESS_BLOCKED` |
+| URL investigation round-trip | `POST /api/investigations/url` then `GET /api/investigations/{id}` | `200`, `input_type=URL`, `url_source` persisted and returned |
+| TEXT regression | `POST /api/investigations/text` (demo scam text) | unchanged: 3 red flags, full pipeline |
+| SSRF via API | `127.0.0.1`, `169.254.169.254` | 422 `URL_ADDRESS_BLOCKED` / `URL_METADATA_ADDRESS_BLOCKED` |
+| Scheme / HTTP faults via API | `ftp://…`, a 404 URL | 422 `URL_SCHEME_UNSUPPORTED` / 502 `URL_HTTP_ERROR` |
+| OpenAPI contract | `/openapi.json` | `/api/investigations/url` present; `UrlInvestigationRequest`, `UrlSource` (14 properties), 422/502/503 responses |
+| Frontend | `npm run typecheck` / `lint` / `build` | pass, pass, pass (2234 modules) |
+| API client vs live API | `npm run verify:api` | **57 passed, 0 failed** (48 from Phase 11 + 9 URL checks) |
+
+**Known limitations of the phase** (recorded, not hidden): the fetch depends
+on network availability; JavaScript-rendered pages yield little or no text
+(`PAGE_TEXT_NOT_RETRIEVED`); fetched content is truncated at the byte budget
+and the truncation is recorded; no translation is performed
+(`translation_enabled: false`); and in this deployment the LLM is
+unavailable, so extraction runs in fallback mode and the run reports
+`PARTIAL`.
+
 ### Files Recently Changed
+
+**Phase 12 — URL analysis:**
+
+```
+backend/app/schemas/url.py                        (new — URL request/response contracts)
+backend/app/services/url_guards.py                (new — SSRF allowlist policy)
+backend/app/services/url_fetch.py                 (new — pinned-connection fetcher)
+backend/app/services/website_extractor.py         (new — visible-text HTML extraction)
+backend/tests/url_factories.py                    (new — shared URL test fakes)
+backend/tests/test_url_guards.py                  (new)
+backend/tests/test_url_fetch.py                   (new)
+backend/tests/test_website_extractor.py           (new)
+backend/tests/graph/test_graph_url_execution.py   (new)
+backend/app/graph/nodes.py                        (+ URL input node, URL fault codes)
+backend/app/graph/state.py                        (+ url_source)
+backend/app/graph/context.py                      (+ url_fetch_service, website_extractor, supports_url)
+backend/app/schemas/api.py                        (+ UrlInvestigationRequest, url_source on the response)
+backend/app/api/routes/investigations.py          (+ POST /api/investigations/url)
+backend/app/api/errors.py                         (+ URL error classes and code sets)
+backend/app/api/adapters.py                       (serialize url_source)
+backend/app/core/config.py                        (+ fetch settings)
+backend/app/models/investigation.py               (+ source_metadata column)
+backend/app/db/session.py                         (additive DDL for source_metadata)
+backend/app/repositories/investigations.py        (persist url_source)
+backend/app/prompts/extraction.py                 (extraction-v2 frames web text as untrusted data)
+backend/tests/api/*.py, backend/tests/graph/*.py  (+ URL contract, error, safety, persistence and graph cases)
+backend/tests/test_extraction_service.py, test_failure_injection.py  (+ URL cases)
+frontend/src/hooks/use-url-investigation.ts       (new)
+frontend/src/services/api-client.ts               (+ createUrlInvestigation)
+frontend/src/types/api.ts                         (+ UrlInvestigationRequest)
+frontend/src/pages/InvestigatePage.tsx            (URL mode)
+frontend/scripts/verify-api-client.mjs            (+ URL wiring checks)
+docs/*                                            (Phase 12 documentation)
+```
 
 **Phase 10 — testing and quality hardening:**
 
@@ -216,17 +342,18 @@ Three precisions:
 
 ```
 cd backend && python -m pytest
-2510 passed, 4 deselected
+2796 passed, 4 deselected
 ```
 
 **Zero failures.** The four deselected are the `integration`-marked tests, which
 need a real external service and are excluded by `pytest.ini`
 (`addopts = -q --strict-markers -m "not integration"`).
 
-Phase 9 closed at `2085 passed, 4 deselected`. Phase 10 added **425 tests** across
-13 new modules and changed no existing assertion's meaning. The one existing file
-touched, `tests/test_risk_safety.py`, had its matcher moved into
-`tests/vocabulary.py` with no test added, removed or weakened.
+Phase 10 closed at `2510 passed, 4 deselected`. Phase 11 changed no backend
+test. Phase 12 added **286 tests** — 189 in four new modules
+(`test_url_guards.py` 82, `test_url_fetch.py` 47, `test_website_extractor.py`
+39, `graph/test_graph_url_execution.py` 21) and 97 across twelve existing
+modules — and changed no existing assertion's meaning.
 
 | Area | Collected | Module |
 | --- | --- | --- |
@@ -362,7 +489,7 @@ None.
 | `SERPAPI_KEY` | **absent** | `SearchService.available = false`; verification degrades to `SEARCH_UNAVAILABLE` |
 | SQLite | working | tests use per-test temporary files; `PRAGMA foreign_keys=ON` is set per connection |
 | PostgreSQL | **not installed** | DDL is verified by compiling every table and index against the PostgreSQL dialect in `tests/db/test_schema.py`, but no live PostgreSQL run has been made |
-| `httpx` | installed | used by `LLMService` and `SerpAPIProvider` |
+| `httpx` | installed | used by `LLMService`, `SerpAPIProvider` and `UrlFetchService` |
 | `langgraph` | **installed, 1.2.12** | `requirements.txt`; verified on CPython 3.14 |
 | Tesseract binary | present, not on `PATH` | `resolve_tesseract_cmd()` finds it; `OCRService` not built |
 | `pytesseract` / `Pillow` / PyMuPDF / `sentence-transformers` | **not installed** | deliberately deferred |
@@ -443,8 +570,10 @@ Carried forward from Phase 9, unchanged:
 - **`limitations` is still a flat code array** with no per-claim attribution, so a
   limitation cannot be joined back to the claim it affected.
 - **`completed_at` is always `NULL`** — see Known Bugs 1.
-- **Only `TEXT` input is analysed.** `URL`, `IMAGE` and `PDF` are recognised and
-  refused with `422`.
+- **Only `TEXT` and `URL` inputs are analysed.** `IMAGE` and `PDF` are
+  recognised and refused with `422`. URL fetching depends on the network,
+  yields no text from JavaScript-only pages, and truncates over-budget
+  content — each recorded as a limitation, never hidden.
 
 Identified in Phase 10, recorded rather than fixed, because fixing any of them means
 redesigning something Phase 10 was explicitly not scoped to redesign:
@@ -540,23 +669,35 @@ the next phase:
 | D-047 | Leak-safety is proven by planting the secret, never by reading the handler |
 | D-048 | Query cost is asserted as flatness in the data, not as a magic number |
 | D-049 | `completed_at` stays `null`; the pipeline will not invent a time it never measured |
+| D-050 | Input-mode availability is read from the API, not hardcoded in the frontend |
+| D-054 | URL analysis fetches with the stdlib, guards with an allowlist, and splits faults 422/502/503 by whose mistake they are |
+| D-055 | Fetched page text is untrusted data, never trusted as text |
 
 ---
 
 ## Next Exact Task
 
-**Phase 11 — React frontend**, per `IMPLEMENTATION_PLAN.md`.
+**Phase 13 — Screenshot / OCR**, per `IMPLEMENTATION_PLAN.md`.
 
-1. Vite + React + TS + Tailwind + shadcn/ui scaffold; `/`, `/dashboard`,
-   `/investigate`, `/investigation/:id`, `/history`; an API client layer.
-2. The backend contract the frontend must code against is unchanged since Phase 8,
-   with Phase 9's two additions: `GET /api/investigations/{id}` and
-   `GET /api/investigations`. Note that a shared investigation id resolves to the
-   **newest** run — see "The retrieval contract, stated correctly".
-3. Frontend work will hit three known limitations directly and should plan for them
-   rather than discover them: `GET /api/investigations/limits` has no machine-readable
-   schema, `completed_at` is always `null` so duration cannot be shown, and
-   `URL`/`IMAGE`/`PDF` submissions are refused with `422`.
+1. Image upload → OCR → text → the standard pipeline, reusing the
+   Phase 12 input-node seam (`supports_url` generalises to any
+   extracted-text input).
+2. `OCR_UNAVAILABLE` when Tesseract is absent — the pipeline
+   continues and records the limitation, exactly as URL fetching
+   degrades.
+3. File size / type validation, `multipart/form-data`, `413` on
+   oversize, `422` on a disallowed type.
+4. The frontend's Screenshot tab is already disclosed and disabled;
+   enable it when `POST /api/investigations/upload` exists.
+
+**Phase 12 left the following open,** in priority order:
+
+- JavaScript-rendered pages yield little or no text
+  (`PAGE_TEXT_NOT_RETRIEVED`); a headless-browser fetch is the
+  eventual remedy and is out of scope for Phase 12.
+- `GET /api/investigations/limits` still has no machine-readable
+  OpenAPI schema (carried from Phase 10).
+- `completed_at` is still always `NULL` (a Phase 7 gap, carried).
 
 ### Report generation
 
@@ -582,9 +723,9 @@ still stand unchanged:
 > will have to satisfy. `tests/api/test_api_risk_safety.py` is the executable
 > statement of it, and a report's rendered text should meet the same bar.
 
-### Do not start before Phase 11 is green
+### Do not start before Phase 12 is green
 
-- No authentication, no OCR/PDF/URL ingestion, no report generation.
+- No authentication, no OCR/PDF ingestion, no report generation.
 
 ---
 
@@ -595,10 +736,10 @@ If you are reading this in a fresh session:
 1. [x] Read `docs/CURRENT_STATE.md` (this file)
 2. [ ] Read `docs/IMPLEMENTATION_PLAN.md`
 3. [ ] Read `docs/ARCHITECTURE.md` (§2.3d for the graph, §2.3e for the API,
-       §2.3f for persistence, §2.3g for the test architecture) and
-       `docs/DECISIONS.md` (D-030…D-047)
+       §2.3f for persistence, §2.3g for the test architecture, §2.3h for
+       URL ingestion) and `docs/DECISIONS.md` (D-030…D-055)
 4. [ ] Read `docs/DATABASE_SCHEMA.md` and the last entry in `docs/DEVELOPMENT_LOG.md`
 5. [ ] Run `git status` and `git log --oneline -5`
-6. [ ] Run `cd backend && python -m pytest` — expect **2510 passed, 4 deselected,
+6. [ ] Run `cd backend && python -m pytest` — expect **2796 passed, 4 deselected,
        0 failed**
 7. [ ] Execute **Next Exact Task**

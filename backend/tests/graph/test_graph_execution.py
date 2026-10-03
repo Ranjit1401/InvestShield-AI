@@ -459,9 +459,13 @@ class TestInvalidInput:
         state = run_investigation("   ", context=offline_context(fake_dependencies()))
         assert state.get("risk_assessment") is None
 
-    @pytest.mark.parametrize("kind", ["URL", "IMAGE", "PDF"])
+    @pytest.mark.parametrize("kind", ["IMAGE", "PDF"])
     def test_an_unimplemented_input_kind_produces_no_analysis(self, kind: str) -> None:
-        """Recognised, refused, and never silently analysed as text."""
+        """Recognised, refused, and never silently analysed as text.
+
+        `URL` left this list in Phase 12, when it stopped being unimplemented.
+        It is covered by the URL execution tests instead.
+        """
         state = run_investigation("some content", input_type=kind,
                                   context=offline_context(fake_dependencies()))
         assert state.get("risk_assessment") is None

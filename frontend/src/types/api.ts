@@ -515,6 +515,12 @@ export interface TextInvestigationRequest {
   language?: Language;
 }
 
+export interface UrlInvestigationRequest {
+  /** The public HTTP(S) URL to investigate, up to 2048 characters. */
+  url: string;
+  language?: Language;
+}
+
 export interface ListInvestigationsParams {
   /** 1-100. The backend rejects anything outside this range. */
   limit?: number;

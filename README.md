@@ -50,7 +50,7 @@ CLAIM  →  EVIDENCE  →  SOURCE
 
 ## Status
 
-**Phases 0–11 are complete.** The full investigation pipeline runs, is exposed
+**Phases 0–12 are complete.** The full investigation pipeline runs, is exposed
 over HTTP, is persisted, is covered by an offline test suite, and has a React
 frontend:
 
@@ -64,7 +64,8 @@ frontend:
 | 9 | Persistence (models & repositories) | complete |
 | 10 | Testing & quality hardening | complete |
 | 11 | React frontend | complete |
-| 12–14 | URL, screenshot/OCR, PDF analysis | not started |
+| 12 | URL analysis | complete |
+| 13–14 | screenshot/OCR, PDF analysis | not started |
 
 Live endpoints:
 
@@ -73,22 +74,29 @@ GET  /api/health
 GET  /api/investigations/limits
 POST /api/investigations
 POST /api/investigations/text
+POST /api/investigations/url
 GET  /api/investigations
 GET  /api/investigations/{id}
 ```
 
-`POST /api/investigations/text` returns the complete investigation synchronously —
-claims, entities, red flags, verification results, evidence with sources, the risk
-assessment, a stage timeline, and a `limitations` array of machine-readable codes.
+`POST /api/investigations/text` and `POST /api/investigations/url` return
+the complete investigation synchronously — claims, entities, red flags,
+verification results, evidence with sources, the risk assessment, a stage
+timeline, and a `limitations` array of machine-readable codes. The URL
+endpoint fetches the submitted page under an SSRF guard (http/https only,
+private/loopback and metadata addresses refused, redirects re-validated,
+size and time budgets) and runs the same pipeline over the extracted page
+text.
 
 A **partial** run is a `200`, not an error. If search or the LLM is unavailable the
 response carries `status: PARTIAL` and names exactly which check did not happen.
 Only a malformed submission or a broken internal contract produces a `4xx`/`5xx`.
 
-Only `TEXT` input is analysed. `URL`, image and PDF endpoints are not implemented
-yet — those input types are recognised and refused with a `422` that lists what
-this version does analyse. The frontend shows those modes as disabled and labels
-each with the phase that will implement it (12–14); it does not pretend they work.
+`TEXT` and `URL` inputs are analysed. Image and PDF endpoints are not
+implemented yet — those input types are recognised and refused with a
+`422` that lists what this version does analyse. The frontend shows
+those modes as disabled and labels each with the phase that will
+implement it (13–14); it does not pretend they work.
 
 See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for the full
 roadmap and [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for exactly where
@@ -201,7 +209,7 @@ cd backend
 python -m pytest
 ```
 
-Expected: `2510 passed, 4 deselected`. The suite is fully offline — it clears the
+Expected: `2796 passed, 4 deselected`. The suite is fully offline — it clears the
 API keys and the `DATABASE_URL` environment variable, so it never reaches a
 network service even when a real `.env` is present.
 

@@ -43,6 +43,7 @@ EXPECTED_ENDPOINTS: dict[str, set[str]] = {
     "/api/health": {"get"},
     "/api/investigations": {"get", "post"},
     "/api/investigations/text": {"post"},
+    "/api/investigations/url": {"post"},
     "/api/investigations/limits": {"get"},
     "/api/investigations/{investigation_id}": {"get"},
 }
@@ -212,9 +213,26 @@ class TestRequestAndResponseSchemas:
         Args:
             openapi: The generated document.
         """
-        for name in ("TextInvestigationRequest", "InvestigationCreateRequest"):
+        for name in (
+            "TextInvestigationRequest",
+            "InvestigationCreateRequest",
+            "UrlInvestigationRequest",
+        ):
             schema = openapi["components"]["schemas"][name]
             assert schema["additionalProperties"] is False, f"{name} permits extras"
+
+    def test_the_url_field_documents_its_length_bounds(
+        self, openapi: dict[str, object]
+    ) -> None:
+        """A URL is bounded as a URL, and the published bound is the enforced one.
+
+        Args:
+            openapi: The generated document.
+        """
+        url = openapi["components"]["schemas"]["UrlInvestigationRequest"]["properties"]["url"]
+
+        assert url["minLength"] == 1
+        assert url["maxLength"] == 2048
 
     def test_the_text_field_documents_its_length_bounds(
         self, openapi: dict[str, object]

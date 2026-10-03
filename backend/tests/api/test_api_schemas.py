@@ -108,6 +108,8 @@ def test_every_documented_response_field_exists() -> None:
         "errors",
         "started_at",
         "completed_at",
+        # Phase 12: null for a TEXT submission, populated for a URL one.
+        "url_source",
     }
 
 

@@ -279,7 +279,8 @@ Beyond the checklist, three things the plan did not anticipate:
 - [x] Test 2 — legitimate-looking text → not auto-flagged as fraud
 - [x] Test 3 — unverified adviser → `UNVERIFIED`
 - [ ] Test 4 — screenshot OCR continues pipeline — **blocked: OCR is Phase 13**
-- [ ] Test 5 — URL analysis — **blocked: URL ingestion is Phase 12**
+- [x] Test 5 — URL analysis — delivered in Phase 12
+  (`tests/graph/test_graph_url_execution.py`)
 - [x] Test 6 — no external evidence → `INSUFFICIENT_EVIDENCE`
 - [x] Test 7 — search unavailable → graceful degradation
 - [x] Integration tests across API + DB + pipeline
@@ -312,20 +313,53 @@ change and no API contract change.
 `npm run build` pass, and the client was verified against the running backend (48 API
 assertions, 17 live end-to-end text-flow assertions, 26 render assertions).
 
-> **The URL, Screenshot and PDF input surfaces are present as UI, but their backend
-> processing is deferred to Phases 12–14 and does not work.** The OpenAPI document exposes
-> no `/url` or `/upload` endpoint and `GET /api/investigations/limits` reports
-> `supported_input_types: ["TEXT"]`. Those input modes are therefore rendered as disabled
-> and labelled with the phase that will implement them; the frontend sends no request for
-> them. They must not be described as operational.
+> **The Screenshot and PDF input surfaces are present as UI, but their backend
+> processing is deferred to Phases 13–14 and does not work.** The OpenAPI
+> document exposes no `/upload` endpoint and
+> `GET /api/investigations/limits` reports
+> `supported_input_types: ["TEXT", "URL"]` since Phase 12. Those input modes
+> are therefore rendered as disabled and labelled with the phase that will
+> implement them; the frontend sends no request for them. They must not be
+> described as operational.
 
-## Phase 12 — URL Analysis `[ ]`
+## Phase 12 — URL Analysis `[x]`
 
-- [ ] Domain parsing + safe fetch (SSRF guards, scheme/size limits)
-- [ ] Page text extraction
-- [ ] Registration claims / payment methods / download links extraction
-- [ ] Structured website analysis object
-- [ ] Never label a domain malicious without evidence
+**Goal:** accept a submitted URL, fetch the page safely, and run the
+existing pipeline over its visible text.
+
+- [x] Domain parsing + safe fetch (SSRF guards, scheme/size limits)
+- [x] Page text extraction
+- [x] Registration claims / payment methods / download links extraction
+- [x] Structured website analysis object
+- [x] Never label a domain malicious without evidence
+
+**Status:** complete. Implemented in
+`backend/app/services/url_guards.py`, `url_fetch.py`,
+`website_extractor.py`, `backend/app/schemas/url.py`, the URL input
+path in `backend/app/graph/nodes.py`, `POST /api/investigations/url`,
+a `source_metadata` persistence column, and the frontend's URL input
+mode. Full suite: **2796 passed, 4 deselected, 0 failed**;
+`npm run verify:api` 57 passed.
+
+**What was built:** an allowlist-only SSRF policy (private, loopback,
+link-local and metadata addresses refused — including obfuscated IPv4
+literals and names that resolve inward), a stdlib `http.client`
+fetcher with pinned connections, per-hop redirect re-validation and
+byte/redirect/timeout budgets, a stdlib visible-text extractor, and a
+fault taxonomy that answers `422` for caller faults, `502` for site
+faults and `503` for a disabled fetch capability, with no socket, TLS
+or host detail in any message.
+
+**Deliberately deferred:** JavaScript-rendered pages (a headless
+browser is the eventual remedy; `PAGE_TEXT_NOT_RETRIEVED` is recorded
+instead of faking text), and any verdict on a domain itself — the
+pipeline analyses *claims in the page*, never "is this domain a scam"
+(D-006, D-020).
+
+> **The Screenshot and PDF input surfaces remain UI-only.** Their
+> backend processing is Phases 13–14; the frontend keeps them disabled
+> and phase-labelled, and `GET /api/investigations/limits` now reports
+> `supported_input_types: ["TEXT", "URL"]`.
 
 ## Phase 13 — Screenshot / OCR `[ ]`
 

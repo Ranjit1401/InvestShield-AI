@@ -297,6 +297,11 @@ TEXT | URL | IMAGE | PDF
 Every input type normalizes into one common investigation representation so the
 downstream pipeline is input-agnostic and language-independent.
 
+**Implemented:** `TEXT` (Phase 8) and `URL` (Phase 12 — SSRF-guarded
+fetch, visible-text extraction, `url_source` provenance). `IMAGE` and
+`PDF` are recognised and refused with `422 INPUT_TYPE_NOT_SUPPORTED`
+until Phases 13–14.
+
 ## 10. Current Architecture (summary)
 
 ```

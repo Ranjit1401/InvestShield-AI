@@ -30,16 +30,24 @@ from __future__ import annotations
 
 from fastapi import status
 
+from app.graph.nodes import (
+    URL_CAPABILITY_UNAVAILABLE_CODES,
+    URL_CLIENT_FAULT_CODES,
+    URL_SITE_FAULT_CODES,
+)
 from app.graph.state import GraphError, InvestigationInputType
 from app.schemas.api import FailureDetail, RecordedErrorDetail
 
 __all__ = [
     "ApiError",
+    "CapabilityUnavailable",
     "GraphContractError",
     "InvestigationNotFound",
     "SubmissionRejected",
     "UNPROCESSABLE_CONTENT",
+    "SUPPORTED_INPUT_TYPES",
     "UnsupportedInputType",
+    "UpstreamSiteError",
     "error_status_for",
     "raise_for_graph_errors",
 ]
@@ -47,7 +55,10 @@ __all__ = [
 #: Input kinds this version actually analyses. Named here rather than imported
 #: from the route so the error contract cannot drift silently when a new kind
 #: ships: adding one to this tuple is a deliberate act, not a side effect.
-_SUPPORTED_INPUT_TYPES: tuple[InvestigationInputType, ...] = (InvestigationInputType.TEXT,)
+SUPPORTED_INPUT_TYPES: tuple[InvestigationInputType, ...] = (
+    InvestigationInputType.TEXT,
+    InvestigationInputType.URL,
+)
 
 #: Starlette renamed this constant when the status was reclassified, and the old
 #: name now resolves through a deprecation shim. Resolving it once keeps the
@@ -136,6 +147,30 @@ class InvestigationNotFound(ApiError):
         )
 
 
+class UpstreamSiteError(ApiError):
+    """The submitted site could not be read, and the request was not at fault.
+
+    `502 Bad Gateway` on purpose. Phase 12 asks the server to retrieve a page
+    the caller named, and when that retrieval fails — a DNS failure, a timeout,
+    an error status, a redirect loop, an oversized or non-HTML response — the
+    request was well-formed and the fault is the upstream's. The caller cannot
+    fix it by changing the URL, so `422` would wrongly tell them to, and `500`
+    would wrongly tell them this product is broken.
+
+    `422` is reserved for the refusals that *are* the caller's to fix: a
+    malformed address, a scheme this version will not fetch, or a destination the
+    SSRF policy blocks. Those are in `URL_CLIENT_FAULT_CODES`.
+    """
+
+    def __init__(self, code: str, message: str, *, detail: object | None = None) -> None:
+        super().__init__(
+            code,
+            message,
+            detail=detail,
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+
+
 class GraphContractError(ApiError):
     """A stage broke a documented contract, ending the run.
 
@@ -162,7 +197,40 @@ class GraphContractError(ApiError):
 #: that was expected to succeed.
 _CLIENT_FAULT_CODES: frozenset[str] = frozenset(
     {"INPUT_EMPTY", "INPUT_TYPE_NOT_SUPPORTED"}
+) | set(URL_CLIENT_FAULT_CODES)
+
+#: Failures caused by the submitted site or by our inability to reach it. These
+#: render as `502`, because the request was valid and the upstream we were asked
+#: to read could not be read. Imported from `app.graph.nodes` rather than
+#: re-listed, so the graph's classification and the API's status mapping cannot
+#: disagree about which code means what.
+_SITE_FAULT_CODES: frozenset[str] = frozenset(URL_SITE_FAULT_CODES)
+
+#: The request was well-formed and this deployment does not offer URL analysis,
+#: so nothing was attempted. `503` rather than `500` because nothing is broken
+#: here, and rather than `502` because there is no upstream that failed.
+_CAPABILITY_UNAVAILABLE_CODES: frozenset[str] = frozenset(
+    URL_CAPABILITY_UNAVAILABLE_CODES
 )
+
+
+class CapabilityUnavailable(ApiError):
+    """This deployment does not offer the requested capability right now.
+
+    `503 Service Unavailable`. Distinct from both `422` — the request was fine —
+    and `502` — nothing upstream was contacted, so there is no upstream to have
+    failed. Saying so is what lets a client tell "this product cannot do that
+    yet" apart from "the site I sent you is down", which are different things to
+    a user and to whoever is on call.
+    """
+
+    def __init__(self, code: str, message: str, *, detail: object | None = None) -> None:
+        super().__init__(
+            code,
+            message,
+            detail=detail,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
 
 def _detail(
@@ -191,7 +259,7 @@ def _detail(
             for error in errors
         ],
         submitted_input_type=submitted_input_type,
-        supported_input_types=_SUPPORTED_INPUT_TYPES
+        supported_input_types=SUPPORTED_INPUT_TYPES
         if submitted_input_type is not None
         else [],
     )
@@ -205,11 +273,15 @@ def error_status_for(error: GraphError) -> int:
         error: A :class:`~app.graph.state.GraphError` from a finished state.
 
     Returns:
-        `422` for a submission the caller must fix, `500` for a contract
-        violation.
+        `422` for a submission the caller must fix, `502` when the submitted
+        site could not be read, `500` for a contract violation.
     """
     if error.code in _CLIENT_FAULT_CODES:
         return _UNPROCESSABLE_CONTENT
+    if error.code in _SITE_FAULT_CODES:
+        return status.HTTP_502_BAD_GATEWAY
+    if error.code in _CAPABILITY_UNAVAILABLE_CODES:
+        return status.HTTP_503_SERVICE_UNAVAILABLE
     return status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
@@ -231,7 +303,10 @@ def raise_for_graph_errors(
 
     Raises:
         UnsupportedInputType: If the failure was an unanalysed input type.
-        SubmissionRejected: If the failure was an empty submission.
+        SubmissionRejected: If the failure was an empty submission or a URL the
+            caller must fix.
+        UpstreamSiteError: If the submitted site could not be retrieved.
+        CapabilityUnavailable: If this deployment does not offer URL analysis.
         GraphContractError: If a stage broke its documented contract.
     """
     if not errors:
@@ -246,5 +321,14 @@ def raise_for_graph_errors(
         detail = _detail(errors, submitted_input_type=submitted_input_type)
         raise UnsupportedInputType(first.code, first.message, detail=detail)
     if first.code == "INPUT_EMPTY":
+        raise SubmissionRejected(first.code, first.message, detail=_detail(errors))
+    if first.code in _SITE_FAULT_CODES:
+        raise UpstreamSiteError(first.code, first.message, detail=_detail(errors))
+    if first.code in _CAPABILITY_UNAVAILABLE_CODES:
+        raise CapabilityUnavailable(first.code, first.message, detail=_detail(errors))
+    if first.code in _CLIENT_FAULT_CODES:
+        # The URL the caller must fix: a malformed address, an unsupported
+        # scheme, or a destination the SSRF policy refuses. Retrying the same
+        # URL unchanged fails identically, which is what `422` means.
         raise SubmissionRejected(first.code, first.message, detail=_detail(errors))
     raise GraphContractError(first.code, first.message, detail=_detail(errors))

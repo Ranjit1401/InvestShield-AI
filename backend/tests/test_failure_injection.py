@@ -45,6 +45,7 @@ from app.schemas.risk import RiskAssessment, RiskLevel
 from app.schemas.search import SearchResponse, SearchStatus
 from app.schemas.verification import VerificationResponse, VerificationStatus
 from app.services.search import SearchProvider, SearchService
+from app.services.url_fetch import UrlFetchError
 from sqlalchemy.exc import (
     DatabaseError,
     IntegrityError,
@@ -61,11 +62,19 @@ from tests.graph.graph_factories import (
     build_entity,
     build_flag,
     extraction_with,
+    offline_settings,
+    real_dependencies,
     result_for,
     sebi_result,
     verification_response,
 )
 from tests.persistence_factories import REGULATORY_CONTENT
+from tests.url_factories import (
+    JS_ONLY_PAGE,
+    FakeFetchService,
+    build_page,
+    url_dependencies,
+)
 
 #: A contract violation is what each service documents it will never raise. Any
 #: exception escaping one is a defect beneath the graph, so the graph stops rather
@@ -216,14 +225,15 @@ class TestInputFailures:
         assert not state.get("claims")
         assert not state.get("risk_assessment")
 
-    @pytest.mark.parametrize("kind", ["URL", "IMAGE", "PDF"])
+    @pytest.mark.parametrize("kind", ["IMAGE", "PDF"])
     def test_an_unsupported_input_type_is_refused_without_analysing_as_text(
         self, real_context: GraphContext, kind: str
     ) -> None:
         """A recognised-but-unanalysed kind is refused, never read as prose.
 
-        Analysing a URL as text would report findings about something the client
-        never submitted as text.
+        Analysing an image as text would report findings about something the client
+        never submitted as text. `URL` left this set in Phase 12, which began
+        retrieving and analysing it; `TestUrlInputFailures` covers it below.
 
         Args:
             real_context: An offline context with the genuine services.
@@ -243,6 +253,247 @@ class TestInputFailures:
         # a client shows the person who sent it. Asserting only the error would let
         # the user-facing half be dropped without anything failing.
         assert "INPUT_TYPE_NOT_ANALYSED" in {w.code for w in state.get("warnings", ())}
+
+
+class TestUrlInputFailures:
+    """Phase 12: a URL that cannot be retrieved, and the two ways that fails.
+
+    Three things are distinguished, and the distinction is the substance of this
+    class rather than incidental:
+
+    - a refusal the **caller** must fix, which is `422` and which retrying
+      unchanged will never clear;
+    - a **site** that could not be read, which is `502` and which says nothing
+      about the request;
+    - a **deployment** that does not analyse URLs, which is `503` and which says
+      nothing about either.
+
+    Collapsing any two of them would tell a caller to do something that cannot
+    work.
+    """
+
+    @staticmethod
+    def _context(fetcher: object) -> GraphContext:
+        """Build a context whose URL fetcher is the given stand-in.
+
+        Args:
+            fetcher: The stand-in for `URLFetchService`.
+
+        Returns:
+            An offline context with URL analysis wired to `fetcher`.
+        """
+        return _context_with(
+            url_dependencies(real_dependencies(offline_settings())[0], fetcher)
+        )
+
+    @staticmethod
+    def _run_url(context: GraphContext, url: str = "https://example.com/invest"):
+        """Run one URL investigation.
+
+        Args:
+            context: The context to run against.
+            url: The submitted URL.
+
+        Returns:
+            The final state.
+        """
+        return run_investigation(
+            url, input_type=InvestigationInputType.URL, context=context
+        )
+
+    # -- caller faults: 422 --------------------------------------------
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "URL_EMPTY",
+            "URL_INVALID",
+            "URL_TOO_LONG",
+            "URL_SCHEME_UNSUPPORTED",
+            "URL_HOST_MISSING",
+            "URL_HOST_TOO_LONG",
+            "URL_CREDENTIALS_NOT_ACCEPTED",
+            "URL_CONTROL_CHARACTERS_NOT_ACCEPTED",
+            "URL_ADDRESS_BLOCKED",
+            "URL_METADATA_ADDRESS_BLOCKED",
+            "URL_METADATA_HOSTNAME_BLOCKED",
+        ],
+    )
+    def test_every_caller_fault_code_is_produced_and_runs_nothing(
+        self, code: str
+    ) -> None:
+        """Each submission fault is recorded, and nothing downstream runs.
+
+        A refusal that still produced claims or a score would be the worst
+        outcome available: it would show a caller findings about a page that was
+        never fetched.
+
+        Args:
+            code: The refusal code the fetcher raises.
+        """
+        fetcher = FakeFetchService(error=UrlFetchError(code))
+        state = self._run_url(self._context(fetcher))
+
+        assert state["errors"], f"{code} must record a failure"
+        assert state["errors"][0].code == code
+        assert state["current_stage"] == "input"
+        assert not state.get("claims")
+        assert not state.get("risk_assessment")
+        assert state.get("url_source") is None
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "URL_FETCH_DISABLED",
+            "URL_DNS_FAILED",
+            "URL_FETCH_FAILED",
+            "URL_TIMEOUT",
+            "URL_HTTP_ERROR",
+            "URL_TOO_MANY_REDIRECTS",
+            "URL_CONTENT_TOO_LARGE",
+            "URL_CONTENT_TYPE_UNSUPPORTED",
+        ],
+    )
+    def test_every_site_fault_code_is_produced_and_runs_nothing(self, code: str) -> None:
+        """Each retrieval fault is recorded, and nothing downstream runs.
+
+        `URL_HTTP_ERROR` needs the status the template fills in, which is supplied
+        the way the real service supplies it.
+
+        Args:
+            code: The refusal code the fetcher raises.
+        """
+        fields = {"status": 500} if code == "URL_HTTP_ERROR" else {}
+        fetcher = FakeFetchService(error=UrlFetchError(code, **fields))
+        state = self._run_url(self._context(fetcher))
+
+        assert state["errors"], f"{code} must record a failure"
+        assert state["errors"][0].code == code
+        assert state["current_stage"] == "input"
+        assert not state.get("claims")
+        assert not state.get("risk_assessment")
+
+    def test_a_graph_without_url_services_refuses_the_capability(self) -> None:
+        """A graph built without URL services says so, rather than pretending.
+
+        Reporting this as an unsupported input *kind* would be wrong twice over:
+        the kind is supported by the product, and the run failed before anything
+        was submitted to the pipeline.
+        """
+        context = _context_with(real_dependencies(offline_settings())[0])
+        assert context.dependencies.supports_url is False
+
+        state = self._run_url(context)
+
+        assert [error.code for error in state["errors"]] == ["URL_FETCH_UNAVAILABLE"]
+        assert not state.get("claims")
+
+    # -- the API statuses ---------------------------------------------
+
+    @pytest.mark.parametrize(
+        ("code", "expected_status"),
+        [
+            ("URL_ADDRESS_BLOCKED", 422),
+            ("URL_CREDENTIALS_NOT_ACCEPTED", 422),
+            ("URL_SCHEME_UNSUPPORTED", 422),
+            ("URL_METADATA_ADDRESS_BLOCKED", 422),
+            ("URL_DNS_FAILED", 502),
+            ("URL_TIMEOUT", 502),
+            ("URL_HTTP_ERROR", 502),
+            ("URL_CONTENT_TYPE_UNSUPPORTED", 502),
+            ("URL_FETCH_DISABLED", 503),
+        ],
+    )
+    def test_the_api_status_follows_whose_fault_it_is(
+        self, failure_client, code: str, expected_status: int
+    ) -> None:
+        """`422` for the caller, `502` for the site, `503` for the deployment.
+
+        Args:
+            failure_client: Fixture building a client over a chosen context.
+            code: The refusal code the fetcher raises.
+            expected_status: The status the caller must receive.
+        """
+        fields = {"status": 503} if code == "URL_HTTP_ERROR" else {}
+        context = self._context(FakeFetchService(error=UrlFetchError(code, **fields)))
+
+        response = failure_client(context).post(
+            "/api/investigations/url", json={"url": "https://example.com/x"}
+        )
+
+        assert response.status_code == expected_status, response.text
+        body = response.json()
+        assert set(body) == {"error"}
+        assert body["error"]["code"] == code
+
+    # -- limitations: a degraded but successful run --------------------
+
+    def test_a_truncated_page_is_a_limitation_not_a_failure(self) -> None:
+        """A page cut at the byte budget is analysed, with the cut declared.
+
+        This is the difference that matters to a user: refusing would mean no
+        investigation at all, and saying nothing would mean an investigation that
+        silently missed most of the page.
+        """
+        context = self._context(
+            FakeFetchService(page=build_page(truncated=True))
+        )
+        state = self._run_url(context)
+
+        assert not state["errors"]
+        assert "URL_CONTENT_TRUNCATED" in {w.code for w in state.get("warnings", ())}
+        assert state.get("risk_assessment") is not None
+
+    def test_a_page_with_no_readable_text_is_a_limitation_not_a_failure(self) -> None:
+        """A JavaScript-rendered page still yields a URL investigation.
+
+        The URL and domain are real evidence and the rules still run over them, so
+        refusing would discard something useful. Declaring the limitation is what
+        keeps the result from overstating what was read.
+        """
+        context = self._context(
+            FakeFetchService(page=build_page(body=JS_ONLY_PAGE))
+        )
+        state = self._run_url(context)
+
+        assert not state["errors"]
+        assert "PAGE_TEXT_NOT_RETRIEVED" in {w.code for w in state.get("warnings", ())}
+        assert state.get("risk_assessment") is not None
+        # The analysis covered the submitted address even with no page text.
+        assert state["raw_input"].startswith("Website: ")
+
+    def test_a_contract_violation_in_the_fetcher_ends_the_run(self) -> None:
+        """An unexpected exception is a defect, not a site being unavailable.
+
+        The fetch service documents that it raises only typed refusals. Anything
+        else means the layer beneath is broken, and reporting it as though the
+        submitted site were at fault would misattribute a defect to a user.
+        """
+
+        class _Exploding:
+            def fetch(self, url):  # noqa: ANN001, ANN202
+                raise RuntimeError("unexpected")
+
+        state = self._run_url(self._context(_Exploding()))
+
+        assert [error.code for error in state["errors"]] == ["URL_FETCH_UNAVAILABLE"]
+        assert state["errors"][0].error_type == "RuntimeError"
+        assert not state.get("claims")
+
+    def test_no_retrieval_failure_message_leaks_a_host(self) -> None:
+        """No refusal message names the host that was submitted.
+
+        The wording is fixed per code and filled only with values the caller
+        already submitted, so a message cannot become a way for one submission to
+        learn something about the network the deployment runs in.
+        """
+        for code in ("URL_TIMEOUT", "URL_FETCH_FAILED", "URL_ADDRESS_BLOCKED"):
+            fetcher = FakeFetchService(error=UrlFetchError(code))
+            state = self._run_url(self._context(fetcher))
+
+            message = state["errors"][0].message
+            assert "example.com" not in message, code
+            assert "Traceback" not in message, code
 
 
 class TestExtractionFailures:

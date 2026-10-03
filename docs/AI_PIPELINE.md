@@ -68,14 +68,32 @@ Normalizes every input type into a common representation:
 Validation happens here: URL scheme check, file size/type check, empty-input
 rejection.
 
+**Phase 12 implemented the URL half of this stage.** The URL path does
+not have an `InputProcessor` of its own — the graph's input node
+(`_url_input`) performs the validation through `UrlGuardService`
+(syntax, scheme, host, credentials, control characters, and the SSRF
+address policy at every address the connection would reach), fetches
+through `UrlFetchService`, and normalises the extracted text through
+the same `normalize_text` every other input uses, so red-flag spans
+still index the original submitted string. IMAGE and PDF validation
+remains a Phase 13–14 seam.
+
 ### Stage 1 — Text Extraction
 
 **Owner:** `OCRService` (IMAGE), `PDFService` (PDF), pass-through (TEXT),
-URL fetch + strip (URL, Phase 12).
+`WebsiteExtractor` behind `UrlFetchService` (URL, Phase 12).
 
 - IMAGE → pytesseract → text. Missing Tesseract binary ⇒ `OCR_UNAVAILABLE`.
 - PDF → PyMuPDF page text. Empty text layer (scanned PDF) ⇒ note to try OCR.
+- URL → fetch under the SSRF guard, then visible-text extraction: a
+  stdlib `HTMLParser` drops scripts, styles, comments and hidden
+  content. JavaScript-only pages yield empty text, which is recorded
+  as `PAGE_TEXT_NOT_RETRIEVED` and the pipeline continues. Over-budget
+  content is truncated and recorded as `URL_CONTENT_TRUNCATED`.
 - Failure never aborts the investigation; it becomes a stated limitation.
+  A fetch that *cannot even start* is the exception: a refused
+  destination is a `422` caller fault, and a site fault is a `502`,
+  both answered before the pipeline runs (D-054).
 
 ### Stage 1.5 — Input Normalisation
 

@@ -79,6 +79,19 @@ def create_db_engine(settings: Settings | None = None) -> Engine:
     return engine
 
 
+#: Columns added after `create_all` could have first run, as
+#: ``(table, column, portable DDL type)``.
+#:
+#: Appended to, never edited: an entry describes a column that a database
+#: predating that phase does not have. Types are spelled the portable SQL way
+#: rather than a dialect-specific one so the same statement runs on SQLite and
+#: PostgreSQL.
+_ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    # Phase 12: provenance for a URL submission, `NULL` for every text run.
+    ("investigations", "source_metadata", "JSON"),
+)
+
+
 class Database:
     """Holds the engine and session factory for the running application."""
 
@@ -94,11 +107,58 @@ class Database:
         )
 
     def create_all(self) -> None:
-        """Create every table declared on :class:`~app.db.base.Base`."""
+        """Create every table declared on :class:`~app.db.base.Base`.
+
+        Also applies the additive column DDL, because `create_all` creates
+        missing *tables* and silently ignores missing *columns*. Without that
+        second step a database created before Phase 12 would keep working for
+        text investigations and fail only when a URL was stored — the kind of
+        failure that looks like a code bug and is really a schema one.
+        """
         from app.db.base import Base
         import app.models  # noqa: F401  (registers mappers on Base.metadata)
 
         Base.metadata.create_all(bind=self.engine)
+        self.apply_additive_columns()
+
+    def apply_additive_columns(self) -> None:
+        """Add columns introduced after a database may already have existed.
+
+        There is no migration framework in this project, so each later phase's
+        new column is declared here and applied once. Three properties matter:
+
+        - **Idempotent.** The column list is read from the live schema first, so
+          running this on a fresh database, an up-to-date one, or twice in a row
+          all do the same thing.
+        - **Additive only.** Every statement is `ADD COLUMN`, which SQLite and
+          PostgreSQL both accept without a default and without rewriting the
+          table. Nothing here drops, renames or retypes a column, so there is no
+          data loss available to get wrong.
+        - **Nullable.** A column added this way must tolerate the rows already
+          in the table, so each one is nullable and the application treats
+          `NULL` as "this run predates the feature" rather than as a value.
+        """
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(self.engine)
+        existing_tables = set(inspector.get_table_names())
+
+        with self.engine.begin() as connection:
+            for table, column, ddl_type in _ADDITIVE_COLUMNS:
+                if table not in existing_tables:
+                    # The table itself is missing; `create_all` will make it with
+                    # the column already present.
+                    continue
+                present = {c["name"] for c in inspector.get_columns(table)}
+                if column in present:
+                    continue
+                logger.info(
+                    "Adding a column introduced by a later phase",
+                    extra={"table": table, "column": column},
+                )
+                connection.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+                )
 
     def dispose(self) -> None:
         """Release all pooled connections."""

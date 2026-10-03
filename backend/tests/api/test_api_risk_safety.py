@@ -560,6 +560,9 @@ class TestTheAssessmentIsForwardedNotRestated:
         assert set(body) == {
             "supported_input_types",
             "max_text_length",
+            # Phase 12: a URL is bounded as a URL, not as prose, and the bound is
+            # discoverable before a submission rather than after a rejection.
+            "max_url_length",
             "languages",
             "translation_enabled",
         }

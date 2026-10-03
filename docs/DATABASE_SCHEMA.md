@@ -97,7 +97,8 @@ One row per run.
 | `extraction_source_text` | Text | not null | Phase 2's `source_text`. |
 | `extraction_normalized_text` | Text | not null | Phase 2's `normalized_text`. |
 | `extraction_warnings` | JSON | not null | Phase 2's `processing_warnings`. |
-| `verification_warnings` | JSON | not null | Phase 4's batch-level `VerificationResponse.warnings`. |
+| `verification_warnings` | JSON | not null | Phase 4's batch-level `VerifiedResponse.warnings`. |
+| `source_metadata` | JSON | not null | Phase 12 `UrlSource.as_metadata()` for URL runs; `{}` for text runs. |
 | `claim_count` … `factor_count` | Integer | not null | Seven denormalised counts, default 0. |
 | `started_at` | DateTime | not null | Run start. |
 | `completed_at` | DateTime | nullable | Run finish, if recorded. |
@@ -155,6 +156,24 @@ Pinned by `test_completed_at_is_still_null_after_a_round_trip` in
 `backend/tests/api/test_retrieval_contract.py`, which also asserts that storage does
 not default the column to "now" on write — that would make a retrieved run look
 finished when it was not, in the one field a client is most likely to report on.
+
+### `source_metadata` holds URL provenance, in one column
+
+Phase 12 stores the `UrlSource` record — submitted/normalized/final URL,
+hostname, resolved addresses, redirect facts, status, content type, TLS,
+charset, byte size, page title, meta description, fetch time — as a single
+JSON blob rather than one nullable column per field. It is descriptive
+metadata about one input modality: a text investigation has none of it, and
+fifteen nullable columns for a single modality would spread URL concerns
+across the core schema. Text runs store `{}`.
+
+The column is added by an additive `ALTER TABLE … ADD COLUMN` in
+`app/db/session.py`, executed against a live engine where the table already
+exists. `create_all()` does not alter existing tables, so a database created
+before Phase 12 gains the column at startup rather than on next recreation.
+This is the same "additive DDL, tolerate failure" posture the schema itself
+uses; it is **not** a migration framework (see Known Limitations — no
+migrations).
 
 ---
 
@@ -698,3 +717,27 @@ here is pretending otherwise.
 - No indexes tuned for any specific query beyond the ones listed above. They exist
   for the queries Phase 9 actually issues, not for a workload that has not been
   measured.
+
+## Phase 12 Notes
+
+- **One new column, additive.** `investigations.source_metadata`
+  (JSON, not null, `{}` for text runs) holds the Phase 12 `UrlSource`
+  record, as described above. No table was created, renamed or
+  restructured; the fourteen-table design is unchanged. The column is
+  added to an existing table by an additive `ALTER TABLE … ADD COLUMN`
+  in `app/db/session.py`, because `create_all()` will not alter a
+  table that already exists.
+- **The public id digest covers the URL, not the page.** Two
+  investigations of the same URL share a `public_id` — the digest is of
+  the submitted input, and the URL *is* the submitted input — so a
+  re-run returns the newest stored run, the same semantics as re-running
+  the same text.
+- **No page content is stored beyond the extracted text.**
+  `extracted_text` holds the normalised visible text exactly as the
+  text path does; the raw HTML is never persisted. `WebsiteDocument` —
+  the extraction result — is not stored at all, because its `text` is
+  `extracted_text` and its `source` is `source_metadata`.
+- **Portability.** `as_metadata()` renders `resolved_addresses` as a
+  list precisely so the blob is JSON-safe on both SQLite and PostgreSQL,
+  and the column compiles under both dialects like every other JSON
+  column in the schema.

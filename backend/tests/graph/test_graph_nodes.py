@@ -81,9 +81,15 @@ class TestInputNode:
         result = input_node({"raw_input": "   \n\t ", "input_type": "TEXT"}, context_with())
         assert [error.code for error in result["errors"]] == ["INPUT_EMPTY"]
 
-    @pytest.mark.parametrize("kind", ["URL", "IMAGE", "PDF"])
+    @pytest.mark.parametrize("kind", ["IMAGE", "PDF"])
     def test_an_unimplemented_input_type_is_refused(self, kind: str) -> None:
-        """Recognised but not analysed, and it says so rather than pretending."""
+        """Recognised but not analysed, and it says so rather than pretending.
+
+        `URL` was in this list until Phase 12, which implemented it. It is
+        excluded here rather than deleted from the product's vocabulary: the
+        input kinds the product commits to are unchanged, and only the subset
+        this version analyses has grown.
+        """
         result = input_node({"raw_input": "x", "input_type": kind}, context_with())
         assert [error.code for error in result["errors"]] == [
             "INPUT_TYPE_NOT_SUPPORTED"
