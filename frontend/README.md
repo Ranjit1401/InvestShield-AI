@@ -8,7 +8,7 @@ platform.
 > InvestShield does not just detect suspicious investment content. It investigates the claims
 > behind it and shows the evidence.
 
-This app is a read-and-submit client for the Phase 0–12 FastAPI backend. It renders what the
+This app is a read-and-submit client for the Phase 0–15 FastAPI backend. It renders what the
 API returns and never invents findings, counts, sources or evidence.
 
 ## Requirements

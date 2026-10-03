@@ -60,6 +60,7 @@ __all__ = [
     "InvestigationSummaryResponse",
     "Language",
     "LimitationResponse",
+    "LocalizedReport",
     "RecordedErrorDetail",
     "TextInvestigationRequest",
     "TimelineEventResponse",
@@ -237,6 +238,59 @@ class InvestigationErrorResponse(BaseModel):
     )
 
 
+class LocalizedReport(BaseModel):
+    """The localized presentation layer for one investigation (Phase 15).
+
+    This is the **only** part of a response that differs by language.
+    The canonical fields — `claims`, `entities`, `red_flags`,
+    `verification_results`, `evidence`, `risk_assessment` and
+    `timeline` — are built from the investigation state and are
+    byte-for-byte identical in every language; this model carries the
+    human-facing layer alone: the section titles, the controlled-
+    vocabulary labels and the fixed report prose, translated
+    deterministically from `app/locales`.
+
+    It deliberately carries **no** score, no verdict and no fact. A
+    claim's text, a red flag's matched substring, an evidence excerpt
+    and a verification reason are source material the pipeline
+    produced in English, and translating them would risk changing
+    their meaning, so they stay canonical. Localizing a report can
+    therefore never change what the investigation found — the risk
+    score, the risk level, every claim id, red-flag code, entity id,
+    evidence URL and verification verdict are the same object the
+    caller would have received in English.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    language: Language = Field(description="The language this report is rendered in.")
+    investigation_id: str = Field(
+        description="The canonical investigation this report describes.",
+    )
+    sections: dict[str, str] = Field(
+        default_factory=dict,
+        description="Translated section titles, keyed by stable section key.",
+    )
+    labels: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Translated controlled-vocabulary labels, keyed by vocabulary "
+            "then by the vocabulary's own value (e.g. "
+            "`labels['risk_level']['HIGH']`)."
+        ),
+    )
+    summary: str = Field(
+        default="",
+        description="Translated one-paragraph summary built from canonical counts.",
+    )
+    safety_guidance: str = Field(default="", description="Translated safety guidance.")
+    risk_caveat: str = Field(
+        default="",
+        description="Translated statement that the risk score is not a probability.",
+    )
+    disclaimer: str = Field(default="", description="Translated disclaimer.")
+
+
 class InvestigationResponse(BaseModel):
     """The complete result of one investigation.
 
@@ -263,6 +317,16 @@ class InvestigationResponse(BaseModel):
     language: Language = Field(
         default=Language.EN,
         description="Echo of the requested language; no translation is performed.",
+    )
+    report: LocalizedReport | None = Field(
+        default=None,
+        description=(
+            "Phase 15 localized presentation layer: translated section titles, "
+            "controlled-vocabulary labels and fixed report prose. The canonical "
+            "fields beside it are identical in every language; only this layer "
+            "differs. Populated on every investigation response, in the "
+            "requested language (English by default)."
+        ),
     )
     current_stage: str = Field(description="The last stage that ran.")
 

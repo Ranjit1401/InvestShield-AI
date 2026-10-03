@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { ArrowLeft, FileSearch } from "lucide-react";
+import { ArrowLeft, FileSearch, Globe } from "lucide-react";
 import { PageContainer } from "@/components/layout/app-shell";
 import { ButtonLink } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { CardSkeletonList, ErrorState, EmptyState } from "@/components/common/state-blocks";
 import { InvestigationHeader } from "@/components/investigation/investigation-header";
 import { ClaimsSection } from "@/components/investigation/claims-section";
@@ -16,6 +17,7 @@ import {
 import { EvidenceSection } from "@/components/evidence/evidence-section";
 import { RiskPanel } from "@/components/risk/risk-panel";
 import { useInvestigation } from "@/hooks/use-investigations";
+import type { Language } from "@/types/api";
 
 /** A section-level skeleton so a slow load never collapses the page. */
 function ReportSkeleton() {
@@ -33,7 +35,11 @@ function ReportSkeleton() {
 export function InvestigationResultPage() {
   const params = useParams<{ id: string }>();
   const investigationId = params.id ?? "";
-  const { data, error, isInitialLoading, isLoading, reload } = useInvestigation(investigationId);
+  const [selectedLanguage, setSelectedLanguage] = useState<Language>("en");
+  const { data, error, isInitialLoading, isLoading, reload } = useInvestigation(
+    investigationId,
+    selectedLanguage,
+  );
 
   /** Claim ids that actually have an evidence group, for the claims panel. */
   const evidenceClaimIds = useMemo(() => {
@@ -98,14 +104,46 @@ export function InvestigationResultPage() {
             <ArrowLeft aria-hidden="true" />
             All investigations
           </ButtonLink>
-          {isLoading ? (
-            <span className="text-xs text-ink-faint" role="status">
-              Refreshing…
-            </span>
-          ) : null}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Globe className="size-4 text-ink-muted" aria-hidden="true" />
+              <label htmlFor="report-language-select" className="text-xs font-medium text-ink-muted">
+                Report Language:
+              </label>
+              <select
+                id="report-language-select"
+                value={selectedLanguage}
+                onChange={(e) => setSelectedLanguage(e.target.value as Language)}
+                className="h-8 rounded-md border border-hairline bg-surface px-2.5 text-xs font-medium text-ink focus:border-accent-muted focus:outline-none"
+              >
+                <option value="en">English (en)</option>
+                <option value="hi">हिन्दी (hi)</option>
+                <option value="mr">मराठी (mr)</option>
+              </select>
+            </div>
+            {isLoading ? (
+              <span className="text-xs text-ink-faint" role="status">
+                Refreshing…
+              </span>
+            ) : null}
+          </div>
         </div>
 
         <InvestigationHeader investigation={data} />
+
+        {data.report?.summary ? (
+          <Card className="border-accent/20 bg-accent/5 p-4">
+            <div className="flex items-start gap-3">
+              <Globe className="mt-0.5 size-5 shrink-0 text-accent" aria-hidden="true" />
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-ink">
+                  {data.report.sections.summary || "Summary"}
+                </h3>
+                <p className="text-sm leading-relaxed text-ink-muted">{data.report.summary}</p>
+              </div>
+            </div>
+          </Card>
+        ) : null}
 
         <LimitationsPanel
           warnings={data.warnings}
@@ -129,7 +167,12 @@ export function InvestigationResultPage() {
 
         <TimelineSection timeline={data.timeline} />
 
-        <DisclaimerPanel />
+        <DisclaimerPanel
+          disclaimer={data.report?.disclaimer}
+          safetyGuidance={data.report?.safety_guidance}
+          riskCaveat={data.report?.risk_caveat}
+          title={data.report?.sections.disclaimer}
+        />
       </div>
     </PageContainer>
   );

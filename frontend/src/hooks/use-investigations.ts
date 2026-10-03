@@ -12,6 +12,7 @@ import type {
   InvestigationLimits,
   InvestigationListResponse,
   InvestigationResponse,
+  Language,
   ListInvestigationsParams,
 } from "@/types/api";
 
@@ -26,10 +27,13 @@ export function useLimits(): AsyncState<InvestigationLimits> {
 }
 
 /** `GET /api/investigations/{id}`. */
-export function useInvestigation(investigationId: string): AsyncState<InvestigationResponse> {
+export function useInvestigation(
+  investigationId: string,
+  language?: Language,
+): AsyncState<InvestigationResponse> {
   return useAsyncResource<InvestigationResponse>(
-    (signal) => getInvestigation(investigationId, signal),
-    [investigationId],
+    (signal) => getInvestigation(investigationId, signal, language),
+    [investigationId, language],
     { enabled: investigationId.trim() !== "" },
   );
 }

@@ -117,6 +117,8 @@ def test_every_documented_response_field_exists() -> None:
         # shape, page count and recovered text are reported so the
         # analysis is checkable.
         "pdf_source",
+        # Phase 15: localized presentation layer.
+        "report",
     }
 
 

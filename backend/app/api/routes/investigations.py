@@ -54,8 +54,10 @@ from app.api.deps import (
 )
 from app.api.errors import (
     SUPPORTED_INPUT_TYPES,
+    SUPPORTED_LANGUAGES,
     ApiError,
     InvestigationNotFound,
+    LanguageNotAccepted,
     raise_for_graph_errors,
 )
 from app.core.config import Settings
@@ -656,6 +658,10 @@ def list_investigations(
 def get_investigation(
     investigation_id: str,
     repo: Annotated[InvestigationRepository, Depends(get_repository_dep)],
+    language: Annotated[
+        str | None,
+        Query(description="Report language: en, hi or mr. Defaults to en."),
+    ] = None,
 ) -> InvestigationResponse:
     """Return a stored run, rebuilt exactly as the write path shaped it.
 
@@ -664,6 +670,16 @@ def get_investigation(
     the whole guarantee this endpoint makes: a retrieved investigation is
     indistinguishable from the live one, because it is built by the same code
     from the same objects.
+
+    The investigation itself is language-independent. `language` selects only
+    the **presentation** layer — the translated section titles, labels and
+    fixed report prose carried in `report`. The canonical facts (risk score,
+    risk level, claims, entities, red flags, verification verdicts, evidence
+    URLs and the timeline) are identical in every language, so a report
+    retrieved in Hindi describes exactly what the English one described.
+    Omitting the parameter, or passing an empty value, renders English; a
+    value that is not `en`, `hi` or `mr` is refused with a `422` naming the
+    languages this version renders.
 
     Where the same content has been investigated more than once, the **most
     recent** run is returned. `investigation_id` is a digest of the submitted
@@ -684,15 +700,46 @@ def get_investigation(
     except ApiError:
         raise
     except Exception as exc:
-        # A row that cannot be rebuilt is a defect in the mapping, not in the
-        # caller's request. The exception's detail is logged, never returned.
+        # A row that cannot be rebuilt is a defect in the mapping, not in
+        # the caller's request. The exception's detail is logged, never returned.
         logger.exception(
             "Failed to rebuild stored investigation",
             extra={"investigation_id": investigation_id},
         )
         raise
 
-    return serialize_investigation(state)
+    return serialize_investigation(state, language=_resolve_language(language))
+
+
+def _resolve_language(raw: str | None) -> Language:
+    """Resolve the `language` query parameter to a :class:`Language`.
+
+    The parameter is optional and empty means English, so the two
+    "caller said nothing" cases both default rather than erroring.
+    Anything else must name a language this version renders, and is
+    refused with a typed `422` that names them, so a client learns
+    the valid values instead of only that its input was rejected.
+
+    Args:
+        raw: The raw query-parameter value, if any.
+
+    Returns:
+        The resolved language, defaulting to English.
+
+    Raises:
+        LanguageNotAccepted: If the value is not `en`, `hi` or `mr`.
+    """
+    if raw is None or raw.strip() == "":
+        return Language.EN
+    candidate = raw.strip().lower()
+    try:
+        return Language(candidate)
+    except ValueError:
+        raise LanguageNotAccepted(
+            "LANGUAGE_NOT_SUPPORTED",
+            "Report language must be one of en, hi, mr.",
+            detail={"supported_languages": list(SUPPORTED_LANGUAGES)},
+        ) from None
 
 
 def _summary(item: InvestigationSummary) -> InvestigationSummaryResponse:

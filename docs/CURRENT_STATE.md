@@ -7,27 +7,10 @@
 
 ## Current Project State
 
-**Current Phase:** Phase 14 — PDF analysis — **COMPLETE**
-**Current Subphase:** none — the planned roadmap is complete
+**Current Phase:** Phase 15 — Multilingual reports — **COMPLETE**
+**Current Subphase:** none — Phase 15 roadmap complete
 
-> **Phase 10 naming, reconciled.** Two project documents disagreed about what
-> Phase 10 is. `IMPLEMENTATION_PLAN.md` has always called it "Backend Test Suite";
-> this file's phase table called it "Report generation", which is
-> `AI_PIPELINE.md`'s **Stage 11** — a pipeline stage, on a different numbering axis,
-> not a project phase. **Phase 10 is Testing & Quality Hardening.** Report
-> generation is unstarted and remains later scope; it is deliberately *not* renumbered
-> into a phase here, because inventing a number for it is exactly the kind of
-> premature decision `DATABASE_SCHEMA.md` was careful to avoid when it declined to
-> create the `reports` table.
-
-**Last Completed Task:** Phase 14 — PDF analysis. A new `POST
-/api/investigations/pdf` endpoint accepts a `multipart/form-data`
-upload, validates it (size, declared type, and what the bytes actually
-parse to), reads the text out of its pages locally with PyMuPDF, and
-runs the existing pipeline over the extracted text. The backend gained
-three new modules (`pdf_guards`, `pdf_service`, `schemas/pdf.py`), the
-graph gained a PDF input path, persistence gained a `pdf_metadata`
-column, and the frontend gained a working PDF input mode.
+**Last Completed Task:** Phase 15 — Multilingual reports. Added English (`en`), Hindi (`hi`), and Marathi (`mr`) presentation localization layers. The backend gained `app/locales/` (`en.py`, `hi.py`, `mr.py`) and `report_localization_service.py`, while `GET /api/investigations/{id}?language=` now returns a localized `report` presentation layer with deterministic titles, labels, summaries, safety guidance, and disclaimers. The frontend gained `LocalizedReport` types, dynamic `language` selection in `api-client.ts` and `useInvestigation`, a UI Language Selector on `InvestigationResultPage`, localized summary rendering, and updated safety disclaimer integration. All 3007 backend tests pass (0 failures) and frontend typecheck, lint, and build pass cleanly.
 
 - **Real PDF validation** — the declared media type is only a first
   filter; the PDF library parses the bytes and `is_pdf` is the
@@ -59,7 +42,7 @@ column, and the frontend gained a working PDF input mode.
 - **Verified end to end** — the full backend suite passes (**2966 passed,
   4 deselected, 0 failed**) and the frontend typechecks, lints and builds.
 
-**Latest Commit:** `feat: implement PDF analysis` (Phase 14)
+**Latest Commit:** `feat: implement multilingual reports` (Phase 15)
 **Working Tree:** clean.
 
 ### Phase Status Summary
@@ -81,6 +64,7 @@ column, and the frontend gained a working PDF input mode.
 | Phase 12 | URL analysis | **COMPLETE** |
 | Phase 13 | Screenshot / OCR | **COMPLETE** |
 | Phase 14 | PDF analysis | **COMPLETE** |
+| Phase 15 | Multilingual reports | **COMPLETE** |
 
 > Phase 10's scope is testing and hardening, per `IMPLEMENTATION_PLAN.md` ("Backend
 > Test Suite") and as executed. Report generation — `AI_PIPELINE.md` Stage 11 — is

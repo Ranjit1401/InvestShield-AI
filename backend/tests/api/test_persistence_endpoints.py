@@ -485,6 +485,8 @@ def test_phase_eight_response_shape_is_unchanged(
         "image_source",
         # Phase 14: null unless the run was a PDF.
         "pdf_source",
+        # Phase 15: localized presentation layer.
+        "report",
     }
 
 

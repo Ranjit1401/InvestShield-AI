@@ -40,16 +40,18 @@ from app.graph.nodes import (
     URL_SITE_FAULT_CODES,
 )
 from app.graph.state import GraphError, InvestigationInputType
-from app.schemas.api import FailureDetail, RecordedErrorDetail
+from app.schemas.api import FailureDetail, Language, RecordedErrorDetail
 
 __all__ = [
     "ApiError",
     "CapabilityUnavailable",
     "GraphContractError",
     "InvestigationNotFound",
+    "LanguageNotAccepted",
     "SubmissionRejected",
-    "UNPROCESSABLE_CONTENT",
     "SUPPORTED_INPUT_TYPES",
+    "SUPPORTED_LANGUAGES",
+    "UNPROCESSABLE_CONTENT",
     "UnsupportedInputType",
     "UpstreamSiteError",
     "error_status_for",
@@ -102,6 +104,16 @@ class ApiError(Exception):
         self.status_code = status_code
 
 
+#: Report languages this version renders. Named here so the
+#: language refusal and the localization layer cannot disagree
+#: about which languages exist: adding one is a deliberate act.
+SUPPORTED_LANGUAGES: tuple[str, ...] = (
+    Language.EN.value,
+    Language.HI.value,
+    Language.MR.value,
+)
+
+
 class SubmissionRejected(ApiError):
     """The submission was unusable; the caller must change it and retry.
 
@@ -125,6 +137,19 @@ class UnsupportedInputType(SubmissionRejected):
 
     Carries the supported kinds in `detail` so a client can correct itself
     instead of only logging the rejection.
+    """
+
+    def __init__(self, code: str, message: str, *, detail: object | None = None) -> None:
+        super().__init__(code, message, detail=detail)
+
+
+class LanguageNotAccepted(SubmissionRejected):
+    """The requested report language is not one this version renders.
+
+    `422` because the caller must change the `language` parameter and
+    retry. Carries the languages this version renders in `detail` so a
+    client can correct itself rather than only logging the rejection —
+    the same courtesy `UnsupportedInputType` extends to input kinds.
     """
 
     def __init__(self, code: str, message: str, *, detail: object | None = None) -> None:

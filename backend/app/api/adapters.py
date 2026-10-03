@@ -37,6 +37,7 @@ from app.schemas.api import (
     LimitationResponse,
     TimelineEventResponse,
 )
+from app.services.report_localization_service import report_localization_service
 
 __all__ = [
     "dedupe_codes",
@@ -119,16 +120,21 @@ def serialize_investigation(
 
     Args:
         state: The final state returned by `run_investigation`.
-        language: The language the caller asked for. Echoed, not translated.
+        language: The language the caller asked for. The canonical
+            fields are built from the state and are identical in
+            every language; only the localized `report` layer is
+            rendered in this language.
 
     Returns:
-        A fully populated :class:`~app.schemas.api.InvestigationResponse`.
+        A fully populated :class:`~app.schemas.api.InvestigationResponse`
+        whose canonical fields are language-neutral and whose `report`
+        carries the localized presentation layer.
     """
     warnings = tuple(state.get("warnings") or ())
     errors = tuple(state.get("errors") or ())
     timeline = tuple(state.get("timeline") or ())
 
-    return InvestigationResponse(
+    response = InvestigationResponse(
         investigation_id=state.get("investigation_id") or "",
         status=investigation_status(errors, timeline),
         input_type=_input_type(state.get("input_type")),
@@ -150,6 +156,13 @@ def serialize_investigation(
         started_at=state.get("started_at"),
         completed_at=state.get("completed_at"),
     )
+    # The presentation layer is attached last and reads the finished
+    # response without changing it: localizing a report can never
+    # alter a canonical fact, so the same state serializes to the
+    # same claims, red flags, evidence and risk score in every
+    # language, with only `report` differing.
+    response.report = report_localization_service.localize(response, language)
+    return response
 
 
 def _input_type(declared: str | None) -> InvestigationInputType:

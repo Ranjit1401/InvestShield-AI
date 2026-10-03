@@ -107,25 +107,39 @@ export function LimitationsPanel({
 }
 
 /** The standing product disclaimer, shown on every report. */
-export function DisclaimerPanel() {
+export function DisclaimerPanel({
+  disclaimer,
+  safetyGuidance,
+  riskCaveat,
+  title,
+}: {
+  disclaimer?: string;
+  safetyGuidance?: string;
+  riskCaveat?: string;
+  title?: string;
+}) {
   return (
-    <Alert tone="info" title="What this report is, and is not">
+    <Alert tone="info" title={title ?? "What this report is, and is not"}>
       <ul className="space-y-1.5">
         <li className="flex gap-2">
           <Info aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-tone-info" />
           <span>
-            InvestShield investigates the <em>claims</em> inside investment content. It reports
-            evidence and risk indicators; it does not decide whether an investment is legitimate.
+            {disclaimer ||
+              "InvestShield investigates the claims inside investment content. It reports evidence and risk indicators; it does not decide whether an investment is legitimate."}
           </span>
         </li>
         <li className="flex gap-2">
           <Info aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-tone-info" />
-          <span>An unverified claim is not a fraudulent claim, and missing evidence is not a contradiction.</span>
+          <span>
+            {safetyGuidance ||
+              "An unverified claim is not a fraudulent claim, and missing evidence is not a contradiction."}
+          </span>
         </li>
         <li className="flex gap-2">
           <ShieldAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-tone-info" />
           <span>
-            Nothing here is financial advice, a recommendation, or a guarantee of accuracy.
+            {riskCaveat ||
+              "Nothing here is financial advice, a recommendation, or a guarantee of accuracy."}
           </span>
         </li>
       </ul>

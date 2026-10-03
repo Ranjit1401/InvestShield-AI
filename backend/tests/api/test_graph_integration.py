@@ -238,9 +238,11 @@ class TestRoutesDoNotBypassTheGraph:
             "InvestigationRepository",
             "InvestigationSummary",
             "NotFound",
-            # Raise.
+            # Raise / Validate.
             "ApiError",
             "InvestigationNotFound",
+            "LanguageNotAccepted",
+            "SUPPORTED_LANGUAGES",
             "raise_for_graph_errors",
             # Logging.
             "get_logger",
@@ -621,6 +623,8 @@ class TestGraphAndApiAgreeOnTheStages:
             # Phase 14: provenance for a PDF investigation. Null for
             # this `TEXT` submission, and likewise forwarded, not computed.
             "pdf_source",
+            # Phase 15: localized presentation layer, attached on serialization.
+            "report",
         }
         assert body["investigation_id"].startswith("inv_")
         assert body["url_source"] is None

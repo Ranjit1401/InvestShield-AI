@@ -541,11 +541,33 @@ export interface PdfSource {
   processed_at: string;
 }
 
+export interface LocalizedReport {
+  language: Language;
+  investigation_id: string;
+  /** Translated section titles, keyed by stable section key. */
+  sections: Record<string, string>;
+  /**
+   * Translated controlled-vocabulary labels, keyed by vocabulary
+   * then by the value (e.g. `labels.risk_level.HIGH`).
+   */
+  labels: Record<string, Record<string, string>>;
+  /** Translated one-paragraph summary built from canonical counts. */
+  summary: string;
+  /** Translated safety guidance. */
+  safety_guidance: string;
+  /** Translated risk score caveat. */
+  risk_caveat: string;
+  /** Translated disclaimer. */
+  disclaimer: string;
+}
+
 export interface InvestigationResponse {
   investigation_id: string;
   status: InvestigationStatus;
   input_type: InvestigationInputType;
   language: Language;
+  /** Phase 15 localized presentation layer. */
+  report?: LocalizedReport | null;
   current_stage: string;
   /** Phase 12 provenance for a URL run; `null` otherwise. */
   url_source?: UrlSource | null;

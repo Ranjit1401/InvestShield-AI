@@ -467,7 +467,9 @@ export function getInvestigations(
 export function getInvestigation(
   investigationId: string,
   signal?: AbortSignal,
+  language?: Language,
 ): Promise<InvestigationResponse> {
   const encoded = encodeURIComponent(investigationId);
-  return request<InvestigationResponse>(`/api/investigations/${encoded}`, { signal });
+  const query = language ? `?language=${encodeURIComponent(language)}` : "";
+  return request<InvestigationResponse>(`/api/investigations/${encoded}${query}`, { signal });
 }

@@ -408,12 +408,14 @@ and failed), `PDF_CONTENT_TRUNCATED` (over-budget text) and
 `PDF_PAGE_LIMIT_REACHED` (later pages skipped). No text is ever
 fabricated, and no message carries a path or engine detail.
 
-## Phase 15 — Multilingual Reports `[ ]`
+## Phase 15 — Multilingual Reports `[x]`
 
-- [ ] en / hi / mr translation layer
-- [ ] Translation applied at report/presentation layer only
-- [ ] Investigation stays language-independent
-- [ ] Tests
+- [x] en / hi / mr translation layer
+- [x] Translation applied at report/presentation layer only
+- [x] Investigation stays language-independent
+- [x] Backend localization service + API support
+- [x] Frontend language selector + localized report rendering
+- [x] Tests (3007 backend tests pass, 0 failures)
 
 ## Phase 16 — Full Integration `[ ]`
 

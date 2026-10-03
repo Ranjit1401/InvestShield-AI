@@ -171,7 +171,7 @@ its result as of Phase 9.**
 | --- | --- | --- | --- |
 | `input_type` | `TEXT` \| `URL` \| `IMAGE` \| `PDF` | no (default `TEXT`) | all four declared; only `TEXT` is analysed |
 | `text` | string | yes | 1..20000 chars; whitespace-only is refused |
-| `language` | `en` \| `hi` \| `mr` | no | recorded and echoed; **not translated** in Phase 8 |
+| `language` | `en` \| `hi` \| `mr` | no | recorded and echoed; default `en`. Phase 15 populates localized `report` |
 
 Unknown fields are refused (`422`). `input_type` is explicit rather than inferred
 so that an unsupported kind is a typed rejection rather than a guess.
@@ -318,7 +318,8 @@ than a type error (D-038).
 | `image_source` | Screenshot investigations only: what was decoded and read (filename, declared/detected media type, decoded format, byte size, dimensions, OCR language, whether text was recovered, truncation). `null` otherwise |
 | `pdf_source` | PDF investigations only: what was parsed and read (filename, declared/detected media type, format, byte size, page count, pages processed, whether text was recovered, truncation). `null` otherwise |
 | `started_at` / `completed_at` | Wall-clock metadata |
-| `language` | Echo of the request. No message is translated |
+| `language` | Echo of the requested language (`en`, `hi`, `mr`) |
+| `report` | Phase 15 localized presentation layer (`LocalizedReport`): translated section titles, controlled-vocabulary labels, summary, safety guidance, risk caveat, and disclaimer |
 
 Absent state keys become empty lists rather than being omitted, so a client can
 read `claims.length` without first checking for the field's existence. The

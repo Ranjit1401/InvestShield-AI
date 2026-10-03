@@ -505,8 +505,7 @@ export function InvestigatePage() {
                     ))}
                   </select>
                   <p className="text-xs text-ink-faint">
-                    Recorded with the investigation. The report is rendered in English on this
-                    version; translation is a later phase.
+                    Recorded with the investigation and selects the report rendering language (English, Hindi, or Marathi).
                   </p>
                 </div>
 

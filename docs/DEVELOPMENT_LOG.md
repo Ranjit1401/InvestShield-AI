@@ -1810,5 +1810,32 @@ parse detail. Wording comes from the fixed `PDF_MESSAGES` table.
   D-020, D-055).
 - **No raw PDF is persisted** — only the extracted text and the
   `PdfSource` record.
-- **No external resources are fetched.** The parse is local and
-  read-only; embedded files and remote links are not followed.
+---
+
+## Phase 15 — Multilingual Reports
+
+**Date:** 2026-10-03
+**Phase:** 15 — Multilingual Reports
+
+### What was implemented
+
+- **`app/locales/` (`en.py`, `hi.py`, `mr.py`, `__init__.py`):** Centralized resource dictionaries for English, Hindi, and Marathi carrying translated section titles (`sections`), controlled-vocabulary labels (`labels`), and fixed report prose (`fixed_text`: summary templates, disclaimers, safety guidance, risk caveats).
+- **`app/services/report_localization_service.py` (`ReportLocalizationService`):** Deterministic presentation layer localizer. Reads a canonical, language-neutral `InvestigationResponse` and generates a `LocalizedReport` containing translated section headers, enum labels, summary, safety guidance, and disclaimers.
+- **`app/schemas/api.py`:** Added `LocalizedReport` model and `report: LocalizedReport | None` field to `InvestigationResponse`.
+- **`app/api/routes/investigations.py` & `adapters.py`:** `GET /api/investigations/{id}?language=` accepts `en`, `hi`, `mr` (case-insensitive, trimmed). Refuses invalid languages with typed `422` `LanguageNotAccepted`. `serialize_investigation` attaches the localized report presentation layer without modifying canonical facts.
+- **Backend Test Suite Regression Resolution:** Resolved 21 contract/safety test regressions by updating expected response key sets, AST import whitelists, and safety test field filters in `test_api_risk_safety.py`, `test_graph_integration.py`, `test_persistence_endpoints.py`, and `test_api_schemas.py`.
+- **Frontend Integration (`frontend/src/`):**
+  - `types/api.ts`: Added `LocalizedReport` interface and updated `InvestigationResponse`.
+  - `services/api-client.ts` & `hooks/use-investigations.ts`: Updated `getInvestigation` and `useInvestigation` to accept optional `language?: Language`.
+  - `pages/InvestigationResultPage.tsx`: Implemented UI Language Selector (English, हिन्दी, मराठी), localized summary card, and localized disclaimer/safety panel rendering.
+  - `pages/InvestigatePage.tsx`: Removed obsolete Phase 14 notice.
+
+### Verification
+
+- **Backend Pytest Suite:** 3007 passed, 4 deselected, 0 failed.
+- **Frontend Checks:** `npm run typecheck` (0 errors), `npm run lint` (0 errors), `npm run build` (0 errors).
+
+### Safety & Data Integrity Guarantees
+
+- **Investigation is language-independent:** Risk scores, risk levels, claim IDs, entity IDs, red flag codes, verification verdicts, evidence, and timeline events remain byte-for-byte identical across languages.
+- **No advice or investment recommendation added:** Fixed prose across all three languages explicitly disclaims investment advice and maintains transparent heuristic risk score caveats.

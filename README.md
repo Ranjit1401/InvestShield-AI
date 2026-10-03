@@ -50,9 +50,9 @@ CLAIM  →  EVIDENCE  →  SOURCE
 
 ## Status
 
-**Phases 0–12 are complete.** The full investigation pipeline runs, is exposed
-over HTTP, is persisted, is covered by an offline test suite, and has a React
-frontend:
+**Phases 0–15 are complete.** The full investigation pipeline runs, is exposed
+over HTTP, is persisted, is covered by an offline test suite, has a React
+frontend, supports text/URL/image/PDF inputs, and provides multilingual reports:
 
 | Phase | Scope | Status |
 | --- | --- | --- |
@@ -65,8 +65,9 @@ frontend:
 | 10 | Testing & quality hardening | complete |
 | 11 | React frontend | complete |
 | 12 | URL analysis | complete |
-| 13 | screenshot/OCR | complete |
+| 13 | Screenshot / OCR | complete |
 | 14 | PDF analysis | complete |
+| 15 | Multilingual reports (en, hi, mr) | complete |
 
 Live endpoints:
 

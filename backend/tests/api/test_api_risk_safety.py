@@ -111,6 +111,10 @@ QUOTED_FIELDS = (
     "raw_input",
     "source_text",
     "normalized_text",
+    # Phase 15 presentation resource maps: UI section header titles (e.g.
+    # "Safety Guidance") and vocabulary labels.
+    "sections",
+    "labels",
 )
 
 #: Fields the system authors, and which must never carry a banned word.

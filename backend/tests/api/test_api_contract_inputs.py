@@ -666,6 +666,10 @@ _DOCUMENTED_RESPONSE_KEYS = frozenset(
         # shape, page count and recovered text are reported so the
         # analysis is checkable.
         "pdf_source",
+        # Phase 15: the localized presentation layer. Populated in
+        # every language (English by default); the canonical fields
+        # above it are identical in every language.
+        "report",
     }
 )
 
