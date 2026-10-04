@@ -54,6 +54,82 @@ LLM_DISABLED = "LLM_DISABLED"
 #: Strips a ```json fenced block if a model emits one despite schema mode.
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
+#: Bounded excerpt of a provider error message kept in the logs. Groq's
+#: error bodies say things like "model not found", which is the one
+#: detail that makes a failed call diagnosable; the message never
+#: reaches an API response, where only the fixed wording may appear.
+_MAX_ERROR_DETAIL_CHARS = 300
+
+
+def _provider_error_detail(response: httpx.Response) -> str:
+    """Return a bounded excerpt of the provider's own error message.
+
+    Args:
+        response: The non-2xx response the provider returned.
+
+    Returns:
+        The provider's ``error.message`` field, truncated, or an
+        empty string when the body is not the expected shape. These
+        messages never carry credentials, so nothing sensitive is
+        logged.
+    """
+    try:
+        body: Any = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return ""
+    message = error.get("message")
+    if not isinstance(message, str):
+        return ""
+    return message[:_MAX_ERROR_DETAIL_CHARS]
+
+
+def _groq_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Complete a JSON schema for Groq's structured-output mode.
+
+    Groq rejects ``strict: true`` unless **every** object schema
+    carries ``additionalProperties: false`` and lists **every**
+    property in ``required``. Pydantic's ``model_json_schema()``
+    emits neither for fields that carry defaults, so the schema is
+    completed here rather than sending a request the provider
+    rejects with a 400. Only constraints are added — never
+    removed — so the payload the model must return is unchanged
+    apart from being fully explicit.
+
+    Args:
+        schema: The JSON schema generated for a Pydantic model.
+
+    Returns:
+        An equivalent schema that satisfies the provider's
+        structured-output validation.
+    """
+    normalized = dict(schema)
+    schema_type = normalized.get("type")
+    if schema_type == "object":
+        properties = normalized.get("properties")
+        if isinstance(properties, dict):
+            normalized["properties"] = {
+                name: _groq_strict_schema(defn)
+                for name, defn in properties.items()
+            }
+            normalized["required"] = sorted(properties)
+            normalized["additionalProperties"] = False
+    elif schema_type == "array":
+        items = normalized.get("items")
+        if isinstance(items, dict):
+            normalized["items"] = _groq_strict_schema(items)
+    definitions = normalized.get("$defs")
+    if isinstance(definitions, dict):
+        normalized["$defs"] = {
+            name: _groq_strict_schema(defn)
+            for name, defn in definitions.items()
+        }
+    return normalized
+
 
 @dataclass(frozen=True)
 class LLMResult:
@@ -165,7 +241,7 @@ class GroqProvider(LLMProvider):
                 "json_schema": {
                     "name": request.schema_name,
                     "strict": True,
-                    "schema": request.json_schema,
+                    "schema": _groq_strict_schema(request.json_schema),
                 },
             }
 
@@ -205,7 +281,11 @@ class GroqProvider(LLMProvider):
                 last_error = LLM_SERVICE_ERROR
                 logger.warning(
                     "LLM returned an error status",
-                    extra={"provider": self.name, "status": response.status_code},
+                    extra={
+                        "provider": self.name,
+                        "status": response.status_code,
+                        "detail": _provider_error_detail(response),
+                    },
                 )
                 continue
 

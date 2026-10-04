@@ -263,7 +263,13 @@ class TestVerificationNode:
             TimelineStatus.SKIPPED
         ]
 
-    def test_unverified_claims_report_partial_coverage(self) -> None:
+    def test_a_completed_search_that_confirms_nothing_is_no_gap(self) -> None:
+        """A searched-but-unconfirmed claim is a complete answer, not a limitation.
+
+        The search ran and the public record simply does not establish
+        the claim (`ZERO_RESULTS` is the default reason). That is a
+        claim-level outcome, so the verification stage is not partial.
+        """
         claim = build_claim()
         service = RecordingVerificationService(
             response=verification_response(
@@ -273,7 +279,28 @@ class TestVerificationNode:
         result = verification_node(
             {"claims": (claim,), "entities": ()}, context_with(verification=service)
         )
-        assert "PARTIAL_VERIFICATION" in [w.code for w in result["warnings"]]
+        assert "PARTIAL_VERIFICATION" not in [w.code for w in result["warnings"]]
+
+    def test_a_search_that_never_completed_is_partial_coverage(self) -> None:
+        """Only a lookup that did not run makes the stage partial."""
+        from app.schemas.verification import SEARCH_FAILED, SEARCH_UNAVAILABLE
+
+        for reason_code in (SEARCH_FAILED, SEARCH_UNAVAILABLE):
+            claim = build_claim()
+            service = RecordingVerificationService(
+                response=verification_response(
+                    result_for(
+                        claim,
+                        VerificationStatus.INSUFFICIENT_EVIDENCE,
+                        reason_code=reason_code,
+                    )
+                )
+            )
+            result = verification_node(
+                {"claims": (claim,), "entities": ()},
+                context_with(verification=service),
+            )
+            assert "PARTIAL_VERIFICATION" in [w.code for w in result["warnings"]]
 
     def test_fully_verified_claims_report_no_gap(self) -> None:
         """A confirmed answer is a complete answer, not a limitation."""

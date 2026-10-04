@@ -35,6 +35,7 @@ from app.models.investigation import (
 )
 from app.repositories.investigations import InvestigationRepository, NotFound
 from app.schemas.risk import SCORE_NOT_A_PROBABILITY
+from app.schemas.verification import VerificationStatus
 from tests.persistence_factories import MESSY_CONTENT, run_only
 from tests.graph.graph_factories import FIXED_INSTANT
 
@@ -360,9 +361,16 @@ def test_denormalised_counts_match_the_stored_rows(
     assert row.claim_count == len(live["claims"]) == counts[ClaimRow]
     assert row.entity_count == len(live["entities"]) == counts[EntityRow]
     assert row.red_flag_count == len(live["red_flags"]) == counts[RedFlagRow]
-    assert row.verification_count == len(live["verification_results"]) == counts[
-        VerificationResultRow
-    ]
+    verified = sum(
+        1
+        for result in live["verification_results"]
+        if result.status is VerificationStatus.VERIFIED
+    )
+    # The denormalised count is the confirmed subset — the same number
+    # the report summary interpolates — while the child rows hold every
+    # result regardless of status.
+    assert row.verification_count == verified
+    assert len(live["verification_results"]) == counts[VerificationResultRow]
     assert row.evidence_count == sum(
         len(response.evidence) for response in live["evidence"]
     ) == counts[EvidenceItemRow]

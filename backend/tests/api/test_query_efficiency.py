@@ -261,7 +261,11 @@ class TestHistoryCostIsFlatOverHttp:
         assert entry["claim_count"] == len(retrieved["claims"])
         assert entry["entity_count"] == len(retrieved["entities"])
         assert entry["red_flag_count"] == len(retrieved["red_flags"])
-        assert entry["verification_count"] == len(retrieved["verification_results"])
+        assert entry["verification_count"] == sum(
+            1
+            for result in retrieved["verification_results"]
+            if result["status"] == "VERIFIED"
+        )
         assert entry["evidence_count"] == len(retrieved["evidence"])
         assert entry["status"] == retrieved["status"]
 

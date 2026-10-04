@@ -282,9 +282,14 @@ class TestSearchUnavailable:
         assert recorder_state.get("errors", ()) == ()
 
     def test_the_limitation_is_reported(self) -> None:
-        state = real_run()
+        dependencies, _ = real_dependencies(
+            provider=RecordingSearchProvider(available=False)
+        )
+        state = run_investigation(
+            MESSY_CONTENT, context=offline_context(dependencies)
+        )
         codes = [w.code for w in state["warnings"]]
-        assert "SEARCH_UNAVAILABLE" in codes or "PARTIAL_VERIFICATION" in codes
+        assert "SEARCH_UNAVAILABLE" in codes
 
     def test_unavailable_search_is_not_scored_as_risk(self) -> None:
         """D-006: not being able to look is not a finding."""
@@ -340,6 +345,26 @@ class TestPartialVerification:
         assert state["risk_assessment"] is not None
 
     def test_partial_coverage_is_reported(self) -> None:
+        """A search that did not complete is the one thing that makes coverage partial."""
+        from app.schemas.verification import SEARCH_FAILED
+
+        claim = build_claim()
+        state = run(
+            extraction=RecordingExtractionService(result=extraction_with((claim,))),
+            verification=RecordingVerificationService(
+                response=verification_response(
+                    result_for(
+                        claim,
+                        VerificationStatus.INSUFFICIENT_EVIDENCE,
+                        reason_code=SEARCH_FAILED,
+                    )
+                )
+            ),
+        )
+        assert "PARTIAL_VERIFICATION" in [w.code for w in state["warnings"]]
+
+    def test_an_unconfirmed_but_searched_claim_is_complete_coverage(self) -> None:
+        """A claim the search could not confirm is a complete answer."""
         claim = build_claim()
         state = run(
             extraction=RecordingExtractionService(result=extraction_with((claim,))),
@@ -349,7 +374,7 @@ class TestPartialVerification:
                 )
             ),
         )
-        assert "PARTIAL_VERIFICATION" in [w.code for w in state["warnings"]]
+        assert "PARTIAL_VERIFICATION" not in [w.code for w in state["warnings"]]
 
 
 class TestEvidenceUnavailable:

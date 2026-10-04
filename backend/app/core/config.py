@@ -41,12 +41,12 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/investshield.db"
 
     # ---------- CORS ----------
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,https://invest-shield-ai.vercel.app,https://invest-shield-ai-git-main-ranjit-bhardwaj-s-projects.vercel.app,https://invest-shield-9lf2xsvdb-ranjit-bhardwaj-s-projects.vercel.app"
 
     # ---------- LLM ----------
     llm_provider: str = "groq"
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_timeout_seconds: int = 30
     groq_max_retries: int = 2

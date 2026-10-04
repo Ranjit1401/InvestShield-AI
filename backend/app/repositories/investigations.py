@@ -79,7 +79,11 @@ from app.schemas.pdf import PdfSource
 from app.schemas.red_flags import RedFlag
 from app.schemas.risk import RiskAssessment, RiskFactor
 from app.schemas.url import UrlSource
-from app.schemas.verification import VerificationResponse, VerificationResult
+from app.schemas.verification import (
+    VerificationResponse,
+    VerificationResult,
+    VerificationStatus,
+)
 __all__ = ["InvestigationRepository", "InvestigationSummary", "NotFound"]
 
 logger = get_logger(__name__)
@@ -358,7 +362,16 @@ class InvestigationRepository:
         row.claim_count = len(claims)
         row.entity_count = len(entities)
         row.red_flag_count = len(red_flags)
-        row.verification_count = len(verifications)
+        # The verified count is the number of claims the verification
+        # stage confirmed against an external record — the same count
+        # the report summary interpolates. Counting results of any
+        # status here would make history and the report disagree about
+        # the same run.
+        row.verification_count = sum(
+            1
+            for result in verifications
+            if result.status is VerificationStatus.VERIFIED
+        )
         row.source_count = sum(len(response.sources) for response in evidence)
         row.evidence_count = sum(len(response.evidence) for response in evidence)
         assessment = state.get("risk_assessment")

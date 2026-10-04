@@ -52,11 +52,14 @@ from tests.graph.graph_factories import (
     RecordingExtractionService,
     RecordingRedFlagEngine,
     RecordingRiskService,
+    RecordingSearchProvider,
     RecordingVerificationService,
     build_claim,
     build_entity,
     build_flag,
     extraction_with,
+    offline_context,
+    real_dependencies,
 )
 from tests.persistence_factories import MESSY_CONTENT, REGULATORY_CONTENT
 
@@ -296,7 +299,9 @@ class TestTheThreeOutcomesOverRealRuns:
         ), statuses
         assert _status_of(state) == "COMPLETED"
 
-    def test_search_being_unavailable_yields_partial_not_failed(self, api_client: TestClient) -> None:
+    def test_search_being_unavailable_yields_partial_not_failed(
+        self, api_client_factory
+    ) -> None:
         """A provider being down is `PARTIAL`, and still a `200`.
 
         The caller's request was fine; ours was less thorough. Failing the request
@@ -304,11 +309,15 @@ class TestTheThreeOutcomesOverRealRuns:
         having checked less than it wanted to.
 
         Args:
-            api_client: A client running the real app, offline.
+            api_client_factory: Builds a client running a chosen context.
         """
-        response = api_client.post(
-            "/api/investigations/text", json={"text": MESSY_CONTENT}
+        dependencies, _ = real_dependencies(
+            provider=RecordingSearchProvider(available=False)
         )
+        with api_client_factory(offline_context(dependencies)) as client:
+            response = client.post(
+                "/api/investigations/text", json={"text": MESSY_CONTENT}
+            )
 
         assert response.status_code == 200
         body = response.json()
@@ -621,7 +630,7 @@ class TestTheStatusVocabularyIsClosed:
         with pytest.raises(ValueError):
             InvestigationStatus(value)
 
-    def test_the_timeline_reaches_the_client_in_full(self, api_client: TestClient) -> None:
+    def test_the_timeline_reaches_the_client_in_full(self, api_client_factory) -> None:
         """A client can see which stage was incomplete, not merely that one was.
 
         Without the timeline, `PARTIAL` is undifferentiated: a client cannot tell a
@@ -629,11 +638,15 @@ class TestTheStatusVocabularyIsClosed:
         generic apology.
 
         Args:
-            api_client: A client running the real app, offline.
+            api_client_factory: Builds a client running a chosen context.
         """
-        body = api_client.post(
-            "/api/investigations/text", json={"text": MESSY_CONTENT}
-        ).json()
+        dependencies, _ = real_dependencies(
+            provider=RecordingSearchProvider(available=False)
+        )
+        with api_client_factory(offline_context(dependencies)) as client:
+            body = client.post(
+                "/api/investigations/text", json={"text": MESSY_CONTENT}
+            ).json()
 
         stages = {event["stage"]: event["status"] for event in body["timeline"]}
 

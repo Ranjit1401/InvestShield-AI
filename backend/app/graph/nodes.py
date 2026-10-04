@@ -61,7 +61,13 @@ from app.graph.state import (
 from app.schemas.extraction import ExtractionMode, ExtractionResult
 from app.schemas.ocr import content_digest
 from app.schemas.pdf import content_digest as pdf_content_digest
-from app.schemas.verification import VerificationResponse, VerificationStatus
+from app.schemas.verification import (
+    SEARCH_FAILED,
+    SEARCH_UNAVAILABLE,
+    VerificationResponse,
+    VerificationResult,
+    VerificationStatus,
+)
 from app.services.ocr_guards import SYNTAX_MESSAGES
 from app.services.ocr_service import (
     ENGINE_MESSAGES,
@@ -465,17 +471,23 @@ def _text_for(state: InvestigationState) -> str:
     return state.get("raw_input") or ""
 
 
-def _warnings_from(statuses: tuple[VerificationStatus, ...]) -> tuple[str, ...]:
-    """Warning codes implied by a set of verification statuses.
+def _warnings_from(results: tuple[VerificationResult, ...]) -> tuple[str, ...]:
+    """Warning codes implied by a set of verification results.
 
-    Only statuses that mean *coverage was lost* produce a warning. `VERIFIED` and
-    `NOT_APPLICABLE` are complete answers, not gaps.
+    Only a search that never completed means coverage was lost:
+    `SEARCH_UNAVAILABLE` and `SEARCH_FAILED` are the two reason
+    codes that say the external lookup itself did not run, so they
+    are the only ones that make the verification stage partial.
+    Every other code — including `UNVERIFIED` and
+    `INSUFFICIENT_EVIDENCE` reached *through* a completed search,
+    such as `ZERO_RESULTS` or `IDENTITY_NOT_FOUND` — is a complete
+    answer about the public record, not a gap in the stage's
+    execution, and must not report the stage as partial.
     """
     codes: list[str] = []
     if any(
-        status
-        in (VerificationStatus.UNVERIFIED, VerificationStatus.INSUFFICIENT_EVIDENCE)
-        for status in statuses
+        result.reason_code in (SEARCH_FAILED, SEARCH_UNAVAILABLE)
+        for result in results
     ):
         codes.append("PARTIAL_VERIFICATION")
     return tuple(codes)
@@ -1236,7 +1248,11 @@ def extraction_node(state: InvestigationState, context: GraphContext) -> dict[st
         }
 
     warnings: list[GraphWarning] = []
+    has_degradation = False
     for message in result.processing_warnings:
+        if "Unicode and whitespace" in message:
+            continue
+        has_degradation = True
         warnings.append(
             GraphWarning(
                 code="EXTRACTION_PARTIAL",
@@ -1246,14 +1262,18 @@ def extraction_node(state: InvestigationState, context: GraphContext) -> dict[st
         )
 
     if not result.claims:
+        has_degradation = True
         warnings.append(_warning(stage, "NO_CLAIMS_EXTRACTED"))
 
     if result.extraction_mode is ExtractionMode.FALLBACK and result.claims:
+        has_degradation = True
         warnings.append(_warning(stage, "EXTRACTION_FALLBACK"))
+    elif result.extraction_mode is ExtractionMode.PARTIAL:
+        has_degradation = True
 
     status = (
         TimelineStatus.PARTIAL
-        if warnings
+        if has_degradation
         else TimelineStatus.COMPLETED
     )
 
@@ -1346,8 +1366,9 @@ def verification_node(state: InvestigationState, context: GraphContext) -> dict[
 
     Returns:
         Partial state with `verification` and `verification_results`, plus
-        warnings for lost coverage. A claim that could not be checked is a
-        covered case, not a failure.
+        warnings for lost coverage. A claim that was searched and could not
+        be confirmed is a covered case, not a failure; only a search that
+        itself did not complete is reported as partial coverage.
     """
     stage = GraphStage.VERIFICATION
     dependencies = context.dependencies
@@ -1395,14 +1416,13 @@ def verification_node(state: InvestigationState, context: GraphContext) -> dict[
         }
 
     results = tuple(response.results)
-    statuses = tuple(result.status for result in results)
 
     warnings: list[GraphWarning] = []
     if dependencies.search_recorder is None:
         warnings.append(_warning(stage, "SEARCH_RESULTS_NOT_RECORDED"))
     elif not dependencies.search_recorder.available:
         warnings.append(_warning(stage, "SEARCH_UNAVAILABLE"))
-    for code in _warnings_from(statuses):
+    for code in _warnings_from(results):
         warnings.append(_warning(stage, code))
 
     status = (

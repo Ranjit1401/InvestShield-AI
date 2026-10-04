@@ -412,7 +412,7 @@ class InvestigationSummaryResponse(BaseModel):
     claim_count: int = Field(default=0, description="Claims extracted.")
     entity_count: int = Field(default=0, description="Entities extracted.")
     red_flag_count: int = Field(default=0, description="Red flags detected.")
-    verification_count: int = Field(default=0, description="Claims verification produced a result for.")
+    verification_count: int = Field(default=0, description="Claims verified against external records.")
     source_count: int = Field(default=0, description="Distinct documents cited across the run.")
     evidence_count: int = Field(default=0, description="Evidence items assembled.")
     factor_count: int = Field(default=0, description="Risk factors recorded.")

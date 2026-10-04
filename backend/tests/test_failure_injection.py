@@ -46,7 +46,12 @@ from app.schemas.ocr import ImageUpload
 from app.schemas.pdf import PdfUpload
 from app.schemas.risk import RiskAssessment, RiskLevel
 from app.schemas.search import SearchResponse, SearchStatus
-from app.schemas.verification import VerificationResponse, VerificationStatus
+from app.schemas.verification import (
+    SEARCH_FAILED,
+    SEARCH_UNAVAILABLE,
+    VerificationResponse,
+    VerificationStatus,
+)
 from app.services.ocr_service import OCRService
 from app.services.pdf_service import PDFService
 from app.services.search import SearchProvider, SearchService
@@ -1320,9 +1325,15 @@ class TestVerificationFailures:
         state = _run(_context_with(dependencies))
 
         assert state["verification_results"][0].status is status
-        # An unverifiable claim is not an accusation.
-        if status in (VerificationStatus.UNVERIFIED, VerificationStatus.INSUFFICIENT_EVIDENCE):
+        # Coverage loss — a search that did not complete — is the only
+        # outcome that makes the stage partial. A search that ran and
+        # confirmed nothing is a complete answer, not a gap.
+        if reason_code in (SEARCH_FAILED, SEARCH_UNAVAILABLE):
             assert "PARTIAL_VERIFICATION" in {w.code for w in state.get("warnings", ())}
+        else:
+            assert "PARTIAL_VERIFICATION" not in {
+                w.code for w in state.get("warnings", ())
+            }
 
     def test_identity_ambiguity_is_reported_as_ambiguity(
         self,
